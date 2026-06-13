@@ -25,6 +25,10 @@ const options = {
   readyTimeout: 120000,
   duration: 1800,
   interval: 60,
+  // --stock: headed Chrome with NO anti-throttling flags. Reproduces the
+  // renderer-priority condition that wedged 5 of 6 main-thread-disk boots
+  // (ROADMAP Phase 0.5); use it to regression-test the disk-worker path.
+  stock: false,
 };
 
 const args = process.argv.slice(2);
@@ -36,6 +40,7 @@ for (let index = 0; index < args.length; index += 1) {
   else if (arg === "--duration") options.duration = Number.parseInt(args[++index] || "", 10);
   else if (arg === "--interval") options.interval = Number.parseInt(args[++index] || "", 10);
   else if (arg === "--ready-timeout") options.readyTimeout = Number.parseInt(args[++index] || "", 10);
+  else if (arg === "--stock") options.stock = true;
   else {
     console.error(`unknown argument: ${arg}`);
     process.exit(2);
@@ -179,20 +184,33 @@ await resetServerState();
 
 const port = 9400 + Math.floor(Math.random() * 1000);
 const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), "c89-boot-watch-chrome-"));
-const chrome = spawn(options.chrome, [
-  "--headless=new",
-  "--no-first-run",
-  "--no-default-browser-check",
-  "--disable-background-networking",
-  "--disable-dev-shm-usage",
-  "--disable-background-timer-throttling",
-  "--disable-backgrounding-occluded-windows",
-  "--disable-renderer-backgrounding",
-  "--window-size=1400,1200",
-  `--remote-debugging-port=${port}`,
-  `--user-data-dir=${profileDir}`,
-  "about:blank",
-], { stdio: ["ignore", "ignore", "ignore"] });
+const chromeFlags = options.stock
+  ? [
+      "--no-first-run",
+      "--no-default-browser-check",
+      "--window-size=1400,1200",
+      `--remote-debugging-port=${port}`,
+      `--user-data-dir=${profileDir}`,
+      "about:blank",
+    ]
+  : [
+      "--headless=new",
+      "--no-first-run",
+      "--no-default-browser-check",
+      "--disable-background-networking",
+      "--disable-dev-shm-usage",
+      "--disable-background-timer-throttling",
+      "--disable-backgrounding-occluded-windows",
+      "--disable-renderer-backgrounding",
+      "--window-size=1400,1200",
+      `--remote-debugging-port=${port}`,
+      `--user-data-dir=${profileDir}`,
+      "about:blank",
+    ];
+const chrome = spawn(options.chrome, chromeFlags, { stdio: ["ignore", "ignore", "ignore"] });
+if (options.stock) {
+  console.log(JSON.stringify({ event: "stock-chrome", note: "headed, no anti-throttling flags; leave the window unfocused" }));
+}
 
 let cdp = null;
 let shotCount = 0;

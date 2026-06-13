@@ -35,6 +35,10 @@ What works today:
   thread is out of the disk path entirely; `?disk=legacy` restores the old
   main-thread sync-XHR path. Wire transfer for a cold boot-to-login dropped
   from ~840 MB (1 MB chunks) to ~284 MB total/207 MB-to-login (http).
+  Wedge-class verification: a stock, headed, UNFOCUSED Chrome (no
+  anti-throttling flags; previously 5 of 6 such boots wedged) booted to the
+  login screen cleanly on the first attempt
+  (`watch-browser-boot.mjs --stock`, the new regression probe for this).
 
 Known issues:
 
