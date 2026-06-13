@@ -54,8 +54,10 @@ Known issues:
   chunks on a first boot (total wire ~500 MB vs 284 MB for plain http).
   Needs relay-side tuning or a client hint to throttle pushes until the
   pattern model is warm.
-- Networking UI exists in the shell but has no backend and the wasm side does
-  not emit frames yet.
+- Networking works bidirectionally as of 2026-06-13 (opt-in `?net=1`): the
+  wasmbridge net backend bridges guest NIC frames to the dialtone /ethernet
+  relay. Outbound internet still needs the guest reconfigured onto the
+  relay's 10.68.0.x subnet (it ships on 10.1.1.x). See Phase 1 item 5.
 
 ## Measured baseline (what a visitor's browser pays today)
 
@@ -172,12 +174,24 @@ lethal.
    copy-on-write (Phase 1 item 6) is DEPRIORITIZED -- with read-only as
    the common case it is not needed for v1; admin writes are single-tab
    by design and the relay's disk lock already enforces that.
-5. Ethernet: emit guest NIC frames (the dp8393x SONIC device is already in
-   the machine, currently peerless) through `AuxQemuNet.sendFrame` to the
-   dialtone `/ethernet` endpoint; slirp gives outbound TCP (telnet, ftp,
-   early web) and zones give user-to-user AppleTalk. Reconcile framing:
-   dialtone speaks JSON frames to its BasiliskII client today; add or
-   negotiate a binary WebSocket mode for QEMU.
+5. Ethernet: DONE 2026-06-13 (bidirectional plumbing). The dp8393x SONIC is
+   no longer peerless: a custom `wasmbridge` QEMU net backend
+   (scripts/patches/qemu-wasm-wasmnet.c, compiled in) shuttles raw L2 frames
+   between the NIC and JS through two SPSC ring buffers in wasm linear
+   memory. Guest TX runs in the NIC's `.receive` (QEMU pthread); RX is
+   injected by a main-loop timer calling `qemu_send_packet` under the BQL.
+   public/net-bridge.js drains TX to the dialtone `/ethernet` endpoint and
+   feeds RX from it, speaking the relay's JSON+base64 frame protocol (the
+   ROADMAP's "binary mode" turned out unnecessary -- JSON+base64 works and
+   needs no relay change). Launch with `?net=1` (off by default so the
+   verified read-only boot is unperturbed); `?netZone=` joins a shared
+   AppleTalk/broadcast zone. Verified: a real A/UX boot-time ARP reached
+   the relay (TX), and a broadcast injected from a second relay client
+   reached the guest RX ring and was drained into the NIC (RX). Remaining:
+   reconfigure the A/UX guest to IP 10.68.0.2 / gateway 10.68.0.1 so its
+   traffic uses the relay's slirp for outbound TCP (telnet/ftp/early web) --
+   the guest ships configured for a 10.1.1.x net, so this is guest-side
+   config, not a plumbing gap.
 6. Auth and sessions: reuse the dialtone JWT model. DEPRIORITIZED for the
    disk side -- the v1 model is one shared read-only base for visitors plus
    single-tab admin writes (done, see item 4); per-session disk overlays

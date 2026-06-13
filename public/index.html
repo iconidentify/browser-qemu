@@ -78,7 +78,7 @@
           <h2>Network</h2>
           <label>
             WebSocket
-            <input id="wsUrl" type="url" value="ws://127.0.0.1:9999/aux0" spellcheck="false">
+            <input id="wsUrl" type="url" value="ws://127.0.0.1:8080/ethernet" spellcheck="false">
           </label>
           <div class="button-row">
             <button id="connectNet" type="button">Connect</button>
@@ -172,6 +172,7 @@
       <pre id="serialLog"></pre>
     </section>
 
+    <script src="./net-bridge.js"></script>
     <script src="./app.js"></script>
   </body>
 </html>

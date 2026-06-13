@@ -93,6 +93,7 @@ done
 # predate a given patch (the lazyfile patch already ran at build time).
 node "${ROOT}/scripts/patch-qemu-out-js-lazyfile.mjs" "${PUBLIC_QEMU}/out.js"
 node "${ROOT}/scripts/patch-qemu-out-js-diskworker.mjs" "${PUBLIC_QEMU}/out.js"
+node "${ROOT}/scripts/patch-qemu-out-js-net.mjs" "${PUBLIC_QEMU}/out.js"
 node "${ROOT}/scripts/patch-qemu-worker-js.mjs" "${PUBLIC_QEMU}/qemu-system-m68k.worker.js"
 
 stage_public_asset "${AUX_DISK}" "${PUBLIC_QEMU}/aux-3.1.1-disk.img"

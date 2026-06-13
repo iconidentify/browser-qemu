@@ -387,6 +387,40 @@ apply_qemu_wasm_source_patches() {
   if ! grep -q 'C89_BROWSER_QEMU_VIA_T2_ONESHOT_HACK' "${QEMU_DIR}/hw/misc/mos6522.c"; then
     git -C "${QEMU_DIR}" apply "${t2_oneshot_patch}"
   fi
+
+  # browser-qemu ethernet (Phase 1): a "wasmbridge" net backend that shuttles
+  # raw L2 frames between the dp8393x NIC and JS via wasm-memory ring buffers.
+  # The relay's slirp handles TCP/IP; this backend is deliberately dumb. The
+  # source lives in scripts/patches/ and is copied in (the new file survives the
+  # checkout --force above, but copy it every build for reproducibility); the
+  # small edits to tracked QAPI/net files are idempotent perl splices.
+  local wasmnet_src="${ROOT}/scripts/patches/qemu-wasm-wasmnet.c"
+  local net_json="${QEMU_DIR}/qapi/net.json"
+  local net_clients="${QEMU_DIR}/net/clients.h"
+  local net_dispatch="${QEMU_DIR}/net/net.c"
+  local net_meson="${QEMU_DIR}/net/meson.build"
+  cp "${wasmnet_src}" "${QEMU_DIR}/net/wasmbridge.c"
+
+  if ! grep -q 'NetdevWasmBridgeOptions' "${net_json}"; then
+    # New options struct (with its own doc comment, inserted BEFORE the
+    # NetClientDriver doc block so QAPI does not mis-associate doc comments),
+    # the enum value, and the discriminated-union branch.
+    perl -0pi -e "s/(##\\n# \@NetClientDriver:)/##\\n# \@NetdevWasmBridgeOptions:\\n#\\n# Bridge guest L2 Ethernet frames to JavaScript via wasm-memory ring\\n# buffers (browser-qemu).\\n#\\n# \@url: optional relay hint; ignored by the backend (the page-side\\n#     bridge uses it)\\n#\\n# Since: 9.0\\n##\\n\\{ 'struct': 'NetdevWasmBridgeOptions',\\n  'data': \\{\\n    '*url': 'str' \\} \\}\\n\\n\$1/" "${net_json}"
+    perl -0pi -e "s/'hubport', 'netmap'/'hubport', 'wasmbridge', 'netmap'/" "${net_json}"
+    perl -0pi -e "s/(    'hubport':  'NetdevHubPortOptions',\\n)/\$1    'wasmbridge': 'NetdevWasmBridgeOptions',\\n/" "${net_json}"
+  fi
+
+  if ! grep -q 'net_init_wasmbridge' "${net_clients}"; then
+    perl -0pi -e "s/(int net_init_hubport\\(const Netdev \\*netdev, const char \\*name,\\n                     NetClientState \\*peer, Error \\*\\*errp\\);\\n)/\$1\\nint net_init_wasmbridge(const Netdev *netdev, const char *name,\\n                        NetClientState *peer, Error **errp);\\n/" "${net_clients}"
+  fi
+
+  if ! grep -q 'net_init_wasmbridge' "${net_dispatch}"; then
+    perl -0pi -e "s/(\\[NET_CLIENT_DRIVER_HUBPORT\\]   = net_init_hubport,\\n)/\$1        [NET_CLIENT_DRIVER_WASMBRIDGE] = net_init_wasmbridge,\\n/" "${net_dispatch}"
+  fi
+
+  if ! grep -q "wasmbridge.c" "${net_meson}"; then
+    perl -0pi -e "s/(  'util\\.c',\\n)\\)\\)/\$1  'wasmbridge.c',\\n))/" "${net_meson}"
+  fi
 }
 
 apply_qemu_wasm_source_patches
@@ -566,6 +600,7 @@ done
 
 QEMU_WASM_DYNAMIC_TB_START_ABI="${QEMU_WASM_DYNAMIC_TB_START_ABI}" node "${ROOT}/scripts/patch-qemu-out-js-lazyfile.mjs" "${ROOT}/build/qemu/out.js"
 node "${ROOT}/scripts/patch-qemu-out-js-diskworker.mjs" "${ROOT}/build/qemu/out.js"
+node "${ROOT}/scripts/patch-qemu-out-js-net.mjs" "${ROOT}/build/qemu/out.js"
 if [[ -f "${ROOT}/build/qemu/qemu-system-m68k.worker.js" ]]; then
   node "${ROOT}/scripts/patch-qemu-worker-js.mjs" "${ROOT}/build/qemu/qemu-system-m68k.worker.js"
 fi

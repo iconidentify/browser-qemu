@@ -170,16 +170,6 @@ function handleMessage(e) {
       err('worker exception detail: ' + detail);
       postMessage({ cmd: 'callHandler', handler: 'printErr', args: [ 'worker exception detail: ' + detail ] });
     } catch (_) {}
-    try {
-      var detail = ex && (ex.stack || ex.message || String(ex));
-      err('worker exception detail: ' + detail);
-      postMessage({ cmd: 'callHandler', handler: 'printErr', args: [ 'worker exception detail: ' + detail ] });
-    } catch (_) {}
-    try {
-      var detail = ex && (ex.stack || ex.message || String(ex));
-      err('worker exception detail: ' + detail);
-      postMessage({ cmd: 'callHandler', handler: 'printErr', args: [ 'worker exception detail: ' + detail ] });
-    } catch (_) {}
     if (Module['__emscripten_thread_crashed']) {
       Module['__emscripten_thread_crashed']();
     }

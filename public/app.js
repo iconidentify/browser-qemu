@@ -83,7 +83,6 @@
     pram: null,
   };
 
-  let ws = null;
   let keyCapture = false;
   let mouseX = 0;
   let mouseY = 0;
@@ -101,6 +100,11 @@
   let qemuDiskWriteRequested = false;
   let qemuDiskWriteMode = false;
   let qemuDiskReady = null;
+  let netBridge = null;
+  let netModeRequested = false;
+  // Guest NIC MAC. q800 forces the 08:00:07 (Apple) prefix; the low 3 bytes
+  // come from this and must match the relay /ethernet init macAddress.
+  const AUX_NET_MAC = "08:00:07:0a:0b:0c";
   let heartbeat = 0;
   let lastHeartbeatAt = performance.now();
   let lastControlId = 0;
@@ -1239,6 +1243,25 @@
     return next;
   }
 
+  // ?net=1 swaps the default -nic none for the wasmbridge backend so guest
+  // NIC frames flow to the relay /ethernet endpoint. Off by default so the
+  // verified read-only boot path is unchanged for visitors with no relay.
+  function applyNetMode(args) {
+    const params = new URLSearchParams(window.location.search);
+    netModeRequested = params.get("net") === "1" || params.get("net") === "relay";
+    if (!netModeRequested) return args;
+    const next = [...args];
+    const nicSpec = `wasmbridge,model=dp83932,mac=${AUX_NET_MAC}`;
+    const nicIndex = next.indexOf("-nic");
+    if (nicIndex !== -1 && nicIndex + 1 < next.length) {
+      next[nicIndex + 1] = nicSpec;
+    } else {
+      next.push("-nic", nicSpec);
+    }
+    log(`net mode enabled: -nic ${nicSpec}`);
+    return next;
+  }
+
   function applyDisplayMode(args) {
     const params = new URLSearchParams(window.location.search);
     const displayMode = (params.get("display") || "").toLowerCase();
@@ -1341,13 +1364,15 @@
       "-serial", "none",
     ]);
 
-    args.push("-nic", "none");
+    const planNetMode = new URLSearchParams(window.location.search).get("net");
+    if (planNetMode === "1" || planNetMode === "relay") {
+      args.push("-nic", `wasmbridge,model=dp83932,mac=${AUX_NET_MAC}`);
+    } else {
+      args.push("-nic", "none");
+    }
 
     log("Draft launch plan:");
     log(args.map((arg) => (arg.includes(" ") ? JSON.stringify(arg) : arg)).join(" "));
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      log("Dialtone WebSocket is connected; QEMU ethernet backend is still a TODO, so launch keeps -nic none");
-    }
     setStatus(qemuStatus, "Launch planned", "warn");
   }
 
@@ -1513,11 +1538,11 @@
           window.AuxQemuModuleArguments = ["-S", ...args];
         }
       }
-      window.Module.arguments = applyDiskWriteMode(applyDisplayMode(
+      window.Module.arguments = applyNetMode(applyDiskWriteMode(applyDisplayMode(
         applyTraceOptions(
           applyCpuPacing(applyRamSize(window.AuxQemuModuleArguments || window.Module.arguments || []))
         )
-      ));
+      )));
       log(`RAM configured: ${selectedRamMb()} MB`);
       if (qemuHeapMb) {
         window.Module.INITIAL_MEMORY = qemuHeapMb * 1024 * 1024;
@@ -1588,58 +1613,65 @@
     }
   }
 
+  // Bridge guest NIC frames to the relay /ethernet endpoint. Requires the
+  // runtime to have been launched with ?net=1 (so -nic wasmbridge is active
+  // and window.AuxQemu.c89NetSharedPtr exists) and the relay reachable at the
+  // WebSocket URL. The relay's slirp provides TCP/IP at 10.68.0.1.
   function connectNetwork() {
-    if (ws && ws.readyState === WebSocket.OPEN) return;
+    if (netBridge && netBridge.isRunning()) return;
+
+    if (!window.AuxQemu || typeof window.AuxQemu.c89NetSharedPtr !== "function") {
+      setStatus(netStatus, "Net backend off", "error");
+      log("cannot connect network: launch with ?net=1 (wasmbridge NIC not present in this run)");
+      return;
+    }
+
+    const params = new URLSearchParams(window.location.search);
+    const zone = params.get("netZone") || "";
 
     setStatus(netStatus, "Connecting", "warn");
-    ws = new WebSocket(wsUrl.value);
-    ws.binaryType = "arraybuffer";
-
-    ws.onopen = () => {
-      setStatus(netStatus, "Network connected", "ready");
-      document.getElementById("connectNet").disabled = true;
-      document.getElementById("disconnectNet").disabled = false;
-      log(`network websocket open: ${wsUrl.value}`);
-    };
-
-    ws.onmessage = (event) => {
-      const bytes = event.data instanceof ArrayBuffer ? event.data.byteLength : String(event.data).length;
-      log(`network rx ${bytes} bytes`);
-      if (window.AuxQemu && typeof window.AuxQemu.receiveEthernetFrame === "function") {
-        window.AuxQemu.receiveEthernetFrame(event.data);
-      }
-    };
-
-    ws.onerror = () => {
-      setStatus(netStatus, "Network error", "error");
-      log("network websocket error");
-    };
-
-    ws.onclose = () => {
-      setStatus(netStatus, "Network offline", "");
-      document.getElementById("connectNet").disabled = false;
-      document.getElementById("disconnectNet").disabled = true;
-      log("network websocket closed");
-    };
-  }
-
-  function disconnectNetwork() {
-    if (ws) {
-      ws.close();
-      ws = null;
+    try {
+      netBridge = window.createAuxNetBridge({
+        module: window.AuxQemu,
+        wsUrl: wsUrl.value,
+        mac: AUX_NET_MAC,
+        zone,
+        log,
+        onOpen() {
+          setStatus(netStatus, "Network connected", "ready");
+          document.getElementById("connectNet").disabled = true;
+          document.getElementById("disconnectNet").disabled = false;
+        },
+        onClose() {
+          setStatus(netStatus, "Network offline", "");
+          document.getElementById("connectNet").disabled = false;
+          document.getElementById("disconnectNet").disabled = true;
+        },
+        onError() {
+          setStatus(netStatus, "Network error", "error");
+        },
+      });
+      netBridge.start();
+    } catch (error) {
+      setStatus(netStatus, "Net start failed", "error");
+      log(`network bridge failed: ${formatError(error)}`);
+      netBridge = null;
     }
   }
 
+  function disconnectNetwork() {
+    if (netBridge) {
+      netBridge.stop();
+      netBridge = null;
+    }
+  }
+
+  // Probe/automation surface for the network bridge.
   window.AuxQemuNet = {
-    sendFrame(frame) {
-      if (!ws || ws.readyState !== WebSocket.OPEN) {
-        log("network tx dropped: websocket offline");
-        return false;
-      }
-      ws.send(frame);
-      const bytes = frame instanceof ArrayBuffer ? frame.byteLength : frame.length || 0;
-      log(`network tx ${bytes} bytes`);
-      return true;
+    connect: connectNetwork,
+    disconnect: disconnectNetwork,
+    stats() {
+      return netBridge ? netBridge.stats() : null;
     },
   };
 
