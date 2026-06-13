@@ -17,6 +17,8 @@ HEAP="${HEAP:-1280}"
 AUTOSTART="${AUTOSTART:-lazy}"
 BUILD="${BUILD:-local-$$}"
 DEBUG_PORT="${DEBUG_PORT:-9444}"
+RES="${RES:-}"          # e.g. RES=800x600 to shrink the framebuffer
+NET="${NET:-}"          # NET=1 to enable the wasmbridge NIC + relay bridge
 PROFILE="$(mktemp -d "${TMPDIR:-/tmp}/c89-aux-chrome-XXXXXX")"
 
 if [ "${AUTOSTART}" = "none" ]; then
@@ -24,6 +26,8 @@ if [ "${AUTOSTART}" = "none" ]; then
 else
   URL="http://127.0.0.1:${PORT}/?ram=${RAM}&heap=${HEAP}&pace=0&autostart=${AUTOSTART}&build=${BUILD}"
 fi
+[ -n "${RES}" ] && URL="${URL}&res=${RES}"
+[ -n "${NET}" ] && URL="${URL}&net=${NET}"
 
 echo "profile: ${PROFILE}"
 echo "url:     ${URL}"

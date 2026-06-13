@@ -1270,6 +1270,30 @@
     return next;
   }
 
+  // ?res=800x600 (or 800x600x8) rewrites the framebuffer geometry (-g WxHxD).
+  // Smaller framebuffers also mean less per-frame main-thread blit/composite,
+  // which helps headed stability. Depth defaults to 8.
+  function applyResolution(args) {
+    const params = new URLSearchParams(window.location.search);
+    const res = (params.get("res") || params.get("g") || "").toLowerCase().trim();
+    if (!res) return args;
+    const m = /^(\d{3,4})x(\d{3,4})(?:x(\d+))?$/.exec(res);
+    if (!m) {
+      log(`ignoring invalid ?res=${res} (use WxH, e.g. 800x600)`);
+      return args;
+    }
+    const geom = `${m[1]}x${m[2]}x${m[3] || "8"}`;
+    const next = [...args];
+    const gIndex = next.indexOf("-g");
+    if (gIndex !== -1 && gIndex + 1 < next.length) {
+      next[gIndex + 1] = geom;
+    } else {
+      next.push("-g", geom);
+    }
+    log(`display geometry: ${geom}`);
+    return next;
+  }
+
   function applyDisplayMode(args) {
     const params = new URLSearchParams(window.location.search);
     const displayMode = (params.get("display") || "").toLowerCase();
@@ -1553,11 +1577,11 @@
           window.AuxQemuModuleArguments = ["-S", ...args];
         }
       }
-      window.Module.arguments = applyNetMode(applyDiskWriteMode(applyDisplayMode(
+      window.Module.arguments = applyNetMode(applyResolution(applyDiskWriteMode(applyDisplayMode(
         applyTraceOptions(
           applyCpuPacing(applyRamSize(window.AuxQemuModuleArguments || window.Module.arguments || []))
         )
-      )));
+      ))));
       log(`RAM configured: ${selectedRamMb()} MB`);
       if (qemuHeapMb) {
         window.Module.INITIAL_MEMORY = qemuHeapMb * 1024 * 1024;
