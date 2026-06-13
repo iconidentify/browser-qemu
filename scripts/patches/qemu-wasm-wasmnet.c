@@ -41,7 +41,17 @@ static inline int emscripten_futex_wake(volatile void *addr, int count)
 #define WN_SLOT         (4 + WN_MAX_FRAME)   /* [u32 len LE][payload] */
 #define WN_SLOTS        64
 #define WN_NCTRL        16
-#define WN_RX_POLL_MS   1
+/* RX poll cadence. MUST stay coarse: a 1ms re-arming QEMU_CLOCK_REALTIME timer
+ * forces the QEMU main loop to wake ~1000x/sec, which a headed browser's
+ * renderer scheduler cannot absorb alongside compositing -- the worker pegs,
+ * stops servicing proxied display/input calls, and the page locks up instantly
+ * at net connect (fine headless/under a debugger, fatal in a normal tab).
+ * 15ms (~66Hz) is imperceptible for interactive networking. Override via
+ * -DC89_WN_RX_POLL_MS=N at build time. */
+#ifndef C89_WN_RX_POLL_MS
+#define C89_WN_RX_POLL_MS 15
+#endif
+#define WN_RX_POLL_MS   C89_WN_RX_POLL_MS
 
 /* Control-block int32 slot indices (mirrored in public/net-worker / app.js). */
 enum {

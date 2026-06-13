@@ -8,9 +8,9 @@
  * and writes frames the relay delivers into the RX ring for the QEMU thread's
  * timer to inject into the guest.
  *
- * All work here is non-blocking: Atomics.waitAsync for TX wakeups (the C side
- * calls emscripten_futex_wake), async WebSocket I/O, and small memcpys. No
- * synchronous blocking on the main thread.
+ * All work here is non-blocking: a fixed 15ms setTimeout poll drains the TX
+ * ring (NOT Atomics.waitAsync -- its cross-browser behavior risked starving
+ * the renderer main thread), async WebSocket I/O, and small memcpys.
  *
  * Shared-block layout (must match net/wasmbridge.c):
  *   [ ctrl: 16 x int32 ][ tx ring: SLOTS x STRIDE ][ rx ring: SLOTS x STRIDE ]
@@ -97,13 +97,12 @@
       return heap.slice(off + 4, off + 4 + len);
     }
 
-    // Single self-yielding pump chain. CRITICAL: re-arm via setTimeout (a
-    // macrotask that yields to the event loop), NOT Promise microtasks -- a
-    // microtask re-arm starves the renderer main thread ("page unresponsive")
-    // whenever waitAsync returns not-async. waitAsync's own timeout is the
-    // backstop, so there is no separate interval spawning parallel chains.
+    // Dead-simple fixed-interval poll. Deliberately NOT Atomics.waitAsync: its
+    // cross-browser behavior (and microtask re-arm) was a renderer-starvation
+    // hazard. A 15ms setTimeout always yields to the event loop, so it cannot
+    // spin/freeze the main thread; 15ms TX latency is imperceptible. The drain
+    // loop empties the whole ring each tick, so throughput isn't poll-limited.
     var pumping = false;
-    var hasWaitAsync = typeof Atomics.waitAsync === "function";
     function startPump() {
       if (pumping) return;
       pumping = true;
@@ -111,21 +110,14 @@
     }
     function pumpStep() {
       if (!running) { pumping = false; return; }
-      var wIdx = ctrlBase + C_TX_WRITE;
-      var w = Atomics.load(ctrl, wIdx);
+      var w = Atomics.load(ctrl, ctrlBase + C_TX_WRITE);
       while (txReadLocal !== w) {
         var frame = readFrame(txRingOff, (txReadLocal >>> 0) % slots);
         if (frame) sendFrame(frame);
         txReadLocal = (txReadLocal + 1) | 0;
         Atomics.store(ctrl, ctrlBase + C_TX_READ, txReadLocal);
       }
-      if (hasWaitAsync) {
-        var res = Atomics.waitAsync(ctrl, wIdx, w, 1000); // 1s built-in backstop
-        if (res.async) res.value.then(function () { root.setTimeout(pumpStep, 0); });
-        else root.setTimeout(pumpStep, 0); // value already changed; yield, re-drain
-      } else {
-        root.setTimeout(pumpStep, 20); // no waitAsync: gentle poll
-      }
+      root.setTimeout(pumpStep, 15);
     }
 
     function sendFrame(frame) {
