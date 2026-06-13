@@ -8,8 +8,34 @@ login, in Chrome. Reliable recipe: `make serve`, then `make browser`
 `autostart=lazy`; type the login via the HMP control channel. See ROADMAP.md
 for the plan to production (dialtone disk/ethernet backend, reliability,
 deployment) and VENDOR.md for how the vendor tree and large artifacts are
-managed. Known hazards until Phase 1 lands: do not click the emulator canvas
-and do not resize the window while the runtime is live.
+managed.
+
+## Disk: read-only by default, easy admin writes
+
+Visitors boot the disk read-only off a shared base image; no setup, served as
+static files plus HTTP range requests (or via the dialtone relay). Guest disk
+reads run in a dedicated worker off the page main thread, so the earlier
+boot-wedge hazards (clicking the canvas, resizing the window) are gone.
+
+To change the disk contents yourself -- install software, edit files, and have
+the edits persist -- use the dialtone relay:
+
+```
+make serve                 # dev server on :8088 (one terminal)
+make disk-relay            # relay on :8080 + prints a writable URL (another)
+make disk-relay BROWSER=1  # ... and launch Chrome straight into it
+```
+
+`disk-relay` writes to an editable copy under `build/relay-disks/`, never the
+known-good `assets/AUX3.img` master, and mints a 30-day admin token signed with
+a per-machine dev secret. Open the printed WRITABLE url; your guest writes go
+through the relay and survive reboots. To publish those edits as the new
+read-only disk visitors boot:
+
+```
+make disk-promote          # backs up + overwrites assets/AUX3.img
+make package-lazy          # reships it into public/qemu-lazy/
+```
 
 ## Current status
 

@@ -163,17 +163,26 @@ lethal.
    gated on a verified admin JWT and the relay's multi-tab disk lock
    (5 s heartbeat). Verified: writes persist across reboots (three
    distinct disk md5s pristine->boot1->boot2, each booting cleanly).
-   Remaining: server-side per-session copy-on-write (today writes go
-   straight to the shared base image, so rw is single-session only),
-   and prefetch throttling on cold relays.
+   Admin write workflow is one command: `make disk-relay` (starts the
+   relay on a writable copy under build/relay-disks/, mints a token,
+   prints the writable URL), then `make disk-promote` to publish edits to
+   the shipped read-only image. Use model (user, 2026-06-13): most
+   visitors are read-only; the admin is the one who writes.
+   Remaining: prefetch throttling on cold relays. Per-session
+   copy-on-write (Phase 1 item 6) is DEPRIORITIZED -- with read-only as
+   the common case it is not needed for v1; admin writes are single-tab
+   by design and the relay's disk lock already enforces that.
 5. Ethernet: emit guest NIC frames (the dp8393x SONIC device is already in
    the machine, currently peerless) through `AuxQemuNet.sendFrame` to the
    dialtone `/ethernet` endpoint; slirp gives outbound TCP (telnet, ftp,
    early web) and zones give user-to-user AppleTalk. Reconcile framing:
    dialtone speaks JSON frames to its BasiliskII client today; add or
    negotiate a binary WebSocket mode for QEMU.
-6. Auth and sessions: reuse the dialtone JWT model; one disk overlay and
-   one network zone per session.
+6. Auth and sessions: reuse the dialtone JWT model. DEPRIORITIZED for the
+   disk side -- the v1 model is one shared read-only base for visitors plus
+   single-tab admin writes (done, see item 4); per-session disk overlays
+   only matter once multiple users need independent writable disks. Network
+   zones per session stay relevant for ethernet (item 5).
 
 ### Phase 2: Make it fast enough to feel like a product
 

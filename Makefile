@@ -13,7 +13,7 @@ PULSE_MS ?= 30000
 ICOUNT ?= shift=10,sleep=off
 MAX_ICOUNT_SHIFT ?= 15
 
-.PHONY: help fetch build-qemu build-qemu-responsive build-qemu-lean build-qemu-balanced build-qemu-balanced-esp-pdma-fifo512 build-qemu-balanced-esp-pdma-fifo512-adb-suppress build-qemu-balanced-esp-pdma-fifo512-exitpump build-qemu-balanced-esp-pdma-fifo512-exitpump-esp-pc-trace build-qemu-balanced-esp-pdma-fifo512-chainpump build-qemu-balanced-esp-pdma-fifo512-chainpump-esp-pc-trace build-qemu-balanced-esp-pdma-fifo512-mmio-backoff-esp-pc-trace build-qemu-balanced-esp-pdma-fifo512-icount-shift build-qemu-balanced-esp-pdma-fifo512-esp-pc-trace build-qemu-balanced-t2-pc-trace build-qemu-balanced-t2-esp-trace build-qemu-balanced-t2-esp-pc-trace build-qemu-balanced-pgtable-trace build-qemu-balanced-dyn-tb build-qemu-balanced-dyn-tb-pc-trace build-qemu-balanced-dyn-tb-exc-trace build-qemu-balanced-dyn-tb-full-trace build-qemu-balanced-dyn-tb-mmu-walk-trace build-qemu-balanced-dyn-tb-pgtable-trace build-qemu-balanced-dyn-tb-movec-flush-trace build-qemu-balanced-dyn-tb-no-fpcast build-qemu-balanced-no-via-t2-hack build-qemu-balanced-pc-trace build-qemu-balanced-via-trace build-qemu-balanced-adb-suppress build-qemu-balanced-t2-adb-suppress build-native-qemu-wasm sync-runtime package package-local package-smoke package-lazy refresh-stable-runtime serve browser-log browser-log-clear hmp hmp-help hmp-status hmp-cont hmp-stop hmp-run-for hmp-pulse-start hmp-pulse-stop hmp-step hmp-rom-probe hmp-info-block hmp-info-registers hmp-info-qtree hmp-info-via hmp-key hmp-clear probe-rom-progress summarize-probes smoke-headless-browser watch-browser-boot smoke-headless-lazy-pulse smoke-headless-scsi smoke-headless-scsi-series smoke-headless-scsi-continuous smoke-headless-via-series smoke-headless-via-scsi-series smoke-headless-via-scsi-icount-series smoke-headless-via-scsi-built-icount-series smoke-headless-via-scsi-pc-trace-long smoke-headless-via-scsi-fifo512-pc-trace-long smoke-headless-via-scsi-exitpump-pc-trace-long smoke-headless-scsi-exitpump-continuous-long smoke-headless-via-scsi-chainpump-pc-trace-long smoke-headless-scsi-chainpump-continuous-long smoke-headless-scsi-mmio-backoff-continuous-long smoke-headless-scsi-esp-trace-long smoke-headless-scsi-pc-trace-long probe-native-qemu probe-native-qemu-wasm clean
+.PHONY: help fetch build-qemu build-qemu-responsive build-qemu-lean build-qemu-balanced build-qemu-balanced-esp-pdma-fifo512 build-qemu-balanced-esp-pdma-fifo512-adb-suppress build-qemu-balanced-esp-pdma-fifo512-exitpump build-qemu-balanced-esp-pdma-fifo512-exitpump-esp-pc-trace build-qemu-balanced-esp-pdma-fifo512-chainpump build-qemu-balanced-esp-pdma-fifo512-chainpump-esp-pc-trace build-qemu-balanced-esp-pdma-fifo512-mmio-backoff-esp-pc-trace build-qemu-balanced-esp-pdma-fifo512-icount-shift build-qemu-balanced-esp-pdma-fifo512-esp-pc-trace build-qemu-balanced-t2-pc-trace build-qemu-balanced-t2-esp-trace build-qemu-balanced-t2-esp-pc-trace build-qemu-balanced-pgtable-trace build-qemu-balanced-dyn-tb build-qemu-balanced-dyn-tb-pc-trace build-qemu-balanced-dyn-tb-exc-trace build-qemu-balanced-dyn-tb-full-trace build-qemu-balanced-dyn-tb-mmu-walk-trace build-qemu-balanced-dyn-tb-pgtable-trace build-qemu-balanced-dyn-tb-movec-flush-trace build-qemu-balanced-dyn-tb-no-fpcast build-qemu-balanced-no-via-t2-hack build-qemu-balanced-pc-trace build-qemu-balanced-via-trace build-qemu-balanced-adb-suppress build-qemu-balanced-t2-adb-suppress build-native-qemu-wasm sync-runtime package package-local package-smoke package-lazy refresh-stable-runtime serve disk-relay disk-promote browser browser-log browser-log-clear hmp hmp-help hmp-status hmp-cont hmp-stop hmp-run-for hmp-pulse-start hmp-pulse-stop hmp-step hmp-rom-probe hmp-info-block hmp-info-registers hmp-info-qtree hmp-info-via hmp-key hmp-clear probe-rom-progress summarize-probes smoke-headless-browser watch-browser-boot smoke-headless-lazy-pulse smoke-headless-scsi smoke-headless-scsi-series smoke-headless-scsi-continuous smoke-headless-via-series smoke-headless-via-scsi-series smoke-headless-via-scsi-icount-series smoke-headless-via-scsi-built-icount-series smoke-headless-via-scsi-pc-trace-long smoke-headless-via-scsi-fifo512-pc-trace-long smoke-headless-via-scsi-exitpump-pc-trace-long smoke-headless-scsi-exitpump-continuous-long smoke-headless-via-scsi-chainpump-pc-trace-long smoke-headless-scsi-chainpump-continuous-long smoke-headless-scsi-mmio-backoff-continuous-long smoke-headless-scsi-esp-trace-long smoke-headless-scsi-pc-trace-long probe-native-qemu probe-native-qemu-wasm clean
 
 help:
 	@printf '%s\n' \
@@ -56,6 +56,8 @@ help:
 		'  make package-lazy Package ROM/PRAM plus range-served lazy disk images into public/qemu-lazy/' \
 		'  make refresh-stable-runtime Rebuild balanced runtime and refresh qemu-smoke/qemu-lazy packages' \
 		'  make serve       Serve public/ with COOP/COEP headers for Emscripten pthreads' \
+		'  make disk-relay [BROWSER=1] Start the dialtone relay on a writable disk copy and print the admin write URL' \
+		'  make disk-promote [FORCE=1] Publish your disk edits to assets/AUX3.img (then make package-lazy)' \
 		'  make browser-log Read mirrored browser serial/debug log from local dev server' \
 		'  make browser-log-clear Clear mirrored browser serial/debug log on local dev server' \
 		'  make hmp-help    Queue HMP help through public/control.local.json' \
@@ -216,6 +218,12 @@ serve:
 
 browser:
 	./scripts/launch-aux-chrome.sh
+
+disk-relay:
+	./scripts/disk-relay.sh
+
+disk-promote:
+	./scripts/disk-promote.sh
 
 browser-log:
 	@curl -sS 'http://127.0.0.1:8088/__browser-log.json' | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const p=JSON.parse(s); for (const line of p.lines || []) console.log(line);})'
