@@ -54,12 +54,13 @@ Known issues:
   chunks on a first boot (total wire ~500 MB vs 284 MB for plain http).
   Needs relay-side tuning or a client hint to throttle pushes until the
   pattern model is warm.
-- Networking works bidirectionally as of 2026-06-13 (opt-in `?net=1`): the
+- Networking works end to end as of 2026-06-13 (opt-in `?net=1`): the
   wasmbridge net backend bridges guest NIC frames to the dialtone /ethernet
-  relay, and the A/UX stack is verified live over it -- it answers pings and
-  accepts TCP connections on its telnet/ftp/finger/rsh/exec/uucp services.
-  Outbound internet still needs the guest (idle at login, on 10.1.1.20)
-  pointed at the relay gateway 10.68.0.1 from a shell. See Phase 1 item 5.
+  relay; A/UX answers pings, accepts inbound TCP on its inetd services, and
+  reaches the REAL INTERNET outbound through the relay's slirp (verified
+  telnet to 1.1.1.1:80). In-VM control is via the project's auxagent (AAP
+  over HTTP) reached over the bridge with scripts/auxctl-zone.mjs -- `exec`
+  runs commands as root inside A/UX. See Phase 1 items 5 / 5b.
 
 ## Measured baseline (what a visitor's browser pays today)
 
@@ -197,12 +198,24 @@ lethal.
    exec(512), shell(514), uucp(540) -- i.e. its inetd services are reachable
    over the wasm bridge. Tools: scripts/probe-guest-net.mjs (relay-side ARP/
    ICMP/TCP prober) and scripts/smoke-net-bridge.mjs (--sniff/--inject).
-   Remaining = OUTBOUND (guest-initiated) internet via slirp: the guest ships
-   on 10.1.1.20 with no default route to the relay gateway 10.68.0.1, and it
-   is idle at the login screen, so this needs intervention inside the guest
-   (set a default route / reconfigure to 10.68.0.2 gw 10.68.0.1). That needs
-   shell access -- either a minimal telnet-in TCP client over the zone (A/UX
-   runs telnetd) or GUI/HMP login + a terminal. Not a plumbing gap.
+   OUTBOUND internet: DONE 2026-06-13. A/UX reached the real internet
+   (telnet 1.1.1.1:80 -> "Connected to 1.1.1.1."; relay slirp dialed out and
+   source-NATed to the host, 316 bytes back). Driven via the auxagent control
+   channel below: scripts/aux-online.sh widens ao0 to /8 so the relay gateway
+   10.68.0.1 is on-link, repoints the default route at it, and points
+   resolv.conf at the relay. Guest changes are ephemeral (-snapshot), re-run
+   per session. Cleaner production path (no per-boot guest reconfig): make the
+   relay gateway IP configurable to the guest's existing default (10.1.1.1).
+
+5b. auxagent (in-VM control): DONE 2026-06-13. The project's auxagent (AAP =
+   HTTP/1.0 over TCP, source ~/se30/auxagent) runs inside the guest on
+   10.1.1.20:8377. scripts/auxctl-zone.mjs speaks AAP to it over the bridge
+   via a minimal userspace TCP client on the relay zone (no real route to the
+   guest exists). ping/exec/get/put all work: `exec "uname -a; id"` ->
+   "A/UX auxvm 3.1.1 SVR2 mc68040 / uid=0(root)". This is the reliable
+   programmatic control channel for the system. NEXT: move the zone-TCP+AAP
+   transport into the browser shell/worker so the web app itself drives A/UX
+   (today it's a Node CLI).
 6. Auth and sessions: reuse the dialtone JWT model. DEPRIORITIZED for the
    disk side -- the v1 model is one shared read-only base for visitors plus
    single-tab admin writes (done, see item 4); per-session disk overlays
