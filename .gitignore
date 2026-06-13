@@ -1,0 +1,25 @@
+build/
+vendor/
+assets/
+__pycache__/
+*.pyc
+*.log
+.DS_Store
+node_modules/
+public/control.local.json
+public/control.local.seq
+public/qemu/*
+!public/qemu/.gitkeep
+public/qemu-smoke/*
+!public/qemu-smoke/.gitkeep
+
+# Known-good lazy runtime is committed (see VENDOR.md); ROM-bearing data
+# packs and disk images are not.
+public/qemu-lazy/*
+!public/qemu-lazy/.gitkeep
+!public/qemu-lazy/out.js
+!public/qemu-lazy/load.js
+!public/qemu-lazy/module.js
+!public/qemu-lazy/qemu-system-m68k.worker.js
+!public/qemu-lazy/qemu-system-m68k.wasm
+config-temp/

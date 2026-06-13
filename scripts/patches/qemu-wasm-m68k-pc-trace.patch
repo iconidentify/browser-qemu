@@ -1,0 +1,124 @@
+--- a/target/m68k/helper.c
++++ b/target/m68k/helper.c
+@@ -70,6 +70,98 @@
+ }
+ #endif
+ 
++#ifdef C89_BROWSER_QEMU_M68K_PC_TRACE
++static const char *c89_browser_qemu_m68k_pc_phase(uint32_t pc)
++{
++    if (pc >= 0x40847a60 && pc <= 0x40847a90) {
++        return "rom-checksum";
++    }
++    if (pc >= 0x40847fe0 && pc <= 0x40848060) {
++        return "via-wait";
++    }
++    if (pc >= 0x408008bc && pc <= 0x408008d2) {
++        return "via-delay";
++    }
++    if (pc >= 0x40848120 && pc <= 0x40848298) {
++        return "via-timing";
++    }
++    if (pc >= 0x408bd300 && pc <= 0x408bd420) {
++        return "asc-startup";
++    }
++    if (pc >= 0x408477c0 && pc <= 0x408479dc) {
++        return "rom-ramtest";
++    }
++    if (pc >= 0x40809b40 && pc <= 0x40809c00) {
++        return "via-autovector";
++    }
++    if (pc >= 0x408099b0 && pc <= 0x40809a30) {
++        return "rom-dispatch";
++    }
++    if (pc >= 0x408ba080 && pc <= 0x408ba180) {
++        return "scsi-manager";
++    }
++    if (pc >= 0x40899700 && pc <= 0x40899770) {
++        return "scsi-status";
++    }
++    if (pc >= 0x408d1e80 && pc <= 0x408d2048) {
++        return "scsi-dma";
++    }
++    if (pc >= 0x40800000 && pc < 0x40900000) {
++        return "quadra-rom";
++    }
++    if (pc < 0x01000000) {
++        return "low-memory";
++    }
++    return "other";
++}
++
++void c89_browser_qemu_m68k_pc_trace(CPUM68KState *env)
++{
++    static uint32_t last_pc;
++    static const char *last_phase;
++    static unsigned long long tb_count;
++    static unsigned repeat_count;
++    static unsigned log_count;
++    uint32_t pc = env->pc;
++    uint32_t sr = env->sr | cpu_m68k_get_ccr(env);
++    const char *phase = c89_browser_qemu_m68k_pc_phase(pc);
++    bool phase_changed = last_phase != phase;
++    bool pc_changed = pc != last_pc;
++    bool low_memory = pc < 0x01000000;
++    bool periodic = (tb_count % 200000ULL) == 0;
++
++    tb_count++;
++    if (!pc_changed && !phase_changed) {
++        repeat_count++;
++    }
++    if (log_count >= 1200 && !periodic) {
++        return;
++    }
++    if (log_count >= 48 && !phase_changed && !low_memory && !periodic) {
++        return;
++    }
++    if (!pc_changed && !phase_changed && !periodic) {
++        return;
++    }
++
++    fprintf(stderr,
++            "[c89-m68k-pc] tb=%llu pc=0x%08x phase=%s sr=0x%04x "
++            "d0=0x%08x d1=0x%08x d6=0x%08x d7=0x%08x "
++            "a0=0x%08x a1=0x%08x a4=0x%08x a5=0x%08x "
++            "a6=0x%08x a7=0x%08x repeat=%u\n",
++            tb_count, pc, phase, sr,
++            env->dregs[0], env->dregs[1], env->dregs[6], env->dregs[7],
++            env->aregs[0], env->aregs[1], env->aregs[4], env->aregs[5],
++            env->aregs[6], env->aregs[7], repeat_count);
++    fflush(stderr);
++
++    last_pc = pc;
++    last_phase = phase;
++    repeat_count = 0;
++    log_count++;
++}
++#endif
++
+ /* Sort alphabetically, except for "any". */
+ static gint m68k_cpu_list_compare(gconstpointer a, gconstpointer b)
+ {
+--- a/tcg/wasm32.c
++++ b/tcg/wasm32.c
+@@ -30,6 +30,10 @@
+ #include <emscripten/threading.h>
+ #include "wasm32.h"
+ 
++#ifdef C89_BROWSER_QEMU_M68K_PC_TRACE
++void c89_browser_qemu_m68k_pc_trace(CPUArchState *env);
++#endif
++
+ __thread uintptr_t tci_tb_ptr;
+ 
+ /* Disassemble TCI bytecode. */
+@@ -1324,6 +1328,9 @@
+     ctx.tb_ptr = (uint32_t*)v_tb_ptr;
+     ctx.do_init = 1;
+     while (true) {
++#ifdef C89_BROWSER_QEMU_M68K_PC_TRACE
++        c89_browser_qemu_m68k_pc_trace(env);
++#endif
+         trysleep();
+         int tb_counter_ptr = (uint32_t)ctx.tb_ptr + counter_vec_off;
+         uint32_t res;

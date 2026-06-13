@@ -1,0 +1,35 @@
+diff --git a/hw/scsi/esp.c b/hw/scsi/esp.c
+index 3eebbf67..806fc4ef 100644
+--- a/hw/scsi/esp.c
++++ b/hw/scsi/esp.c
+@@ -42,6 +42,10 @@
+  * On Macintosh Quadra it is a NCR53C96.
+  */
+ 
++#ifndef C89_BROWSER_QEMU_ESP_PDMA_FIFO_CAPACITY
++#define C89_BROWSER_QEMU_ESP_PDMA_FIFO_CAPACITY ESP_FIFO_SZ
++#endif
++
+ #ifdef C89_BROWSER_QEMU_ESP_TRACE
+ static const char *c89_esp_reg_name(uint32_t reg)
+ {
+@@ -1267,7 +1271,10 @@ uint64_t esp_reg_read(ESPState *s, uint32_t saddr)
+         break;
+      case ESP_RFLAGS:
+         /* Bottom 5 bits indicate number of bytes in FIFO */
+         val = fifo8_num_used(&s->fifo);
++        if (val > ESP_FIFO_SZ) {
++            val = ESP_FIFO_SZ;
++        }
+         break;
+     default:
+         val = s->rregs[saddr];
+@@ -1766,7 +1773,7 @@ static void esp_init(Object *obj)
+ {
+     ESPState *s = ESP(obj);
+ 
+-    fifo8_create(&s->fifo, ESP_FIFO_SZ);
++    fifo8_create(&s->fifo, C89_BROWSER_QEMU_ESP_PDMA_FIFO_CAPACITY);
+     fifo8_create(&s->cmdfifo, ESP_CMDFIFO_SZ);
+ }
+ 

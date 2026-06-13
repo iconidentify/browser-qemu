@@ -1,0 +1,177 @@
+diff --git a/hw/misc/mac_via.c b/hw/misc/mac_via.c
+index b6206ef7..bd5661fc 100644
+--- a/hw/misc/mac_via.c
++++ b/hw/misc/mac_via.c
+@@ -285,6 +285,107 @@
+ #define VIA_TIMER_FREQ (783360)
+ #define VIA_ADB_POLL_FREQ 50 /* XXX: not real */
+ 
++#ifdef C89_BROWSER_QEMU_VIA_TRACE
++static const char *c89_via_reg_name(int addr)
++{
++    switch (addr) {
++    case VIA_REG_B:
++        return "ORB";
++    case VIA_REG_A:
++        return "ORA";
++    case VIA_REG_DIRB:
++        return "DDRB";
++    case VIA_REG_DIRA:
++        return "DDRA";
++    case VIA_REG_T1CL:
++        return "T1CL";
++    case VIA_REG_T1CH:
++        return "T1CH";
++    case VIA_REG_T1LL:
++        return "T1LL";
++    case VIA_REG_T1LH:
++        return "T1LH";
++    case VIA_REG_T2CL:
++        return "T2CL";
++    case VIA_REG_T2CH:
++        return "T2CH";
++    case VIA_REG_SR:
++        return "SR";
++    case VIA_REG_ACR:
++        return "ACR";
++    case VIA_REG_PCR:
++        return "PCR";
++    case VIA_REG_IFR:
++        return "IFR";
++    case VIA_REG_IER:
++        return "IER";
++    case VIA_REG_ANH:
++        return "ANH";
++    default:
++        return "?";
++    }
++}
++
++static void c89_via1_trace_irq_state(const char *source,
++                                     MOS6522Q800VIA1State *v1s,
++                                     MOS6522State *ms,
++                                     bool force)
++{
++    static uint8_t last_ifr = 0xff;
++    static uint8_t last_ier = 0xff;
++    static uint8_t last_active = 0xff;
++    static unsigned log_count;
++    static unsigned unchanged_force_count;
++    uint8_t active = ms->ifr & ms->ier;
++    bool changed = ms->ifr != last_ifr ||
++                   ms->ier != last_ier ||
++                   active != last_active;
++
++    if (!changed && !force) {
++        return;
++    }
++    if (!changed && unchanged_force_count++ > 128) {
++        return;
++    }
++    if (log_count++ > 3000) {
++        return;
++    }
++
++    fprintf(stderr,
++            "[c89-via1-irq] %s ifr=0x%02x ier=0x%02x active=0x%02x "
++            "bits{1s=%d 60hz=%d adb_ready=%d adb_data=%d adb_clk=%d "
++            "t2=%d t1=%d} b=0x%02x sr=0x%02x acr=0x%02x pcr=0x%02x "
++            "last_levels=0x%02x t2_latch=0x%04x t2_counter=0x%04x "
++            "t2_next=%lld state=%d\n",
++            source, ms->ifr, ms->ier, active,
++            !!(active & VIA1_IRQ_ONE_SECOND),
++            !!(active & VIA1_IRQ_60HZ),
++            !!(active & VIA1_IRQ_ADB_READY),
++            !!(active & VIA1_IRQ_ADB_DATA),
++            !!(active & VIA1_IRQ_ADB_CLOCK),
++            !!(active & T2_INT),
++            !!(active & T1_INT),
++            ms->b, ms->sr, ms->acr, ms->pcr, ms->last_irq_levels,
++            ms->timers[1].latch, ms->timers[1].counter_value,
++            (long long)ms->timers[1].next_irq_time,
++            v1s->timer_hack_state);
++
++    last_ifr = ms->ifr;
++    last_ier = ms->ier;
++    last_active = active;
++}
++
++static void c89_via1_trace_rw(const char *op, int addr, uint64_t val,
++                              unsigned size, MOS6522Q800VIA1State *v1s,
++                              MOS6522State *ms)
++{
++    (void)addr;
++    (void)val;
++    (void)size;
++    c89_via1_trace_irq_state(op, v1s, ms, false);
++}
++#endif
++
+ /*
+  * Guide to the Macintosh Family Hardware ch. 12 "Displays" p. 401 gives the
+  * precise 60Hz interrupt frequency as ~60.15Hz with a period of 16625.8 us
+@@ -334,6 +435,9 @@ static void via1_sixty_hz(void *opaque)
+     /* Negative edge trigger */
+     qemu_irq_lower(irq);
+     qemu_irq_raise(irq);
++#ifdef C89_BROWSER_QEMU_VIA_TRACE
++    c89_via1_trace_irq_state("60hz edge", v1s, s, false);
++#endif
+ 
+     via1_sixty_hz_update(v1s);
+ }
+@@ -347,6 +451,9 @@ static void via1_one_second(void *opaque)
+     /* Negative edge trigger */
+     qemu_irq_lower(irq);
+     qemu_irq_raise(irq);
++#ifdef C89_BROWSER_QEMU_VIA_TRACE
++    c89_via1_trace_irq_state("1s edge", v1s, s, false);
++#endif
+ 
+     via1_one_second_update(v1s);
+ }
+@@ -632,6 +739,9 @@ static void adb_via_poll(void *opaque)
+ 
+     trace_via1_adb_poll(*data, (s->b & VIA1B_vADBInt) ? "+" : "-",
+                         adb_bus->status, v1s->adb_data_in_index, olen);
++#ifdef C89_BROWSER_QEMU_VIA_TRACE
++    c89_via1_trace_irq_state("adb_poll", v1s, s, true);
++#endif
+ }
+ 
+ static int adb_via_send_len(uint8_t data)
+@@ -1027,6 +1137,13 @@ static void via1_timer_calibration_hack(MOS6522Q800VIA1State *v1s, int addr,
+     }
+ 
+     if (old_timer_hack_state != v1s->timer_hack_state) {
++#ifdef C89_BROWSER_QEMU_VIA_TRACE
++        fprintf(stderr,
++                "[c89-via1] timer_hack_state %d -> %d via %s=0x%02llx\n",
++                old_timer_hack_state, v1s->timer_hack_state,
++                c89_via_reg_name(addr), (unsigned long long)val);
++        c89_via1_trace_irq_state("timer_hack_state", v1s, MOS6522(v1s), true);
++#endif
+         trace_via1_timer_hack_state(v1s->timer_hack_state);
+     }
+ }
+@@ -1064,6 +1181,9 @@ static uint64_t mos6522_q800_via1_read(void *opaque, hwaddr addr, unsigned size)
+         }
+         break;
+     }
++#ifdef C89_BROWSER_QEMU_VIA_TRACE
++    c89_via1_trace_rw("read", addr, ret, size, s, ms);
++#endif
+     return ret;
+ }
+ 
+@@ -1079,6 +1199,10 @@ static void mos6522_q800_via1_write(void *opaque, hwaddr addr, uint64_t val,
+ 
+     via1_timer_calibration_hack(v1s, addr, val, size);
+ 
++#ifdef C89_BROWSER_QEMU_VIA_TRACE
++    c89_via1_trace_rw("write", addr, val, size, v1s, ms);
++#endif
++
+     mos6522_write(ms, addr, val, size);
+ 
+     switch (addr) {

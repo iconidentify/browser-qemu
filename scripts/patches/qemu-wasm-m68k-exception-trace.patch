@@ -1,0 +1,187 @@
+--- a/target/m68k/op_helper.c
++++ b/target/m68k/op_helper.c
+@@ -177,6 +177,48 @@ static const char *m68k_exception_name(int index)
+     return "Unassigned";
+ }
+ 
++#ifdef C89_BROWSER_QEMU_M68K_EXC_TRACE
++static void c89_browser_qemu_m68k_exc_trace(CPUM68KState *env, CPUState *cs,
++                                            const char *where, uint32_t sp)
++{
++    uint32_t sr = env->sr | cpu_m68k_get_ccr(env);
++
++    fprintf(stderr,
++            "[c89-m68k-exc] %s idx=%d name=\"%s\" pc=0x%08x sp=0x%08x "
++            "sr=0x%04x mmu_fault=%d ar=0x%08x ssw=0x%04x tcr=0x%04x "
++            "urp=0x%08x srp=0x%08x vbr=0x%08x pending_level=%u "
++            "pending_vector=0x%02x\n",
++            where, cs->exception_index,
++            m68k_exception_name(cs->exception_index), env->pc, sp, sr,
++            env->mmu.fault ? 1 : 0, env->mmu.ar, env->mmu.ssw,
++            env->mmu.tcr, env->mmu.urp, env->mmu.srp, env->vbr,
++            env->pending_level, env->pending_vector);
++    fflush(stderr);
++}
++
++static void c89_browser_qemu_m68k_frame_store_trace(CPUM68KState *env,
++                                                    const char *label,
++                                                    uint32_t sp,
++                                                    unsigned bits,
++                                                    uint32_t value)
++{
++    fprintf(stderr,
++            "[c89-m68k-exc] frame-store label=%s pc=0x%08x addr=0x%08x "
++            "bits=%u value=0x%08x ar=0x%08x ssw=0x%04x srp=0x%08x "
++            "urp=0x%08x mmu_fault=%d\n",
++            label, env->pc, sp, bits, value, env->mmu.ar, env->mmu.ssw,
++            env->mmu.srp, env->mmu.urp, env->mmu.fault ? 1 : 0);
++    fflush(stderr);
++}
++#define C89_M68K_EXC_TRACE(where, sp) \
++    c89_browser_qemu_m68k_exc_trace(env, cs, where, sp)
++#define C89_M68K_FRAME_STORE_TRACE(label, sp, bits, value) \
++    c89_browser_qemu_m68k_frame_store_trace(env, label, sp, bits, value)
++#else
++#define C89_M68K_EXC_TRACE(where, sp) do { } while (0)
++#define C89_M68K_FRAME_STORE_TRACE(label, sp, bits, value) do { } while (0)
++#endif
++
+ static void cf_interrupt_all(CPUM68KState *env, int is_hw)
+ {
+     CPUState *cs = env_cpu(env);
+@@ -305,7 +347,8 @@ static void m68k_interrupt_all(CPUM68KState *env, int is_hw)
+         qemu_log("INT %6d: %s(%#x) pc=%08x sp=%08x sr=%04x\n",
+                  ++count, m68k_exception_name(cs->exception_index),
+                  vector, env->pc, env->aregs[7], sr);
+     }
++    C89_M68K_EXC_TRACE(is_hw ? "entry-hw" : "entry-sw", env->aregs[7]);
+ 
+     /*
+      * MC68040UM/AD,  chapter 9.3.10
+@@ -331,57 +374,76 @@ static void m68k_interrupt_all(CPUM68KState *env, int is_hw)
+     switch (cs->exception_index) {
+     case EXCP_ACCESS:
+         if (env->mmu.fault) {
++            C89_M68K_EXC_TRACE("double-access-before-abort", sp);
+             cpu_abort(cs, "DOUBLE MMU FAULT\n");
+         }
+         env->mmu.fault = true;
++        C89_M68K_EXC_TRACE("access-frame-begin", sp);
+         /* push data 3 */
+         sp -= 4;
++        C89_M68K_FRAME_STORE_TRACE("data3", sp, 32, 0);
+         cpu_stl_mmuidx_ra(env, sp, 0, MMU_KERNEL_IDX, 0);
+         /* push data 2 */
+         sp -= 4;
++        C89_M68K_FRAME_STORE_TRACE("data2", sp, 32, 0);
+         cpu_stl_mmuidx_ra(env, sp, 0, MMU_KERNEL_IDX, 0);
+         /* push data 1 */
+         sp -= 4;
++        C89_M68K_FRAME_STORE_TRACE("data1", sp, 32, 0);
+         cpu_stl_mmuidx_ra(env, sp, 0, MMU_KERNEL_IDX, 0);
+         /* write back 1 / push data 0 */
+         sp -= 4;
++        C89_M68K_FRAME_STORE_TRACE("data0", sp, 32, 0);
+         cpu_stl_mmuidx_ra(env, sp, 0, MMU_KERNEL_IDX, 0);
+         /* write back 1 address */
+         sp -= 4;
++        C89_M68K_FRAME_STORE_TRACE("wb1-address", sp, 32, 0);
+         cpu_stl_mmuidx_ra(env, sp, 0, MMU_KERNEL_IDX, 0);
+         /* write back 2 data */
+         sp -= 4;
++        C89_M68K_FRAME_STORE_TRACE("wb2-data", sp, 32, 0);
+         cpu_stl_mmuidx_ra(env, sp, 0, MMU_KERNEL_IDX, 0);
+         /* write back 2 address */
+         sp -= 4;
++        C89_M68K_FRAME_STORE_TRACE("wb2-address", sp, 32, 0);
+         cpu_stl_mmuidx_ra(env, sp, 0, MMU_KERNEL_IDX, 0);
+         /* write back 3 data */
+         sp -= 4;
++        C89_M68K_FRAME_STORE_TRACE("wb3-data", sp, 32, 0);
+         cpu_stl_mmuidx_ra(env, sp, 0, MMU_KERNEL_IDX, 0);
+         /* write back 3 address */
+         sp -= 4;
++        C89_M68K_FRAME_STORE_TRACE("wb3-address", sp, 32, env->mmu.ar);
+         cpu_stl_mmuidx_ra(env, sp, env->mmu.ar, MMU_KERNEL_IDX, 0);
+         /* fault address */
+         sp -= 4;
++        C89_M68K_FRAME_STORE_TRACE("fault-address", sp, 32, env->mmu.ar);
+         cpu_stl_mmuidx_ra(env, sp, env->mmu.ar, MMU_KERNEL_IDX, 0);
+         /* write back 1 status */
+         sp -= 2;
++        C89_M68K_FRAME_STORE_TRACE("wb1-status", sp, 16, 0);
+         cpu_stw_mmuidx_ra(env, sp, 0, MMU_KERNEL_IDX, 0);
+         /* write back 2 status */
+         sp -= 2;
++        C89_M68K_FRAME_STORE_TRACE("wb2-status", sp, 16, 0);
+         cpu_stw_mmuidx_ra(env, sp, 0, MMU_KERNEL_IDX, 0);
+         /* write back 3 status */
+         sp -= 2;
++        C89_M68K_FRAME_STORE_TRACE("wb3-status", sp, 16, 0);
+         cpu_stw_mmuidx_ra(env, sp, 0, MMU_KERNEL_IDX, 0);
+         /* special status word */
+         sp -= 2;
++        C89_M68K_FRAME_STORE_TRACE("ssw", sp, 16, env->mmu.ssw);
+         cpu_stw_mmuidx_ra(env, sp, env->mmu.ssw, MMU_KERNEL_IDX, 0);
+         /* effective address */
+         sp -= 4;
++        C89_M68K_FRAME_STORE_TRACE("effective-address", sp, 32, env->mmu.ar);
+         cpu_stl_mmuidx_ra(env, sp, env->mmu.ar, MMU_KERNEL_IDX, 0);
+ 
++        C89_M68K_EXC_TRACE("access-before-format7-frame", sp);
+         do_stack_frame(env, &sp, 7, oldsr, 0, env->pc);
+         env->mmu.fault = false;
++        C89_M68K_EXC_TRACE("access-frame-complete", sp);
+         if (qemu_loglevel_mask(CPU_LOG_INT)) {
+             qemu_log("            "
+                      "ssw:  %08x ea:   %08x sfc:  %d    dfc: %d\n",
+@@ -425,8 +487,10 @@ static void m68k_interrupt_all(CPUM68KState *env, int is_hw)
+     }
+ 
+     env->aregs[7] = sp;
++    C89_M68K_EXC_TRACE("before-vector-fetch", sp);
+     /* Jump to vector.  */
+     env->pc = cpu_ldl_mmuidx_ra(env, env->vbr + vector, MMU_KERNEL_IDX, 0);
++    C89_M68K_EXC_TRACE("after-vector-fetch", env->aregs[7]);
+ }
+ 
+ static void do_interrupt_all(CPUM68KState *env, int is_hw)
+@@ -504,6 +568,17 @@ void m68k_cpu_transaction_failed(CPUState *cs, hwaddr physaddr, vaddr addr,
+         }
+ 
+         env->mmu.ar = addr;
++#ifdef C89_BROWSER_QEMU_M68K_EXC_TRACE
++        fprintf(stderr,
++                "[c89-m68k-exc] transaction-failed pc=0x%08x addr=0x%08x "
++                "phys=0x%llx size=%u access=%d mmu_idx=%d response=%d "
++                "ssw=0x%04x sr=0x%04x ar=0x%08x fault=%d retaddr=0x%llx\n",
++                env->pc, (uint32_t)addr, (unsigned long long)physaddr,
++                size, access_type, mmu_idx, response, env->mmu.ssw,
++                env->sr | cpu_m68k_get_ccr(env), env->mmu.ar,
++                env->mmu.fault ? 1 : 0, (unsigned long long)retaddr);
++        fflush(stderr);
++#endif
+ 
+         cs->exception_index = EXCP_ACCESS;
+         cpu_loop_exit(cs);
+--- a/target/m68k/helper.c
++++ b/target/m68k/helper.c
+@@ -1162,6 +1162,18 @@ bool m68k_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
+ 
+     cs->exception_index = EXCP_ACCESS;
+     env->mmu.ar = address;
++#ifdef C89_BROWSER_QEMU_M68K_EXC_TRACE
++    fprintf(stderr,
++            "[c89-m68k-exc] tlb-fill-fault pc=0x%08x addr=0x%08x "
++            "size=%d qemu_access=%d mmu_idx=%d ret=%d prot=0x%x "
++            "ssw=0x%04x sr=0x%04x tcr=0x%04x srp=0x%08x urp=0x%08x "
++            "fault=%d retaddr=0x%llx\n",
++            env->pc, (uint32_t)address, size, qemu_access_type, mmu_idx,
++            ret, prot, env->mmu.ssw, env->sr | cpu_m68k_get_ccr(env),
++            env->mmu.tcr, env->mmu.srp, env->mmu.urp,
++            env->mmu.fault ? 1 : 0, (unsigned long long)retaddr);
++    fflush(stderr);
++#endif
+     cpu_loop_exit_restore(cs, retaddr);
+ }
+ #endif /* !CONFIG_USER_ONLY */

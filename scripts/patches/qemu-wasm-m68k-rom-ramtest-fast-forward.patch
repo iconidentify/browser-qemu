@@ -1,0 +1,160 @@
+diff --git a/accel/tcg/cpu-exec.c b/accel/tcg/cpu-exec.c
+index 1f6189af83..719517e109 100644
+--- a/accel/tcg/cpu-exec.c
++++ b/accel/tcg/cpu-exec.c
+@@ -36,6 +36,10 @@
+ #include "tb-context.h"
+ #include "internal-common.h"
+ #include "internal-target.h"
++#ifdef C89_BROWSER_QEMU_ROM_RAMTEST_HACK
++bool c89_browser_qemu_m68k_rom_ramtest_fast_forward(CPUArchState *env);
++#endif
++
+ 
+ /* -icount align implementation. */
+ 
+@@ -407,6 +411,11 @@ const void *HELPER(lookup_tb_ptr)(CPUArchState *env)
+     uint64_t cs_base;
+     uint32_t flags, cflags;
+ 
++#ifdef C89_BROWSER_QEMU_ROM_RAMTEST_HACK
++    if (c89_browser_qemu_m68k_rom_ramtest_fast_forward(env)) {
++        return tcg_code_gen_epilogue;
++    }
++#endif
+     cpu_get_tb_cpu_state(env, &pc, &cs_base, &flags);
+ 
+     cflags = curr_cflags(cpu);
+@@ -951,7 +960,15 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
+             vaddr pc;
+             uint64_t cs_base;
+             uint32_t flags, cflags;
++            CPUArchState *env = cpu_env(cpu);
++
++#ifdef C89_BROWSER_QEMU_ROM_RAMTEST_HACK
++            if (c89_browser_qemu_m68k_rom_ramtest_fast_forward(env)) {
++                last_tb = NULL;
++                continue;
++            }
++#endif
+ 
+-            cpu_get_tb_cpu_state(cpu_env(cpu), &pc, &cs_base, &flags);
++            cpu_get_tb_cpu_state(env, &pc, &cs_base, &flags);
+ 
+             /*
+              * When requested, use an exact setting for cflags for the next
+diff --git a/target/m68k/cpu.h b/target/m68k/cpu.h
+index 5444c4f9d2..371e011948 100644
+--- a/target/m68k/cpu.h
++++ b/target/m68k/cpu.h
+@@ -608,6 +608,10 @@ void m68k_cpu_transaction_failed(CPUState *cs, hwaddr physaddr, vaddr addr,
+ #define TB_FLAGS_TRACE          16
+ #define TB_FLAGS_TRACE_BIT      (1 << TB_FLAGS_TRACE)
+ 
++#ifdef C89_BROWSER_QEMU_ROM_RAMTEST_HACK
++bool c89_browser_qemu_m68k_rom_ramtest_fast_forward(CPUM68KState *env);
++#endif
++
+ static inline void cpu_get_tb_cpu_state(CPUM68KState *env, vaddr *pc,
+                                         uint64_t *cs_base, uint32_t *flags)
+ {
+diff --git a/target/m68k/helper.c b/target/m68k/helper.c
+index 2d49228b92..2cb206fbff 100644
+--- a/target/m68k/helper.c
++++ b/target/m68k/helper.c
+@@ -26,6 +26,95 @@
+ 
+ #define SIGNBIT (1u << 31)
+ 
++#ifdef C89_BROWSER_QEMU_ROM_RAMTEST_HACK
++bool c89_browser_qemu_m68k_rom_ramtest_fast_forward(CPUM68KState *env)
++{
++    static bool reported;
++#ifdef C89_BROWSER_QEMU_ROM_DELAY_HACK
++    static bool delay_reported;
++#endif
++    uint32_t pc = env->pc;
++    uint32_t ram_top = env->aregs[4];
++    uint32_t ret = env->aregs[6];
++
++#ifdef C89_BROWSER_QEMU_ROM_DELAY_HACK
++    /*
++     * C89 browser-qemu: the Quadra ROM has a tiny VIA Timer 2 delay helper:
++     *
++     *   408008bc  lea     0x1c00(a1),a0
++     *   408008c0  move.b  d1,0x1000(a1)  ; VIA1 T2CL
++     *   408008c4  move.b  d2,0x1200(a1)  ; VIA1 T2CH
++     *   408008ca  btst    #0,(a0)        ; VIA1 IER mirror
++     *   408008ce  dbra    d0,408008ca
++     *   408008d2  jmp     (a2)
++     *
++     * The bit test does not control the branch; DBRA ignores flags. Native
++     * QEMU burns through the calibrated delay quickly, but wasm32 TCI can
++     * spend minutes here before ESP/SCSI is even touched. Shorten only this
++     * ROM helper when its continuation is still inside the Quadra ROM.
++     */
++    if (pc >= 0x408008c0 && pc <= 0x408008c8 &&
++        env->aregs[2] >= 0x40800000 && env->aregs[2] < 0x40900000 &&
++        env->aregs[1] >= 0x50000000 && env->aregs[1] < 0x54000000 &&
++        (env->aregs[1] & 0x0003ffff) == 0x00000000) {
++        env->dregs[0] &= 0xffff0000;
++        if (!delay_reported) {
++            qemu_printf("C89 browser-qemu: shortened Quadra ROM VIA delay at "
++                        "pc=0x%08x return=0x%08x a1=0x%08x d0=0x%08x\n",
++                        pc, env->aregs[2], env->aregs[1], env->dregs[0]);
++            delay_reported = true;
++        }
++        return false;
++    }
++    if (pc >= 0x408008ca && pc <= 0x408008d2 &&
++        env->aregs[2] >= 0x40800000 && env->aregs[2] < 0x40900000 &&
++        env->aregs[0] >= 0x50000000 && env->aregs[0] < 0x54000000 &&
++        (env->aregs[0] & 0x0003ffff) == 0x00001c00) {
++        env->dregs[0] |= 0x0000ffff;
++        env->pc = env->aregs[2];
++        if (!delay_reported) {
++            qemu_printf("C89 browser-qemu: skipped Quadra ROM VIA delay at "
++                        "pc=0x%08x return=0x%08x a0=0x%08x d0=0x%08x\n",
++                        pc, env->aregs[2], env->aregs[0], env->dregs[0]);
++            delay_reported = true;
++        }
++        return true;
++    }
++#endif
++
++    if (pc < 0x408477de || pc > 0x408479dc) {
++        return false;
++    }
++    if (ret < 0x40800000 || ret >= 0x40900000) {
++        return false;
++    }
++    if (ram_top < 0x00ffff00 || ram_top > 0x08000000 ||
++        (ram_top & 0xff) != 0xac) {
++        return false;
++    }
++
++    /*
++     * C89 browser-qemu: no-audio browser boot probe helper.
++     *
++     * The Quadra ROM's destructive RAM test writes and then XOR-walks all
++     * RAM before disk boot. On the wasm32 fallback TCG path this dominates
++     * startup and can starve browser control. Fast-forward only this ROM
++     * subroutine, leave desktop QEMU and non-browser builds untouched, and
++     * report success through D6 as the ROM's own test does.
++     */
++    env->dregs[6] = 0;
++    env->aregs[2] = ram_top;
++    env->pc = ret;
++    if (!reported) {
++        qemu_printf("C89 browser-qemu: skipped Quadra ROM RAM test at "
++                    "pc=0x%08x top=0x%08x return=0x%08x d7=0x%08x\n",
++                    pc, ram_top, ret, env->dregs[7]);
++        reported = true;
++    }
++    return true;
++}
++#endif
++
+ /* Sort alphabetically, except for "any". */
+ static gint m68k_cpu_list_compare(gconstpointer a, gconstpointer b)
+ {

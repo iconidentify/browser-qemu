@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>C89 A/UX Browser QEMU</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>C89 A/UX Browser QEMU</h1>
+        <p>Quadra 800 WebAssembly prototype</p>
+      </div>
+      <div class="status-row" aria-label="Runtime status">
+        <span id="isolationStatus" class="status">Isolation unknown</span>
+        <span id="qemuStatus" class="status">QEMU not loaded</span>
+        <span id="netStatus" class="status">Network offline</span>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <section id="displayPanel" class="display-panel" aria-label="Framebuffer">
+        <canvas id="canvas" width="1152" height="870" tabindex="0"></canvas>
+        <div class="display-toolbar">
+          <button id="captureKeys" type="button">Capture keyboard</button>
+          <button id="capturePointer" type="button">Pointer lock</button>
+          <button id="fullscreenDisplay" type="button">Fullscreen</button>
+          <button id="clearSerial" type="button">Clear serial</button>
+        </div>
+      </section>
+
+      <aside class="control-panel">
+        <section>
+          <h2>Boot</h2>
+          <label>
+            ROM
+            <input id="romFile" type="file" accept=".rom,.bin,application/octet-stream">
+          </label>
+          <label>
+            A/UX disk
+            <input id="diskFile" type="file" accept=".img,.raw,.dsk,.qcow2,application/octet-stream">
+          </label>
+          <label>
+            HFS disk
+            <input id="disk2File" type="file" accept=".img,.raw,.dsk,.qcow2,application/octet-stream">
+          </label>
+          <label>
+            PRAM
+            <input id="pramFile" type="file" accept=".img,.raw,.bin,application/octet-stream">
+          </label>
+          <label class="inline-check boot-option">
+            <input id="paceCpu" type="checkbox" checked>
+            Pace CPU
+          </label>
+          <label>
+            RAM
+            <select id="ramSize">
+              <option value="16" selected>16 MB</option>
+              <option value="32">32 MB</option>
+              <option value="64">64 MB</option>
+              <option value="128">128 MB</option>
+            </select>
+          </label>
+          <div class="button-row">
+            <button id="planBoot" type="button">Plan boot</button>
+            <button id="loadRuntime" type="button">Check bundle</button>
+            <button id="startSmoke" type="button" disabled>Start smoke</button>
+            <button id="startLazy" type="button" disabled>Start lazy pulse</button>
+            <button id="startLazyPaused" type="button" disabled>Start lazy paused</button>
+            <button id="startQemu" type="button" disabled>Start</button>
+            <button id="resetQemu" type="button" disabled>Reset</button>
+          </div>
+        </section>
+
+        <section>
+          <h2>Network</h2>
+          <label>
+            WebSocket
+            <input id="wsUrl" type="url" value="ws://127.0.0.1:9999/aux0" spellcheck="false">
+          </label>
+          <div class="button-row">
+            <button id="connectNet" type="button">Connect</button>
+            <button id="disconnectNet" type="button" disabled>Disconnect</button>
+          </div>
+        </section>
+
+        <section>
+          <h2>Input</h2>
+          <dl class="metrics">
+            <div>
+              <dt>Last key</dt>
+              <dd id="lastKey">none</dd>
+            </div>
+            <div>
+              <dt>Mouse</dt>
+              <dd id="mouseMetric">0, 0</dd>
+            </div>
+            <div>
+              <dt>Capture</dt>
+              <dd id="captureMetric">off</dd>
+            </div>
+            <div>
+              <dt>UI heartbeat</dt>
+              <dd id="heartbeatMetric">0</dd>
+            </div>
+            <div>
+              <dt>Events</dt>
+              <dd id="eventMetric">0 key / 0 mouse</dd>
+            </div>
+            <div>
+              <dt>Disks</dt>
+              <dd id="diskMetric">none</dd>
+            </div>
+            <div>
+              <dt>Disk I/O</dt>
+              <dd id="diskIoMetric">none</dd>
+            </div>
+            <div>
+              <dt>Framebuffer</dt>
+              <dd id="frameMetric">not sampled</dd>
+            </div>
+            <div>
+              <dt>CPU</dt>
+              <dd id="cpuMetric">no registers</dd>
+            </div>
+          </dl>
+          <div class="button-row input-actions">
+            <button id="sendHmpA" type="button" disabled>HMP A</button>
+            <button id="sendHmpReturn" type="button" disabled>HMP Return</button>
+            <button id="sendHmpHelp" type="button" disabled>HMP Help</button>
+            <button id="sendHmpStatus" type="button" disabled>HMP Status</button>
+            <button id="sendHmpCont" type="button" disabled>HMP Cont</button>
+            <button id="sendHmpStop" type="button" disabled>HMP Stop</button>
+            <button id="runFor1s" type="button" disabled>Run 1s</button>
+            <button id="runFor2s" type="button" disabled>Run 2s</button>
+            <button id="runFor5s" type="button" disabled>Run 5s</button>
+            <button id="runFor10s" type="button" disabled>Run 10s</button>
+            <button id="runFor30s" type="button" disabled>Run 30s</button>
+            <button id="runFor60s" type="button" disabled>Run 60s</button>
+            <button id="pulseRun30s" type="button" disabled>Pulse 30s</button>
+            <button id="pulseRunOff" type="button" disabled>Pulse off</button>
+            <button id="inputSelfTest" type="button">Input self-test</button>
+            <button id="runRomProbe" type="button">ROM 5s probe</button>
+            <button id="probeSnapshot" type="button">Probe snapshot</button>
+          </div>
+          <form id="hmpForm" class="hmp-form">
+            <label>
+              HMP command
+              <input id="hmpCommand" type="text" value="info registers" spellcheck="false" autocomplete="off">
+            </label>
+            <div class="button-row">
+              <button id="sendHmpCommand" type="submit" disabled>Send HMP</button>
+              <label class="inline-check">
+                <input id="hmpReturnToGuest" type="checkbox">
+                return to guest
+              </label>
+            </div>
+          </form>
+        </section>
+
+        <section>
+          <h2>Diagnostics</h2>
+          <pre id="probeLog" class="probe-log"></pre>
+        </section>
+      </aside>
+    </main>
+
+    <section class="serial-panel" aria-label="Serial console">
+      <h2>Serial</h2>
+      <pre id="serialLog"></pre>
+    </section>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

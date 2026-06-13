@@ -1,0 +1,27 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>QEMU module syntax probe</title>
+<pre id="log">probe starting</pre>
+<script>
+  const logNode = document.getElementById("log");
+  function log(line) {
+    logNode.textContent += "\n" + line;
+  }
+
+  window.addEventListener("error", (event) => {
+    const location = event.filename ? ` at ${event.filename}:${event.lineno || 0}:${event.colno || 0}` : "";
+    log(`window error: ${event.message || "unknown"}${location}`);
+  });
+
+  window.addEventListener("unhandledrejection", (event) => {
+    const reason = event.reason || {};
+    log(`unhandled rejection: ${reason.stack || reason.message || String(reason)}`);
+  });
+
+  const script = document.createElement("script");
+  script.type = "module";
+  script.src = `./qemu-lazy/out.js?syntaxProbe=${Date.now()}`;
+  script.onload = () => log("module script loaded");
+  script.onerror = () => log("module script error event");
+  document.head.appendChild(script);
+</script>

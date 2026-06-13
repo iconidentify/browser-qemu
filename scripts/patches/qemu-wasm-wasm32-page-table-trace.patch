@@ -1,0 +1,93 @@
+diff --git a/tcg/wasm32.c b/tcg/wasm32.c
+index a3f3b8a2f0..fe5c3c7d9a 100644
+--- a/tcg/wasm32.c
++++ b/tcg/wasm32.c
+@@ -669,6 +669,61 @@ static void c89_browser_qemu_wasm32_tci_st_fast(uint64_t target_addr,
+     }
+ }
+ 
++#ifdef C89_BROWSER_QEMU_WASM32_PGTABLE_TRACE
++static bool c89_browser_qemu_wasm32_pgt_addr(uint64_t taddr)
++{
++    return taddr >= 0x00ffa000 && taddr < 0x01000000;
++}
++
++static bool c89_browser_qemu_wasm32_pgt_root_addr(uint64_t taddr)
++{
++    return taddr >= 0x00fffa00 && taddr < 0x00fffb00;
++}
++
++static void c89_browser_qemu_wasm32_pgt_trace(CPUArchState *env,
++                                               const char *op,
++                                               uint64_t taddr,
++                                               uint64_t target_addr,
++                                               uint64_t val,
++                                               MemOp mop,
++                                               bool fast)
++{
++    static unsigned log_count;
++    uint32_t mem32be = 0;
++    bool is_store = op[0] == 's';
++
++    if (!c89_browser_qemu_wasm32_pgt_addr(taddr)) {
++        return;
++    }
++    if (is_store && val == 0 && !c89_browser_qemu_wasm32_pgt_root_addr(taddr)) {
++        return;
++    }
++    if (log_count >= 5000) {
++        return;
++    }
++
++    if (target_addr != 0 && (taddr & 3) == 0) {
++        mem32be = ldl_be_p((const void *)(uintptr_t)target_addr);
++    }
++
++    log_count++;
++    fprintf(stderr,
++            "[c89-wasm32-pgt] n=%u op=%s pc=0x%08x taddr=0x%08llx "
++            "target=0x%08llx val=0x%08llx mop=0x%x size=%u be=%d "
++            "fast=%d mem32be=0x%08x\n",
++            log_count, op, env->pc, (unsigned long long)taddr,
++            (unsigned long long)target_addr, (unsigned long long)val,
++            mop, (unsigned)(mop & MO_SIZE), memop_big_endian(mop),
++            fast, mem32be);
++    fflush(stderr);
++}
++#define C89_WASM32_PGT_TRACE(env, op, taddr, target_addr, val, mop, fast) \
++    c89_browser_qemu_wasm32_pgt_trace(env, op, taddr, target_addr, val, mop, fast)
++#else
++#define C89_WASM32_PGT_TRACE(env, op, taddr, target_addr, val, mop, fast) \
++    do { } while (0)
++#endif
++
+ static uint64_t tci_qemu_ld(CPUArchState *env, uint64_t taddr,
+                             MemOpIdx oi, const void *tb_ptr, uint64_t* ptr)
+ {
+@@ -679,7 +730,9 @@ static uint64_t tci_qemu_ld(CPUArchState *env, uint64_t taddr,
+ 
+     uint64_t target_addr = tlb_load(env, taddr, mop, ptr, true);
+     if (target_addr != 0) {
+-        return c89_browser_qemu_wasm32_tci_ld_fast(target_addr, mop);
++        uint64_t val = c89_browser_qemu_wasm32_tci_ld_fast(target_addr, mop);
++        C89_WASM32_PGT_TRACE(env, "ld-fast", taddr, target_addr, val, mop, true);
++        return val;
+     }
+ 
+     switch (mop & MO_SSIZE) {
+@@ -711,6 +764,7 @@ static void tci_qemu_st(CPUArchState *env, uint64_t taddr, uint64_t val,
+     uint64_t target_addr = tlb_load(env, taddr, mop, ptr, false);
+     if (target_addr != 0) {
+         c89_browser_qemu_wasm32_tci_st_fast(target_addr, val, mop);
++        C89_WASM32_PGT_TRACE(env, "st-fast", taddr, target_addr, val, mop, true);
+         return;
+     }
+     
+@@ -728,6 +782,7 @@ static void tci_qemu_st(CPUArchState *env, uint64_t taddr, uint64_t val,
+     default:
+         g_assert_not_reached();
+     }
++    C89_WASM32_PGT_TRACE(env, "st-slow", taddr, 0, val, mop, false);
+ }
+ 
+ #if TCG_TARGET_REG_BITS == 64

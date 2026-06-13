@@ -1,0 +1,120 @@
+--- a/target/m68k/helper.c
++++ b/target/m68k/helper.c
+@@ -67,6 +67,33 @@ bool c89_browser_qemu_m68k_rom_ramtest_fast_forward(CPUM68KState *env)
+ }
+ #endif
+ 
++#ifdef C89_BROWSER_QEMU_M68K_MOVEC_TLB_FLUSH
++static void c89_browser_qemu_m68k_mmu_control_flush(CPUM68KState *env,
++                                                     uint32_t reg,
++                                                     uint32_t old_val,
++                                                     uint32_t new_val)
++{
++    if (old_val == new_val) {
++        return;
++    }
++
++    tlb_flush(env_cpu(env));
++#ifdef C89_BROWSER_QEMU_M68K_TB_TRACE
++    fprintf(stderr,
++            "[c89-m68k-movec-flush] pc=0x%08x reg=0x%03x "
++            "old=0x%08x new=0x%08x tcr=0x%04x srp=0x%08x urp=0x%08x\n",
++            env->pc, reg, old_val, new_val,
++            env->mmu.tcr, env->mmu.srp, env->mmu.urp);
++    fflush(stderr);
++#endif
++}
++#define C89_M68K_MOVEC_MMU_CONTROL_FLUSH(env, reg, old_val, new_val) \
++    c89_browser_qemu_m68k_mmu_control_flush(env, reg, old_val, new_val)
++#else
++#define C89_M68K_MOVEC_MMU_CONTROL_FLUSH(env, reg, old_val, new_val) \
++    do { } while (0)
++#endif
++
+ #ifdef C89_BROWSER_QEMU_M68K_PC_TRACE
+ static const char *c89_browser_qemu_m68k_pc_phase(uint32_t pc)
+ {
+@@ -344,7 +370,11 @@ void HELPER(m68k_movec_to)(CPUM68KState *env, uint32_t reg, uint32_t val)
+     case M68K_CR_TC:
+         if (m68k_feature(env, M68K_FEATURE_M68040)
+          || m68k_feature(env, M68K_FEATURE_M68060)) {
++            uint32_t old_tcr = env->mmu.tcr;
++
+             env->mmu.tcr = val;
++            C89_M68K_MOVEC_MMU_CONTROL_FLUSH(env, reg, old_tcr,
++                                             env->mmu.tcr);
+             return;
+         }
+         break;
+@@ -359,7 +389,11 @@ void HELPER(m68k_movec_to)(CPUM68KState *env, uint32_t reg, uint32_t val)
+     case M68K_CR_SRP:
+         if (m68k_feature(env, M68K_FEATURE_M68040)
+          || m68k_feature(env, M68K_FEATURE_M68060)) {
++            uint32_t old_srp = env->mmu.srp;
++
+             env->mmu.srp = val;
++            C89_M68K_MOVEC_MMU_CONTROL_FLUSH(env, reg, old_srp,
++                                             env->mmu.srp);
+             return;
+         }
+         break;
+@@ -367,7 +401,11 @@ void HELPER(m68k_movec_to)(CPUM68KState *env, uint32_t reg, uint32_t val)
+     case M68K_CR_URP:
+         if (m68k_feature(env, M68K_FEATURE_M68040)
+          || m68k_feature(env, M68K_FEATURE_M68060)) {
++            uint32_t old_urp = env->mmu.urp;
++
+             env->mmu.urp = val;
++            C89_M68K_MOVEC_MMU_CONTROL_FLUSH(env, reg, old_urp,
++                                             env->mmu.urp);
+             return;
+         }
+         break;
+@@ -397,7 +435,11 @@ void HELPER(m68k_movec_to)(CPUM68KState *env, uint32_t reg, uint32_t val)
+     /* MC68040/MC68LC040 */
+     case M68K_CR_ITT0: /* MC68EC040 only: M68K_CR_IACR0 */
+         if (m68k_feature(env, M68K_FEATURE_M68040)) {
++            uint32_t old_ttr = env->mmu.ttr[M68K_ITTR0];
++
+             env->mmu.ttr[M68K_ITTR0] = val;
++            C89_M68K_MOVEC_MMU_CONTROL_FLUSH(env, reg, old_ttr,
++                                             env->mmu.ttr[M68K_ITTR0]);
+             return;
+         }
+         break;
+@@ -405,7 +447,11 @@ void HELPER(m68k_movec_to)(CPUM68KState *env, uint32_t reg, uint32_t val)
+     /* MC68040/MC68LC040 */
+     case M68K_CR_ITT1: /* MC68EC040 only: M68K_CR_IACR1 */
+         if (m68k_feature(env, M68K_FEATURE_M68040)) {
++            uint32_t old_ttr = env->mmu.ttr[M68K_ITTR1];
++
+             env->mmu.ttr[M68K_ITTR1] = val;
++            C89_M68K_MOVEC_MMU_CONTROL_FLUSH(env, reg, old_ttr,
++                                             env->mmu.ttr[M68K_ITTR1]);
+             return;
+         }
+         break;
+@@ -413,7 +459,11 @@ void HELPER(m68k_movec_to)(CPUM68KState *env, uint32_t reg, uint32_t val)
+     /* MC68040/MC68LC040 */
+     case M68K_CR_DTT0: /* MC68EC040 only: M68K_CR_DACR0 */
+         if (m68k_feature(env, M68K_FEATURE_M68040)) {
++            uint32_t old_ttr = env->mmu.ttr[M68K_DTTR0];
++
+             env->mmu.ttr[M68K_DTTR0] = val;
++            C89_M68K_MOVEC_MMU_CONTROL_FLUSH(env, reg, old_ttr,
++                                             env->mmu.ttr[M68K_DTTR0]);
+             return;
+         }
+         break;
+@@ -421,7 +471,11 @@ void HELPER(m68k_movec_to)(CPUM68KState *env, uint32_t reg, uint32_t val)
+     /* MC68040/MC68LC040 */
+     case M68K_CR_DTT1: /* MC68EC040 only: M68K_CR_DACR1 */
+         if (m68k_feature(env, M68K_FEATURE_M68040)) {
++            uint32_t old_ttr = env->mmu.ttr[M68K_DTTR1];
++
+             env->mmu.ttr[M68K_DTTR1] = val;
++            C89_M68K_MOVEC_MMU_CONTROL_FLUSH(env, reg, old_ttr,
++                                             env->mmu.ttr[M68K_DTTR1]);
+             return;
+         }
+         break;

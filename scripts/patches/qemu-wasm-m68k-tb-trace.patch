@@ -1,0 +1,227 @@
+--- a/accel/tcg/cpu-exec.c
++++ b/accel/tcg/cpu-exec.c
+@@ -47,7 +47,110 @@
+ #ifdef C89_BROWSER_QEMU_ROM_RAMTEST_HACK
+ bool c89_browser_qemu_m68k_rom_ramtest_fast_forward(CPUArchState *env);
+ #endif
+ 
++#ifdef C89_BROWSER_QEMU_M68K_TB_TRACE
++static const char *c89_browser_qemu_m68k_tb_phase(uint32_t pc)
++{
++    if (pc >= 0x40881000 && pc <= 0x40883000) {
++        return "rom-late-loop";
++    }
++    if (pc >= 0x40800000 && pc <= 0x40802000) {
++        return "rom-low-window";
++    }
++    if (pc >= 0x40800000 && pc < 0x40900000) {
++        return "quadra-rom";
++    }
++    if (pc < 0x01000000) {
++        return "low-memory";
++    }
++    return "other";
++}
++
++static bool c89_browser_qemu_m68k_tb_watch_pc(uint32_t pc)
++{
++    return (pc >= 0x40881000 && pc <= 0x40883000) ||
++           (pc >= 0x40800000 && pc <= 0x40802000);
++}
++
++static uint32_t c89_browser_qemu_m68k_tb_pc(const TranslationBlock *tb)
++{
++    return tb ? (uint32_t)tb->pc : 0;
++}
++
++static uint32_t c89_browser_qemu_m68k_tb_flags(const TranslationBlock *tb)
++{
++    return tb ? tb->flags : 0;
++}
++
++static uint32_t c89_browser_qemu_m68k_tb_cflags(const TranslationBlock *tb)
++{
++    return tb ? tb_cflags(tb) : 0;
++}
++
++static uint32_t c89_browser_qemu_m68k_tb_icount(const TranslationBlock *tb)
++{
++    return tb ? tb->icount : 0;
++}
++
++static void c89_browser_qemu_m68k_tb_trace(const char *event,
++                                           CPUArchState *env,
++                                           const TranslationBlock *start_tb,
++                                           const TranslationBlock *last_tb,
++                                           uintptr_t raw_ret,
++                                           int tb_exit)
++{
++    static uint32_t last_sig;
++    static unsigned long long seq;
++    static unsigned log_count;
++    uint32_t env_pc = env->pc;
++    uint32_t start_pc = c89_browser_qemu_m68k_tb_pc(start_tb);
++    uint32_t last_pc = c89_browser_qemu_m68k_tb_pc(last_tb);
++    uint32_t sig = env_pc ^ (start_pc << 1) ^ (last_pc << 2) ^
++                   ((uint32_t)tb_exit << 27) ^ (uint32_t)event[0];
++    bool watched = c89_browser_qemu_m68k_tb_watch_pc(env_pc) ||
++                   c89_browser_qemu_m68k_tb_watch_pc(start_pc) ||
++                   c89_browser_qemu_m68k_tb_watch_pc(last_pc);
++    bool changed = sig != last_sig;
++    bool periodic = (seq % 200000ULL) == 0;
++
++    seq++;
++    if (!watched && !changed && !periodic) {
++        return;
++    }
++    if (log_count >= 2000 && !watched && !periodic) {
++        return;
++    }
++    if (log_count >= 160 && !watched && !periodic) {
++        return;
++    }
++
++    fprintf(stderr,
++            "[c89-m68k-tb] n=%llu event=%s envpc=0x%08x phase=%s "
++            "sr=0x%04x d3=0x%08x d5=0x%08x "
++            "a2=0x%08x a3=0x%08x a5=0x%08x a6=0x%08x a7=0x%08x "
++            "tcr=0x%04x srp=0x%08x urp=0x%08x "
++            "start=%p start_pc=0x%08x start_flags=0x%08x "
++            "start_cflags=0x%08x start_icount=%u "
++            "last=%p last_pc=0x%08x last_flags=0x%08x "
++            "last_cflags=0x%08x last_icount=%u raw_ret=0x%08" PRIxPTR
++            " exit=%d\n",
++            seq, event, env_pc, c89_browser_qemu_m68k_tb_phase(env_pc),
++            env->sr, env->dregs[3], env->dregs[5],
++            env->aregs[2], env->aregs[3], env->aregs[5], env->aregs[6],
++            env->aregs[7], env->mmu.tcr, env->mmu.srp, env->mmu.urp,
++            start_tb, start_pc, c89_browser_qemu_m68k_tb_flags(start_tb),
++            c89_browser_qemu_m68k_tb_cflags(start_tb),
++            c89_browser_qemu_m68k_tb_icount(start_tb),
++            last_tb, last_pc, c89_browser_qemu_m68k_tb_flags(last_tb),
++            c89_browser_qemu_m68k_tb_cflags(last_tb),
++            c89_browser_qemu_m68k_tb_icount(last_tb),
++            raw_ret, tb_exit);
++    fflush(stderr);
++
++    last_sig = sig;
++    log_count++;
++}
++#endif
+ 
+ /* -icount align implementation. */
+ 
+@@ -466,6 +569,9 @@ cpu_tb_exec(CPUState *cpu, TranslationBlock *itb, int *tb_exit)
+     }
+ 
+     qemu_thread_jit_execute();
++#ifdef C89_BROWSER_QEMU_M68K_TB_TRACE
++    c89_browser_qemu_m68k_tb_trace("enter", env, itb, NULL, 0, -1);
++#endif
+     ret = tcg_qemu_tb_exec(env, tb_ptr);
+     cpu->neg.can_do_io = true;
+     qemu_plugin_disable_mem_helpers(cpu);
+@@ -481,6 +587,9 @@ cpu_tb_exec(CPUState *cpu, TranslationBlock *itb, int *tb_exit)
+     *tb_exit = ret & TB_EXIT_MASK;
+ 
+     trace_exec_tb_exit(last_tb, *tb_exit);
++#ifdef C89_BROWSER_QEMU_M68K_TB_TRACE
++    c89_browser_qemu_m68k_tb_trace("exit", env, itb, last_tb, ret, *tb_exit);
++#endif
+ 
+     if (*tb_exit > TB_EXIT_IDX1) {
+         /* We didn't start executing this TB (eg because the instruction
+--- a/tcg/wasm32.c
++++ b/tcg/wasm32.c
+@@ -34,6 +34,54 @@
+ void c89_browser_qemu_m68k_pc_trace(CPUArchState *env);
+ #endif
+ 
++#ifdef C89_BROWSER_QEMU_M68K_TB_TRACE
++extern __thread struct wasmContext ctx;
++
++static bool c89_browser_qemu_wasm32_tb_watch_pc(uint32_t pc)
++{
++    return (pc >= 0x40881000 && pc <= 0x40883000) ||
++           (pc >= 0x40800000 && pc <= 0x40802000);
++}
++
++static void c89_browser_qemu_wasm32_tb_path_trace(CPUArchState *env,
++                                                  const char *path,
++                                                  const void *start_tb_ptr,
++                                                  uint32_t res,
++                                                  int fidx,
++                                                  int counter)
++{
++    static uint32_t last_sig;
++    static unsigned long long seq;
++    static unsigned log_count;
++    uint32_t pc = env->pc;
++    uint32_t sig = pc ^ res ^ (uint32_t)(uintptr_t)start_tb_ptr ^
++                   ((uint32_t)fidx << 24) ^ (uint32_t)path[0];
++    bool watched = c89_browser_qemu_wasm32_tb_watch_pc(pc);
++    bool changed = sig != last_sig;
++    bool periodic = (seq % 200000ULL) == 0;
++
++    seq++;
++    if (!watched && !changed && !periodic) {
++        return;
++    }
++    if (log_count >= 2000 && !watched && !periodic) {
++        return;
++    }
++    if (log_count >= 160 && !watched && !periodic) {
++        return;
++    }
++
++    fprintf(stderr,
++            "[c89-wasm32-tb] n=%llu path=%s envpc=0x%08x "
++            "start_tb_ptr=%p ctx_tb_ptr=%p res=0x%08x fidx=%d counter=%d\n",
++            seq, path, pc, start_tb_ptr, ctx.tb_ptr, res, fidx, counter);
++    fflush(stderr);
++
++    last_sig = sig;
++    log_count++;
++}
++#endif
++
+ __thread uintptr_t tci_tb_ptr;
+ 
+ /* Disassemble TCI bytecode. */
+@@ -1343,22 +1390,34 @@ uintptr_t QEMU_DISABLE_CFI tcg_qemu_tb_exec(CPUArchState *env,
+         trysleep();
+         int tb_counter_ptr = (uint32_t)ctx.tb_ptr + counter_vec_off;
+         uint32_t res;
++        const void *c89_start_tb_ptr = ctx.tb_ptr;
++        const char *c89_path = "unknown";
++        int c89_counter = *(int32_t*)tb_counter_ptr;
+         int fidx = get_instance_running_local(ctx.tb_ptr);
+         if (fidx > 0) {
++            c89_path = "wasm-cache";
+             res = ((wasm_func_ptr)(fidx))(&ctx);
+-        } else if (*(int32_t*)tb_counter_ptr < INSTANTIATE_NUM) {
++        } else if (c89_counter < INSTANTIATE_NUM) {
++            c89_path = "tci-cold";
+             *(int32_t*)tb_counter_ptr += 1;
+             res = tcg_qemu_tb_exec_tci(env);
+         } else if (!can_add_instance()) {
++            c89_path = "tci-cap";
+             remove_instance_running_local();
+             check_instance_garbage_collected();
+             res = tcg_qemu_tb_exec_tci(env);
+         } else {
+-            int fidx = instantiate_wasm();
++            c89_path = "wasm-new";
++            fidx = instantiate_wasm();
+             add_instance_running_local(fidx, ctx.tb_ptr);
+             res = ((wasm_func_ptr)(fidx))(&ctx);
+         }
+         if ((uint32_t)ctx.tb_ptr == 0) {
++#ifdef C89_BROWSER_QEMU_M68K_TB_TRACE
++            c89_browser_qemu_wasm32_tb_path_trace(env, c89_path,
++                                                  c89_start_tb_ptr, res,
++                                                  fidx, c89_counter);
++#endif
+             return res;
+         }
+     }

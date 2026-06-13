@@ -1,0 +1,491 @@
+diff --git a/hw/scsi/esp.c b/hw/scsi/esp.c
+index 9b11d8c5..3eebbf67 100644
+--- a/hw/scsi/esp.c
++++ b/hw/scsi/esp.c
+@@ -42,6 +42,232 @@
+  * On Macintosh Quadra it is a NCR53C96.
+  */
+ 
++#ifdef C89_BROWSER_QEMU_ESP_TRACE
++static const char *c89_esp_reg_name(uint32_t reg)
++{
++    switch (reg) {
++    case ESP_TCLO:
++        return "TCLO";
++    case ESP_TCMID:
++        return "TCMID";
++    case ESP_FIFO:
++        return "FIFO";
++    case ESP_CMD:
++        return "CMD";
++    case ESP_RSTAT:
++        return "RSTAT/WBUSID";
++    case ESP_RINTR:
++        return "RINTR/WSEL";
++    case ESP_RSEQ:
++        return "RSEQ/WSYNTP";
++    case ESP_RFLAGS:
++        return "RFLAGS/WSYNO";
++    case ESP_CFG1:
++        return "CFG1";
++    case ESP_RRES1:
++        return "RRES1/WCCF";
++    case ESP_RRES2:
++        return "RRES2/WTEST";
++    case ESP_CFG2:
++        return "CFG2";
++    case ESP_CFG3:
++        return "CFG3";
++    case ESP_RES3:
++        return "RES3";
++    case ESP_TCHI:
++        return "TCHI";
++    case ESP_RES4:
++        return "RES4";
++    case 0xfd:
++        return "PDMA_CB";
++    case 0xfe:
++        return "PDMA";
++    case 0xff:
++        return "event";
++    default:
++        return "unknown";
++    }
++}
++
++static bool c89_esp_trace_reg_interesting(uint32_t reg)
++{
++    switch (reg) {
++    case ESP_TCLO:
++    case ESP_TCMID:
++    case ESP_FIFO:
++    case ESP_CMD:
++    case ESP_RSTAT:
++    case ESP_RINTR:
++    case ESP_RSEQ:
++    case ESP_RFLAGS:
++    case ESP_TCHI:
++        return true;
++    default:
++        return false;
++    }
++}
++
++static const char *c89_esp_pdma_name(uint8_t cb)
++{
++    switch (cb) {
++    case SATN_PDMA_CB:
++        return "satn";
++    case S_WITHOUT_SATN_PDMA_CB:
++        return "select-no-atn";
++    case SATN_STOP_PDMA_CB:
++        return "satn-stop";
++    case WRITE_RESPONSE_PDMA_CB:
++        return "write-response";
++    case DO_DMA_PDMA_CB:
++        return "do-dma";
++    default:
++        return "unknown";
++    }
++}
++
++static void c89_esp_trace_state(ESPState *s, const char *event,
++                                uint32_t reg, uint32_t val)
++{
++    static unsigned log_count;
++    static unsigned repeat_count;
++    static const char *last_event;
++    static uint32_t last_reg;
++    static uint32_t last_val;
++    static uint32_t last_tc;
++    static uint32_t last_stc;
++    static uint32_t last_fifo;
++    static uint32_t last_cmdfifo;
++    static uint8_t last_stat;
++    static uint8_t last_intr;
++    static uint8_t last_seq;
++    static uint8_t last_flags;
++    static int32_t last_ti_size;
++    static uint32_t last_async_len;
++    static uint32_t last_dma;
++    static int last_dma_enabled;
++    static uint8_t last_ti_cmd;
++    static bool last_data_in_ready;
++    static uint8_t last_pdma_cb;
++    static bool last_dma_cb;
++    static bool last_current_req;
++    static int last_busid;
++    static int last_sel;
++    static int last_dev;
++    static int last_lun;
++    static int last_req_dev;
++    static int last_req_lun;
++    bool noisy;
++    bool changed;
++    uint8_t stat = s->rregs[ESP_RSTAT];
++    uint8_t intr = s->rregs[ESP_RINTR];
++    uint8_t seq = s->rregs[ESP_RSEQ];
++    uint8_t flags = s->rregs[ESP_RFLAGS];
++    uint32_t tc = s->rregs[ESP_TCLO] |
++                  (s->rregs[ESP_TCMID] << 8) |
++                  (s->rregs[ESP_TCHI] << 16);
++    uint32_t stc = s->wregs[ESP_TCLO] |
++                   (s->wregs[ESP_TCMID] << 8) |
++                   (s->wregs[ESP_TCHI] << 16);
++    uint32_t fifo = fifo8_num_used(&s->fifo);
++    uint32_t cmdfifo = fifo8_num_used(&s->cmdfifo);
++    bool dma_cb = s->dma_cb != NULL;
++    bool current_req = s->current_req != NULL;
++    int busid = s->wregs[ESP_WBUSID] & BUSID_DID;
++    int sel = s->wregs[ESP_WSEL] & BUSID_DID;
++    int dev = s->current_dev ? (int)s->current_dev->id : -1;
++    int lun = (int)s->lun;
++    int req_dev = (s->current_req && s->current_req->dev) ?
++                  (int)s->current_req->dev->id : -1;
++    int req_lun = s->current_req ? (int)s->current_req->lun : -1;
++
++    noisy = ((event[0] == 'r' && event[1] == 'e') ||
++             (event[0] == 'w' && event[1] == 'r') ||
++             (event[0] == 'p' && event[1] == 'd'));
++
++    changed = !last_event || strcmp(event, last_event) != 0 ||
++              last_reg != reg || last_val != val || last_tc != tc ||
++              last_stc != stc || last_fifo != fifo ||
++              last_cmdfifo != cmdfifo || last_stat != stat ||
++              last_intr != intr || last_seq != seq ||
++              last_flags != flags || last_ti_size != s->ti_size ||
++              last_async_len != s->async_len || last_dma != s->dma ||
++              last_dma_enabled != s->dma_enabled ||
++              last_ti_cmd != s->ti_cmd ||
++              last_data_in_ready != s->data_in_ready ||
++              last_pdma_cb != s->pdma_cb || last_dma_cb != dma_cb ||
++              last_current_req != current_req ||
++              last_busid != busid || last_sel != sel || last_dev != dev ||
++              last_lun != lun || last_req_dev != req_dev ||
++              last_req_lun != req_lun;
++
++    if (noisy && !changed) {
++        repeat_count++;
++        if ((repeat_count % 65536) != 0) {
++            return;
++        }
++    } else {
++        repeat_count = 0;
++    }
++
++    if (log_count++ >= 60000) {
++        return;
++    }
++
++    fprintf(stderr,
++            "[c89-esp] n=%u repeat=%u event=%s reg=%s/0x%x val=0x%08x "
++            "busid=%d sel=%d dev=%d lun=%d req=%d req_lun=%d "
++            "stat=0x%02x intr=0x%02x seq=0x%02x flags=0x%02x "
++            "tc=%u stc=%u ti_size=%d async=%u dma=%u dma_en=%d "
++            "ti_cmd=0x%02x ready=%d pdma=%s dma_cb=%d fifo=%u "
++            "cmdfifo=%u do_cmd=%u cur=%d\n",
++            log_count, repeat_count, event, c89_esp_reg_name(reg), reg, val,
++            busid, sel, dev, lun, req_dev, req_lun, stat, intr, seq, flags,
++            tc, stc, s->ti_size, s->async_len, s->dma, s->dma_enabled,
++            s->ti_cmd, s->data_in_ready, c89_esp_pdma_name(s->pdma_cb),
++            dma_cb, fifo, cmdfifo, s->do_cmd, current_req);
++    fflush(stderr);
++
++    last_event = event;
++    last_reg = reg;
++    last_val = val;
++    last_tc = tc;
++    last_stc = stc;
++    last_fifo = fifo;
++    last_cmdfifo = cmdfifo;
++    last_stat = stat;
++    last_intr = intr;
++    last_seq = seq;
++    last_flags = flags;
++    last_ti_size = s->ti_size;
++    last_async_len = s->async_len;
++    last_dma = s->dma;
++    last_dma_enabled = s->dma_enabled;
++    last_ti_cmd = s->ti_cmd;
++    last_data_in_ready = s->data_in_ready;
++    last_pdma_cb = s->pdma_cb;
++    last_dma_cb = dma_cb;
++    last_current_req = current_req;
++    last_busid = busid;
++    last_sel = sel;
++    last_dev = dev;
++    last_lun = lun;
++    last_req_dev = req_dev;
++    last_req_lun = req_lun;
++}
++
++#define C89_ESP_TRACE(s, event, reg, val) \
++    c89_esp_trace_state((s), (event), (reg), (uint32_t)(val))
++#define C89_ESP_TRACE_REG(s, event, reg, val) \
++    do { \
++        if (c89_esp_trace_reg_interesting(reg)) { \
++            c89_esp_trace_state((s), (event), (reg), (uint32_t)(val)); \
++        } \
++    } while (0)
++#else
++#define C89_ESP_TRACE(s, event, reg, val) do { } while (0)
++#define C89_ESP_TRACE_REG(s, event, reg, val) do { } while (0)
++#endif
++
+ static void esp_raise_irq(ESPState *s)
+ {
+     if (!(s->rregs[ESP_RSTAT] & STAT_INT)) {
+@@ -49,6 +275,7 @@ static void esp_raise_irq(ESPState *s)
+         qemu_irq_raise(s->irq);
+         trace_esp_raise_irq();
+     }
++    C89_ESP_TRACE(s, "raise-irq", 0xff, 0);
+ }
+ 
+ static void esp_lower_irq(ESPState *s)
+@@ -58,18 +285,21 @@ static void esp_lower_irq(ESPState *s)
+         qemu_irq_lower(s->irq);
+         trace_esp_lower_irq();
+     }
++    C89_ESP_TRACE(s, "lower-irq", 0xff, 0);
+ }
+ 
+ static void esp_raise_drq(ESPState *s)
+ {
+     qemu_irq_raise(s->irq_data);
+     trace_esp_raise_drq();
++    C89_ESP_TRACE(s, "raise-drq", 0xff, 0);
+ }
+ 
+ static void esp_lower_drq(ESPState *s)
+ {
+     qemu_irq_lower(s->irq_data);
+     trace_esp_lower_drq();
++    C89_ESP_TRACE(s, "lower-drq", 0xff, 0);
+ }
+ 
+ void esp_dma_enable(ESPState *s, int irq, int level)
+@@ -77,6 +307,7 @@ void esp_dma_enable(ESPState *s, int irq, int level)
+     if (level) {
+         s->dma_enabled = 1;
+         trace_esp_dma_enable();
++        C89_ESP_TRACE(s, "dma-enable", 0xff, level);
+         if (s->dma_cb) {
+             s->dma_cb(s);
+             s->dma_cb = NULL;
+@@ -84,6 +315,7 @@ void esp_dma_enable(ESPState *s, int irq, int level)
+     } else {
+         trace_esp_dma_disable();
+         s->dma_enabled = 0;
++        C89_ESP_TRACE(s, "dma-disable", 0xff, level);
+     }
+ }
+ 
+@@ -198,6 +430,7 @@ static void esp_pdma_write(ESPState *s, uint8_t val)
+ static void esp_set_pdma_cb(ESPState *s, enum pdma_cb cb)
+ {
+     s->pdma_cb = cb;
++    C89_ESP_TRACE(s, "set-pdma-cb", 0xfd, cb);
+ }
+ 
+ static int esp_select(ESPState *s)
+@@ -205,6 +438,7 @@ static int esp_select(ESPState *s)
+     int target;
+ 
+     target = s->wregs[ESP_WBUSID] & BUSID_DID;
++    C89_ESP_TRACE(s, "select-enter", ESP_WBUSID, target);
+ 
+     s->ti_size = 0;
+     fifo8_reset(&s->fifo);
+@@ -216,9 +450,12 @@ static int esp_select(ESPState *s)
+         s->rregs[ESP_RINTR] = INTR_DC;
+         s->rregs[ESP_RSEQ] = SEQ_0;
+         esp_raise_irq(s);
++        C89_ESP_TRACE(s, "select-miss", ESP_WBUSID, target);
+         return -1;
+     }
+ 
++    C89_ESP_TRACE(s, "select-hit", ESP_WBUSID, target);
++
+     /*
+      * Note that we deliberately don't raise the IRQ here: this will be done
+      * either in do_command_phase() for DATA OUT transfers or by the deferred
+@@ -269,6 +506,7 @@ static uint32_t get_cmd(ESPState *s, uint32_t maxlen)
+         fifo8_push_all(&s->cmdfifo, buf, n);
+     }
+     trace_esp_get_cmd(dmalen, target);
++    C89_ESP_TRACE(s, "get-cmd", ESP_WBUSID, target);
+ 
+     if (esp_select(s) < 0) {
+         fifo8_reset(&s->cmdfifo);
+@@ -285,16 +523,21 @@ static void do_command_phase(ESPState *s)
+     uint8_t buf[ESP_CMDFIFO_SZ];
+ 
+     trace_esp_do_command_phase(s->lun);
++    C89_ESP_TRACE(s, "command-phase-enter", 0xff, s->lun);
+     cmdlen = fifo8_num_used(&s->cmdfifo);
+     if (!cmdlen || !s->current_dev) {
++        C89_ESP_TRACE(s, "command-phase-empty", 0xff, cmdlen);
+         return;
+     }
+     esp_fifo_pop_buf(&s->cmdfifo, buf, cmdlen);
++    C89_ESP_TRACE(s, "command-phase-cdb", 0xff, buf[0]);
+ 
+     current_lun = scsi_device_find(&s->bus, 0, s->current_dev->id, s->lun);
+     s->current_req = scsi_req_new(current_lun, 0, s->lun, buf, cmdlen, s);
++    C89_ESP_TRACE(s, "command-phase-req", 0xff, cmdlen);
+     datalen = scsi_req_enqueue(s->current_req);
+     s->ti_size = datalen;
++    C89_ESP_TRACE(s, "command-phase-enqueue", 0xff, datalen);
+     fifo8_reset(&s->cmdfifo);
+     if (datalen != 0) {
+         s->rregs[ESP_RSTAT] = STAT_TC;
+@@ -326,6 +569,7 @@ static void do_message_phase(ESPState *s)
+ 
+         trace_esp_do_identify(message);
+         s->lun = message & 7;
++        C89_ESP_TRACE(s, "message-identify", 0xff, message);
+         s->cmdfifo_cdb_offset--;
+     }
+ 
+@@ -488,6 +732,7 @@ static void esp_dma_done(ESPState *s)
+     s->rregs[ESP_RFLAGS] = 0;
+     esp_set_tc(s, 0);
+     esp_raise_irq(s);
++    C89_ESP_TRACE(s, "dma-done", 0xff, 0);
+ }
+ 
+ static void do_dma_pdma_cb(ESPState *s)
+@@ -785,6 +1030,7 @@ static void esp_do_nodma(ESPState *s)
+ 
+ static void esp_pdma_cb(ESPState *s)
+ {
++    C89_ESP_TRACE(s, "pdma-cb-enter", 0xfd, s->pdma_cb);
+     switch (s->pdma_cb) {
+     case SATN_PDMA_CB:
+         satn_pdma_cb(s);
+@@ -804,6 +1050,7 @@ static void esp_pdma_cb(ESPState *s)
+     default:
+         g_assert_not_reached();
+     }
++    C89_ESP_TRACE(s, "pdma-cb-exit", 0xfd, s->pdma_cb);
+ }
+ 
+ void esp_command_complete(SCSIRequest *req, size_t resid)
+@@ -812,6 +1059,7 @@ void esp_command_complete(SCSIRequest *req, size_t resid)
+     int to_device = ((s->rregs[ESP_RSTAT] & 7) == STAT_DO);
+ 
+     trace_esp_command_complete();
++    C89_ESP_TRACE(s, "command-complete-enter", 0xff, resid);
+ 
+     /*
+      * Non-DMA transfers from the target will leave the last byte in
+@@ -838,6 +1086,7 @@ void esp_command_complete(SCSIRequest *req, size_t resid)
+         s->rregs[ESP_RSTAT] = STAT_TC | STAT_ST;
+         esp_dma_done(s);
+         esp_lower_drq(s);
++        C89_ESP_TRACE(s, "command-complete-status", 0xff, resid);
+     }
+ 
+     if (s->current_req) {
+@@ -845,6 +1094,7 @@ void esp_command_complete(SCSIRequest *req, size_t resid)
+         s->current_req = NULL;
+         s->current_dev = NULL;
+     }
++    C89_ESP_TRACE(s, "command-complete-exit", 0xff, resid);
+ }
+ 
+ void esp_transfer_data(SCSIRequest *req, uint32_t len)
+@@ -855,6 +1105,7 @@ void esp_transfer_data(SCSIRequest *req, uint32_t len)
+ 
+     assert(!s->do_cmd);
+     trace_esp_transfer_data(dmalen, s->ti_size);
++    C89_ESP_TRACE(s, "transfer-data-enter", 0xff, len);
+     s->async_len = len;
+     s->async_buf = scsi_req_get_buf(req);
+ 
+@@ -867,6 +1118,7 @@ void esp_transfer_data(SCSIRequest *req, uint32_t len)
+         s->rregs[ESP_RSTAT] |= STAT_TC;
+         s->rregs[ESP_RINTR] |= INTR_BS;
+         esp_raise_irq(s);
++        C89_ESP_TRACE(s, "transfer-data-ready", 0xff, len);
+     }
+ 
+     if (s->ti_cmd == 0) {
+@@ -877,12 +1129,14 @@ void esp_transfer_data(SCSIRequest *req, uint32_t len)
+          * some OSs send non-DMA NOP commands after a DMA transfer. Hence if the
+          * async data transfer is delayed then s->dma is set incorrectly.
+          */
++        C89_ESP_TRACE(s, "transfer-data-defer-ti", 0xff, len);
+         return;
+     }
+ 
+     if (s->ti_cmd == (CMD_TI | CMD_DMA)) {
+         if (dmalen) {
+             esp_do_dma(s);
++            C89_ESP_TRACE(s, "transfer-data-after-dma", 0xff, dmalen);
+         } else if (s->ti_size <= 0) {
+             /*
+              * If this was the last part of a DMA transfer then the
+@@ -890,9 +1144,11 @@ void esp_transfer_data(SCSIRequest *req, uint32_t len)
+              */
+             esp_dma_done(s);
+             esp_lower_drq(s);
++            C89_ESP_TRACE(s, "transfer-data-dma-done", 0xff, len);
+         }
+     } else if (s->ti_cmd == CMD_TI) {
+         esp_do_nodma(s);
++        C89_ESP_TRACE(s, "transfer-data-after-nodma", 0xff, len);
+     }
+ }
+ 
+@@ -900,8 +1156,10 @@ static void handle_ti(ESPState *s)
+ {
+     uint32_t dmalen;
+ 
++    C89_ESP_TRACE(s, "handle-ti-enter", ESP_CMD, s->rregs[ESP_CMD]);
+     if (s->dma && !s->dma_enabled) {
+         s->dma_cb = handle_ti;
++        C89_ESP_TRACE(s, "handle-ti-defer-dma", ESP_CMD, s->rregs[ESP_CMD]);
+         return;
+     }
+ 
+@@ -911,9 +1169,11 @@ static void handle_ti(ESPState *s)
+         trace_esp_handle_ti(dmalen);
+         s->rregs[ESP_RSTAT] &= ~STAT_TC;
+         esp_do_dma(s);
++        C89_ESP_TRACE(s, "handle-ti-after-dma", ESP_CMD, dmalen);
+     } else {
+         trace_esp_handle_ti(s->ti_size);
+         esp_do_nodma(s);
++        C89_ESP_TRACE(s, "handle-ti-after-nodma", ESP_CMD, s->ti_size);
+     }
+ }
+ 
+@@ -1016,12 +1276,14 @@ uint64_t esp_reg_read(ESPState *s, uint32_t saddr)
+     }
+ 
+     trace_esp_mem_readb(saddr, val);
++    C89_ESP_TRACE_REG(s, "read", saddr, val);
+     return val;
+ }
+ 
+ void esp_reg_write(ESPState *s, uint32_t saddr, uint64_t val)
+ {
+     trace_esp_mem_writeb(saddr, s->wregs[saddr], val);
++    C89_ESP_TRACE_REG(s, "write-before", saddr, val);
+     switch (saddr) {
+     case ESP_TCHI:
+         s->tchi_written = true;
+@@ -1145,9 +1407,11 @@ void esp_reg_write(ESPState *s, uint32_t saddr, uint64_t val)
+         break;
+     default:
+         trace_esp_error_invalid_write(val, saddr);
++        C89_ESP_TRACE(s, "write-invalid", saddr, val);
+         return;
+     }
+     s->wregs[saddr] = val;
++    C89_ESP_TRACE_REG(s, "write-after", saddr, val);
+ }
+ 
+ static bool esp_mem_accepts(void *opaque, hwaddr addr,

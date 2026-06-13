@@ -1,0 +1,25 @@
+--- a/hw/misc/mac_via.c
++++ b/hw/misc/mac_via.c
+@@ -688,7 +688,22 @@
+     uint8_t *data = &s->sr;
+     int olen;
+ 
++#ifdef C89_BROWSER_QEMU_ADB_AUTOPOLL_SUPPRESS
+     /*
++     * C89 browser-qemu experiment: keep early ROM boot from being flooded by
++     * ADB autopoll-ready interrupts while display/SCSI bring-up is isolated.
++     * This intentionally disables useful keyboard/mouse replies and must not
++     * be enabled in the eventual interactive build.
++     */
++    *data = 0xff;
++    v1s->adb_data_in_size = 0;
++    v1s->adb_data_in_index = 0;
++    v1s->adb_data_out_index = 0;
++    s->b |= VIA1B_vADBInt;
++    return;
++#endif
++
++    /*
+      * Setting vADBInt below indicates that an autopoll reply has been
+      * received, however we must block autopoll until the point where
+      * the entire reply has been read back to the host

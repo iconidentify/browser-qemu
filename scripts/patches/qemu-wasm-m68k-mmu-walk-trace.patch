@@ -1,0 +1,193 @@
+--- a/target/m68k/helper.c
++++ b/target/m68k/helper.c
+@@ -97,6 +97,75 @@
+     do { } while (0)
+ #endif
+ 
++#ifdef C89_BROWSER_QEMU_M68K_MMU_WALK_TRACE
++static bool c89_browser_qemu_m68k_mmu_walk_interesting(CPUM68KState *env,
++                                                       target_ulong address,
++                                                       int access_type)
++{
++    uint32_t pc = env->pc;
++
++    if ((env->mmu.tcr & M68K_TCR_ENABLED) == 0) {
++        return false;
++    }
++    if (pc >= 0x408815a0 && pc <= 0x40881610) {
++        return true;
++    }
++    if (address >= 0x40800000 && address < 0x40900000) {
++        return true;
++    }
++    if (address >= 0x00170000 && address < 0x00190000) {
++        return true;
++    }
++    if (access_type & ACCESS_PTEST) {
++        return true;
++    }
++    return false;
++}
++
++static void c89_browser_qemu_m68k_mmu_walk_trace(CPUM68KState *env,
++                                                  bool enabled,
++                                                  const char *stage,
++                                                  target_ulong address,
++                                                  int access_type,
++                                                  uint32_t entry,
++                                                  uint32_t desc,
++                                                  int txres,
++                                                  hwaddr physical,
++                                                  int prot,
++                                                  target_ulong page_size)
++{
++    static unsigned log_count;
++
++    if (!enabled || log_count >= 800) {
++        return;
++    }
++    log_count++;
++    fprintf(stderr,
++            "[c89-m68k-mmu-walk] n=%u stage=%s pc=0x%08x addr=0x%08x "
++            "access=0x%x entry=0x%08x desc=0x%08x tx=%d phys=0x%llx "
++            "prot=0x%x page=0x%08x tcr=0x%04x srp=0x%08x urp=0x%08x "
++            "ittr0=0x%08x ittr1=0x%08x dttr0=0x%08x dttr1=0x%08x\n",
++            log_count, stage, env->pc, (uint32_t)address, access_type,
++            entry, desc, txres, (unsigned long long)physical, prot,
++            (uint32_t)page_size, env->mmu.tcr, env->mmu.srp, env->mmu.urp,
++            env->mmu.ttr[M68K_ITTR0], env->mmu.ttr[M68K_ITTR1],
++            env->mmu.ttr[M68K_DTTR0], env->mmu.ttr[M68K_DTTR1]);
++    fflush(stderr);
++}
++#define C89_M68K_MMU_WALK_INTERESTING(env, address, access_type) \
++    c89_browser_qemu_m68k_mmu_walk_interesting(env, address, access_type)
++#define C89_M68K_MMU_WALK_TRACE(env, enabled, stage, address, access_type, \
++                                entry, desc, txres, physical, prot, page_size) \
++    c89_browser_qemu_m68k_mmu_walk_trace(env, enabled, stage, address, \
++                                         access_type, entry, desc, txres, \
++                                         physical, prot, page_size)
++#else
++#define C89_M68K_MMU_WALK_INTERESTING(env, address, access_type) false
++#define C89_M68K_MMU_WALK_TRACE(env, enabled, stage, address, access_type, \
++                                entry, desc, txres, physical, prot, page_size) \
++    do { } while (0)
++#endif
++
+ #ifdef C89_BROWSER_QEMU_M68K_PC_TRACE
+ static const char *c89_browser_qemu_m68k_pc_phase(uint32_t pc)
+ {
+@@ -937,11 +1006,19 @@
+     int page_bits;
+     int i;
+     MemTxResult txres;
++    bool trace = C89_M68K_MMU_WALK_INTERESTING(env, address, access_type);
++
++    C89_M68K_MMU_WALK_TRACE(env, trace, "begin", address, access_type,
++                            0, 0, 0, 0, 0, 0);
+ 
+     /* Transparent Translation (physical = logical) */
+     for (i = 0; i < M68K_MAX_TTR; i++) {
+-        if (check_TTR(env->mmu.TTR(access_type, i),
+-                      prot, address, access_type)) {
++        uint32_t ttr = env->mmu.TTR(access_type, i);
++
++        if (check_TTR(ttr, prot, address, access_type)) {
++            C89_M68K_MMU_WALK_TRACE(env, trace, "ttr-hit", address,
++                                    access_type, i, ttr, 0, address,
++                                    *prot, TARGET_PAGE_SIZE);
+             if (access_type & ACCESS_PTEST) {
+                 /* Transparent Translation Register bit */
+                 env->mmu.mmusr = M68K_MMU_T_040 | M68K_MMU_R_040;
+@@ -950,6 +1027,8 @@
+             *page_size = TARGET_PAGE_SIZE;
+             return 0;
+         }
++        C89_M68K_MMU_WALK_TRACE(env, trace, "ttr-miss", address,
++                                access_type, i, ttr, 0, 0, 0, 0);
+     }
+ 
+     /* Page Table Root Pointer */
+@@ -967,10 +1046,16 @@
+     entry = M68K_POINTER_BASE(next) | M68K_ROOT_INDEX(address);
+ 
+     next = address_space_ldl(cs->as, entry, MEMTXATTRS_UNSPECIFIED, &txres);
++    C89_M68K_MMU_WALK_TRACE(env, trace, "root-load", address, access_type,
++                            entry, next, txres, 0, *prot, 0);
+     if (txres != MEMTX_OK) {
++        C89_M68K_MMU_WALK_TRACE(env, trace, "root-txfail", address,
++                                access_type, entry, next, txres, 0, *prot, 0);
+         goto txfail;
+     }
+     if (!M68K_UDT_VALID(next)) {
++        C89_M68K_MMU_WALK_TRACE(env, trace, "root-invalid", address,
++                                access_type, entry, next, txres, 0, *prot, 0);
+         return -1;
+     }
+     if (!(next & M68K_DESC_USED) && !debug) {
+@@ -994,10 +1079,16 @@
+     entry = M68K_POINTER_BASE(next) | M68K_POINTER_INDEX(address);
+ 
+     next = address_space_ldl(cs->as, entry, MEMTXATTRS_UNSPECIFIED, &txres);
++    C89_M68K_MMU_WALK_TRACE(env, trace, "pointer-load", address,
++                            access_type, entry, next, txres, 0, *prot, 0);
+     if (txres != MEMTX_OK) {
++        C89_M68K_MMU_WALK_TRACE(env, trace, "pointer-txfail", address,
++                                access_type, entry, next, txres, 0, *prot, 0);
+         goto txfail;
+     }
+     if (!M68K_UDT_VALID(next)) {
++        C89_M68K_MMU_WALK_TRACE(env, trace, "pointer-invalid", address,
++                                access_type, entry, next, txres, 0, *prot, 0);
+         return -1;
+     }
+     if (!(next & M68K_DESC_USED) && !debug) {
+@@ -1025,16 +1116,29 @@
+     }
+ 
+     next = address_space_ldl(cs->as, entry, MEMTXATTRS_UNSPECIFIED, &txres);
++    C89_M68K_MMU_WALK_TRACE(env, trace, "page-load", address, access_type,
++                            entry, next, txres, 0, *prot, 0);
+     if (txres != MEMTX_OK) {
++        C89_M68K_MMU_WALK_TRACE(env, trace, "page-txfail", address,
++                                access_type, entry, next, txres, 0, *prot, 0);
+         goto txfail;
+     }
+ 
+     if (!M68K_PDT_VALID(next)) {
++        C89_M68K_MMU_WALK_TRACE(env, trace, "page-invalid", address,
++                                access_type, entry, next, txres, 0, *prot, 0);
+         return -1;
+     }
+     if (M68K_PDT_INDIRECT(next)) {
+-        next = address_space_ldl(cs->as, M68K_INDIRECT_POINTER(next),
++        uint32_t indirect_entry = M68K_INDIRECT_POINTER(next);
++        C89_M68K_MMU_WALK_TRACE(env, trace, "page-indirect", address,
++                                access_type, indirect_entry, next, txres,
++                                0, *prot, 0);
++        next = address_space_ldl(cs->as, indirect_entry,
+                                  MEMTXATTRS_UNSPECIFIED, &txres);
++        C89_M68K_MMU_WALK_TRACE(env, trace, "page-indirect-load", address,
++                                access_type, indirect_entry, next, txres,
++                                0, *prot, 0);
+         if (txres != MEMTX_OK) {
+             goto txfail;
+         }
+@@ -1076,6 +1180,9 @@
+     page_mask = ~(*page_size - 1);
+     *physical = (next & page_mask) + (address & (*page_size - 1));
+ 
++    C89_M68K_MMU_WALK_TRACE(env, trace, "success", address, access_type,
++                            entry, next, txres, *physical, *prot, *page_size);
++
+     if (access_type & ACCESS_PTEST) {
+         env->mmu.mmusr |= next & M68K_MMU_SR_MASK_040;
+         env->mmu.mmusr |= *physical & 0xfffff000;
+@@ -1102,6 +1209,8 @@
+      * suitable guest fault here if this is not a debug access.
+      * For now just return that the translation failed.
+      */
++    C89_M68K_MMU_WALK_TRACE(env, trace, "txfail", address, access_type,
++                            entry, next, txres, 0, *prot, 0);
+     return -1;
+ }
+ 

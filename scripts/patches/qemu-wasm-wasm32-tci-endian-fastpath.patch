@@ -1,0 +1,132 @@
+diff --git a/tcg/wasm32.c b/tcg/wasm32.c
+index 16a50252f3..a3f3b8a2f0 100644
+--- a/tcg/wasm32.c
++++ b/tcg/wasm32.c
+@@ -599,6 +599,77 @@ static uint64_t tlb_load(CPUArchState *env, uint64_t taddr, MemOp mop, uint64_t
+     return 0;
+ }
+ 
++/* C89 browser-qemu: endian-correct wasm32 TCI fast path.
++ *
++ * The fallback TCI helpers below are correct but slow. qemu-wasm's direct
++ * TLB-hit path bypasses those helpers, so it must still honor MemOp byte
++ * order for big-endian guests such as m68k/q800.
++ */
++static uint64_t c89_browser_qemu_wasm32_tci_ld_fast(uint64_t target_addr,
++                                                    MemOp mop)
++{
++    const void *addr = (const void *)(uintptr_t)target_addr;
++    bool be = memop_big_endian(mop);
++
++    switch (mop & MO_SSIZE) {
++    case MO_UB:
++        return ldub_p(addr);
++    case MO_SB:
++        return ldsb_p(addr);
++    case MO_UW:
++        return be ? (uint16_t)lduw_be_p(addr) : (uint16_t)lduw_le_p(addr);
++    case MO_SW:
++        return be ? (int16_t)lduw_be_p(addr) : (int16_t)lduw_le_p(addr);
++    case MO_UL:
++        return be ? (uint32_t)ldl_be_p(addr) : (uint32_t)ldl_le_p(addr);
++    case MO_SL:
++        return be ? (int32_t)ldl_be_p(addr) : (int32_t)ldl_le_p(addr);
++    case MO_UQ:
++        return be ? ldq_be_p(addr) : ldq_le_p(addr);
++    case MO_SQ:
++        return be ? (int64_t)ldq_be_p(addr) : (int64_t)ldq_le_p(addr);
++    default:
++        g_assert_not_reached();
++    }
++}
++
++static void c89_browser_qemu_wasm32_tci_st_fast(uint64_t target_addr,
++                                                uint64_t val,
++                                                MemOp mop)
++{
++    void *addr = (void *)(uintptr_t)target_addr;
++    bool be = memop_big_endian(mop);
++
++    switch (mop & MO_SIZE) {
++    case MO_UB:
++        stb_p(addr, (uint8_t)val);
++        break;
++    case MO_UW:
++        if (be) {
++            stw_be_p(addr, (uint16_t)val);
++        } else {
++            stw_le_p(addr, (uint16_t)val);
++        }
++        break;
++    case MO_UL:
++        if (be) {
++            stl_be_p(addr, (uint32_t)val);
++        } else {
++            stl_le_p(addr, (uint32_t)val);
++        }
++        break;
++    case MO_UQ:
++        if (be) {
++            stq_be_p(addr, val);
++        } else {
++            stq_le_p(addr, val);
++        }
++        break;
++    default:
++        g_assert_not_reached();
++    }
++}
++
+ static uint64_t tci_qemu_ld(CPUArchState *env, uint64_t taddr,
+                             MemOpIdx oi, const void *tb_ptr, uint64_t* ptr)
+ {
+@@ -607,24 +678,7 @@ static uint64_t tci_qemu_ld(CPUArchState *env, uint64_t taddr,
+ 
+     uint64_t target_addr = tlb_load(env, taddr, mop, ptr, true);
+     if (target_addr != 0) {
+-        switch (mop & MO_SSIZE) {
+-        case MO_UB:
+-            return *(uint8_t*)target_addr;
+-        case MO_SB:
+-            return *(int8_t*)target_addr;
+-        case MO_UW:
+-            return *(uint16_t*)target_addr;
+-        case MO_SW:
+-            return *(int16_t*)target_addr;
+-        case MO_UL:
+-            return *(uint32_t*)target_addr;
+-        case MO_SL:
+-            return *(int32_t*)target_addr;
+-        case MO_UQ:
+-            return *(uint64_t*)target_addr;
+-        default:
+-            g_assert_not_reached();
+-        }
++        return c89_browser_qemu_wasm32_tci_ld_fast(target_addr, mop);
+     }
+ 
+     switch (mop & MO_SSIZE) {
+@@ -660,22 +714,7 @@ static void tci_qemu_st(CPUArchState *env, uint64_t taddr, uint64_t val,
+ 
+     uint64_t target_addr = tlb_load(env, taddr, mop, ptr, false);
+     if (target_addr != 0) {
+-        switch (mop & MO_SIZE) {
+-        case MO_UB:
+-            *(uint8_t*)target_addr = (uint8_t)val;
+-            break;
+-        case MO_UW:
+-            *(uint16_t*)target_addr = (uint16_t)val;
+-            break;
+-        case MO_UL:
+-            *(uint32_t*)target_addr = (uint32_t)val;
+-            break;
+-        case MO_UQ:
+-            *(uint64_t*)target_addr = (uint64_t)val;
+-            break;
+-        default:
+-            g_assert_not_reached();
+-        }
++        c89_browser_qemu_wasm32_tci_st_fast(target_addr, val, mop);
+         return;
+     }
+     

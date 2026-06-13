@@ -1,0 +1,4052 @@
+diff --git a/accel/tcg/cpu-exec.c b/accel/tcg/cpu-exec.c
+index c938eb96..4919eb4e 100644
+--- a/accel/tcg/cpu-exec.c
++++ b/accel/tcg/cpu-exec.c
+@@ -44,6 +44,113 @@
+ #include "tb-context.h"
+ #include "internal-common.h"
+ #include "internal-target.h"
++#ifdef C89_BROWSER_QEMU_ROM_RAMTEST_HACK
++bool c89_browser_qemu_m68k_rom_ramtest_fast_forward(CPUArchState *env);
++#endif
++
++#ifdef C89_BROWSER_QEMU_M68K_TB_TRACE
++static const char *c89_browser_qemu_m68k_tb_phase(uint32_t pc)
++{
++    if (pc >= 0x40881000 && pc <= 0x40883000) {
++        return "rom-late-loop";
++    }
++    if (pc >= 0x40800000 && pc <= 0x40802000) {
++        return "rom-low-window";
++    }
++    if (pc >= 0x40800000 && pc < 0x40900000) {
++        return "quadra-rom";
++    }
++    if (pc < 0x01000000) {
++        return "low-memory";
++    }
++    return "other";
++}
++
++static bool c89_browser_qemu_m68k_tb_watch_pc(uint32_t pc)
++{
++    return (pc >= 0x40881000 && pc <= 0x40883000) ||
++           (pc >= 0x40800000 && pc <= 0x40802000);
++}
++
++static uint32_t c89_browser_qemu_m68k_tb_pc(const TranslationBlock *tb)
++{
++    return tb ? (uint32_t)tb->pc : 0;
++}
++
++static uint32_t c89_browser_qemu_m68k_tb_flags(const TranslationBlock *tb)
++{
++    return tb ? tb->flags : 0;
++}
++
++static uint32_t c89_browser_qemu_m68k_tb_cflags(const TranslationBlock *tb)
++{
++    return tb ? tb_cflags(tb) : 0;
++}
++
++static uint32_t c89_browser_qemu_m68k_tb_icount(const TranslationBlock *tb)
++{
++    return tb ? tb->icount : 0;
++}
++
++static void c89_browser_qemu_m68k_tb_trace(const char *event,
++                                           CPUArchState *env,
++                                           const TranslationBlock *start_tb,
++                                           const TranslationBlock *last_tb,
++                                           uintptr_t raw_ret,
++                                           int tb_exit)
++{
++    static uint32_t last_sig;
++    static unsigned long long seq;
++    static unsigned log_count;
++    uint32_t env_pc = env->pc;
++    uint32_t start_pc = c89_browser_qemu_m68k_tb_pc(start_tb);
++    uint32_t last_pc = c89_browser_qemu_m68k_tb_pc(last_tb);
++    uint32_t sig = env_pc ^ (start_pc << 1) ^ (last_pc << 2) ^
++                   ((uint32_t)tb_exit << 27) ^ (uint32_t)event[0];
++    bool watched = c89_browser_qemu_m68k_tb_watch_pc(env_pc) ||
++                   c89_browser_qemu_m68k_tb_watch_pc(start_pc) ||
++                   c89_browser_qemu_m68k_tb_watch_pc(last_pc);
++    bool changed = sig != last_sig;
++    bool periodic = (seq % 200000ULL) == 0;
++
++    seq++;
++    if (!watched && !changed && !periodic) {
++        return;
++    }
++    if (log_count >= 2000 && !watched && !periodic) {
++        return;
++    }
++    if (log_count >= 160 && !watched && !periodic) {
++        return;
++    }
++
++    fprintf(stderr,
++            "[c89-m68k-tb] n=%llu event=%s envpc=0x%08x phase=%s "
++            "sr=0x%04x d3=0x%08x d5=0x%08x "
++            "a2=0x%08x a3=0x%08x a5=0x%08x a6=0x%08x a7=0x%08x "
++            "tcr=0x%04x srp=0x%08x urp=0x%08x "
++            "start=%p start_pc=0x%08x start_flags=0x%08x "
++            "start_cflags=0x%08x start_icount=%u "
++            "last=%p last_pc=0x%08x last_flags=0x%08x "
++            "last_cflags=0x%08x last_icount=%u raw_ret=0x%08" PRIxPTR
++            " exit=%d\n",
++            seq, event, env_pc, c89_browser_qemu_m68k_tb_phase(env_pc),
++            env->sr, env->dregs[3], env->dregs[5],
++            env->aregs[2], env->aregs[3], env->aregs[5], env->aregs[6],
++            env->aregs[7], env->mmu.tcr, env->mmu.srp, env->mmu.urp,
++            start_tb, start_pc, c89_browser_qemu_m68k_tb_flags(start_tb),
++            c89_browser_qemu_m68k_tb_cflags(start_tb),
++            c89_browser_qemu_m68k_tb_icount(start_tb),
++            last_tb, last_pc, c89_browser_qemu_m68k_tb_flags(last_tb),
++            c89_browser_qemu_m68k_tb_cflags(last_tb),
++            c89_browser_qemu_m68k_tb_icount(last_tb),
++            raw_ret, tb_exit);
++    fflush(stderr);
++
++    last_sig = sig;
++    log_count++;
++}
++#endif
+ 
+ /* -icount align implementation. */
+ 
+@@ -413,6 +520,11 @@ const void *HELPER(lookup_tb_ptr)(CPUArchState *env)
+     uint64_t cs_base;
+     uint32_t flags, cflags;
+ 
++#ifdef C89_BROWSER_QEMU_ROM_RAMTEST_HACK
++    if (c89_browser_qemu_m68k_rom_ramtest_fast_forward(env)) {
++        return tcg_code_gen_epilogue;
++    }
++#endif
+     cpu_get_tb_cpu_state(env, &pc, &cs_base, &flags);
+ 
+     cflags = curr_cflags(cpu);
+@@ -455,6 +567,9 @@ cpu_tb_exec(CPUState *cpu, TranslationBlock *itb, int *tb_exit)
+     }
+ 
+     qemu_thread_jit_execute();
++#ifdef C89_BROWSER_QEMU_M68K_TB_TRACE
++    c89_browser_qemu_m68k_tb_trace("enter", env, itb, NULL, 0, -1);
++#endif
+     ret = tcg_qemu_tb_exec(env, tb_ptr);
+     cpu->neg.can_do_io = true;
+     qemu_plugin_disable_mem_helpers(cpu);
+@@ -470,6 +585,9 @@ cpu_tb_exec(CPUState *cpu, TranslationBlock *itb, int *tb_exit)
+     *tb_exit = ret & TB_EXIT_MASK;
+ 
+     trace_exec_tb_exit(last_tb, *tb_exit);
++#ifdef C89_BROWSER_QEMU_M68K_TB_TRACE
++    c89_browser_qemu_m68k_tb_trace("exit", env, itb, last_tb, ret, *tb_exit);
++#endif
+ 
+     if (*tb_exit > TB_EXIT_IDX1) {
+         /* We didn't start executing this TB (eg because the instruction
+@@ -976,8 +1094,16 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
+             vaddr pc;
+             uint64_t cs_base;
+             uint32_t flags, cflags;
++            CPUArchState *env = cpu_env(cpu);
++
++#ifdef C89_BROWSER_QEMU_ROM_RAMTEST_HACK
++            if (c89_browser_qemu_m68k_rom_ramtest_fast_forward(env)) {
++                last_tb = NULL;
++                continue;
++            }
++#endif
+ 
+-            cpu_get_tb_cpu_state(cpu_env(cpu), &pc, &cs_base, &flags);
++            cpu_get_tb_cpu_state(env, &pc, &cs_base, &flags);
+ 
+             /*
+              * When requested, use an exact setting for cflags for the next
+diff --git a/accel/tcg/cputlb.c b/accel/tcg/cputlb.c
+index e8fa70a7..db25aa92 100644
+--- a/accel/tcg/cputlb.c
++++ b/accel/tcg/cputlb.c
+@@ -18,6 +18,32 @@
+  */
+ 
+ #include "qemu/osdep.h"
++
++#ifndef C89_BROWSER_QEMU_MMIO_BACKOFF_INTERVAL
++#define C89_BROWSER_QEMU_MMIO_BACKOFF_INTERVAL 0
++#endif
++#ifndef C89_BROWSER_QEMU_MMIO_BACKOFF_NS
++#define C89_BROWSER_QEMU_MMIO_BACKOFF_NS 500000
++#endif
++#if C89_BROWSER_QEMU_MMIO_BACKOFF_INTERVAL > 0
++static __thread int c89_browser_qemu_mmio_backoff_cnt;
++static inline void c89_browser_qemu_mmio_backoff(void)
++{
++    static __thread int c89_browser_qemu_mmio_backoff_dummy;
++    if (++c89_browser_qemu_mmio_backoff_cnt <
++        C89_BROWSER_QEMU_MMIO_BACKOFF_INTERVAL) {
++        return;
++    }
++    c89_browser_qemu_mmio_backoff_cnt = 0;
++    __builtin_wasm_memory_atomic_wait32(
++        &c89_browser_qemu_mmio_backoff_dummy, 0,
++        C89_BROWSER_QEMU_MMIO_BACKOFF_NS);
++}
++#else
++static inline void c89_browser_qemu_mmio_backoff(void)
++{
++}
++#endif
+ #include "qemu/main-loop.h"
+ #include "hw/core/tcg-cpu-ops.h"
+ #include "exec/exec-all.h"
+@@ -2034,6 +2060,7 @@ static uint64_t do_ld_mmio_beN(CPUState *cpu, CPUTLBEntryFull *full,
+     ret = int_ld_mmio_beN(cpu, full, ret_be, addr, size, mmu_idx,
+                           type, ra, mr, mr_offset);
+     qemu_mutex_unlock_iothread();
++    c89_browser_qemu_mmio_backoff();
+ 
+     return ret;
+ }
+@@ -2060,6 +2087,7 @@ static Int128 do_ld16_mmio_beN(CPUState *cpu, CPUTLBEntryFull *full,
+     b = int_ld_mmio_beN(cpu, full, ret_be, addr + size - 8, 8, mmu_idx,
+                         MMU_DATA_LOAD, ra, mr, mr_offset + size - 8);
+     qemu_mutex_unlock_iothread();
++    c89_browser_qemu_mmio_backoff();
+ 
+     return int128_make128(b, a);
+ }
+@@ -2581,6 +2609,7 @@ static uint64_t do_st_mmio_leN(CPUState *cpu, CPUTLBEntryFull *full,
+     ret = int_st_mmio_leN(cpu, full, val_le, addr, size, mmu_idx,
+                           ra, mr, mr_offset);
+     qemu_mutex_unlock_iothread();
++    c89_browser_qemu_mmio_backoff();
+ 
+     return ret;
+ }
+@@ -2607,6 +2636,7 @@ static uint64_t do_st16_mmio_leN(CPUState *cpu, CPUTLBEntryFull *full,
+     ret = int_st_mmio_leN(cpu, full, int128_gethi(val_le), addr + 8,
+                           size - 8, mmu_idx, ra, mr, mr_offset + 8);
+     qemu_mutex_unlock_iothread();
++    c89_browser_qemu_mmio_backoff();
+ 
+     return ret;
+ }
+diff --git a/chardev/msmouse.c b/chardev/msmouse.c
+index a774c397..2279694c 100644
+--- a/chardev/msmouse.c
++++ b/chardev/msmouse.c
+@@ -81,7 +81,7 @@ static void msmouse_chr_accept_input(Chardev *chr)
+         const uint8_t *buf;
+         uint32_t size;
+ 
+-        buf = fifo8_pop_buf(&mouse->outbuf, MIN(len, avail), &size);
++        buf = fifo8_pop_bufptr(&mouse->outbuf, MIN(len, avail), &size);
+         qemu_chr_be_write(chr, buf, size);
+         len = qemu_chr_be_can_write(chr);
+         avail -= size;
+diff --git a/hw/audio/asc.c b/hw/audio/asc.c
+index 0f36b4ce..d7e234fc 100644
+--- a/hw/audio/asc.c
++++ b/hw/audio/asc.c
+@@ -442,6 +442,13 @@ static uint64_t asc_read(void *opaque, hwaddr addr,
+     case ASC_FIFOIRQ:
+         prev = (s->fifos[0].int_status & 0x3) |
+                 (s->fifos[1].int_status & 0x3) << 2;
++#ifdef C89_BROWSER_QEMU_ASC_READY_HACK
++        /* C89 browser-qemu: no-audio q800 ROM unblock shim. */
++        prev |= (ASC_FIFO_STATUS_HALF_FULL |
++                 ASC_FIFO_STATUS_FULL_EMPTY) |
++                ((ASC_FIFO_STATUS_HALF_FULL |
++                  ASC_FIFO_STATUS_FULL_EMPTY) << 2);
++#endif
+ 
+         s->fifos[0].int_status = 0;
+         s->fifos[1].int_status = 0;
+diff --git a/hw/char/goldfish_tty.c b/hw/char/goldfish_tty.c
+index 20b77885..42cf989f 100644
+--- a/hw/char/goldfish_tty.c
++++ b/hw/char/goldfish_tty.c
+@@ -109,7 +109,7 @@ static void goldfish_tty_cmd(GoldfishTTYState *s, uint32_t cmd)
+         len = s->data_len;
+         ptr = s->data_ptr;
+         while (len && !fifo8_is_empty(&s->rx_fifo)) {
+-            buf = (uint8_t *)fifo8_pop_buf(&s->rx_fifo, len, &to_copy);
++            buf = (uint8_t *)fifo8_pop_bufptr(&s->rx_fifo, len, &to_copy);
+             address_space_rw(&address_space_memory, ptr,
+                             MEMTXATTRS_UNSPECIFIED, buf, to_copy, 1);
+ 
+diff --git a/hw/misc/mac_via.c b/hw/misc/mac_via.c
+index b6206ef7..cf17cdc9 100644
+--- a/hw/misc/mac_via.c
++++ b/hw/misc/mac_via.c
+@@ -285,6 +285,107 @@
+ #define VIA_TIMER_FREQ (783360)
+ #define VIA_ADB_POLL_FREQ 50 /* XXX: not real */
+ 
++#ifdef C89_BROWSER_QEMU_VIA_TRACE
++static const char *c89_via_reg_name(int addr)
++{
++    switch (addr) {
++    case VIA_REG_B:
++        return "ORB";
++    case VIA_REG_A:
++        return "ORA";
++    case VIA_REG_DIRB:
++        return "DDRB";
++    case VIA_REG_DIRA:
++        return "DDRA";
++    case VIA_REG_T1CL:
++        return "T1CL";
++    case VIA_REG_T1CH:
++        return "T1CH";
++    case VIA_REG_T1LL:
++        return "T1LL";
++    case VIA_REG_T1LH:
++        return "T1LH";
++    case VIA_REG_T2CL:
++        return "T2CL";
++    case VIA_REG_T2CH:
++        return "T2CH";
++    case VIA_REG_SR:
++        return "SR";
++    case VIA_REG_ACR:
++        return "ACR";
++    case VIA_REG_PCR:
++        return "PCR";
++    case VIA_REG_IFR:
++        return "IFR";
++    case VIA_REG_IER:
++        return "IER";
++    case VIA_REG_ANH:
++        return "ANH";
++    default:
++        return "?";
++    }
++}
++
++static void c89_via1_trace_irq_state(const char *source,
++                                     MOS6522Q800VIA1State *v1s,
++                                     MOS6522State *ms,
++                                     bool force)
++{
++    static uint8_t last_ifr = 0xff;
++    static uint8_t last_ier = 0xff;
++    static uint8_t last_active = 0xff;
++    static unsigned log_count;
++    static unsigned unchanged_force_count;
++    uint8_t active = ms->ifr & ms->ier;
++    bool changed = ms->ifr != last_ifr ||
++                   ms->ier != last_ier ||
++                   active != last_active;
++
++    if (!changed && !force) {
++        return;
++    }
++    if (!changed && unchanged_force_count++ > 128) {
++        return;
++    }
++    if (log_count++ > 3000) {
++        return;
++    }
++
++    fprintf(stderr,
++            "[c89-via1-irq] %s ifr=0x%02x ier=0x%02x active=0x%02x "
++            "bits{1s=%d 60hz=%d adb_ready=%d adb_data=%d adb_clk=%d "
++            "t2=%d t1=%d} b=0x%02x sr=0x%02x acr=0x%02x pcr=0x%02x "
++            "last_levels=0x%02x t2_latch=0x%04x t2_counter=0x%04x "
++            "t2_next=%lld state=%d\n",
++            source, ms->ifr, ms->ier, active,
++            !!(active & VIA1_IRQ_ONE_SECOND),
++            !!(active & VIA1_IRQ_60HZ),
++            !!(active & VIA1_IRQ_ADB_READY),
++            !!(active & VIA1_IRQ_ADB_DATA),
++            !!(active & VIA1_IRQ_ADB_CLOCK),
++            !!(active & T2_INT),
++            !!(active & T1_INT),
++            ms->b, ms->sr, ms->acr, ms->pcr, ms->last_irq_levels,
++            ms->timers[1].latch, ms->timers[1].counter_value,
++            (long long)ms->timers[1].next_irq_time,
++            v1s->timer_hack_state);
++
++    last_ifr = ms->ifr;
++    last_ier = ms->ier;
++    last_active = active;
++}
++
++static void c89_via1_trace_rw(const char *op, int addr, uint64_t val,
++                              unsigned size, MOS6522Q800VIA1State *v1s,
++                              MOS6522State *ms)
++{
++    (void)addr;
++    (void)val;
++    (void)size;
++    c89_via1_trace_irq_state(op, v1s, ms, false);
++}
++#endif
++
+ /*
+  * Guide to the Macintosh Family Hardware ch. 12 "Displays" p. 401 gives the
+  * precise 60Hz interrupt frequency as ~60.15Hz with a period of 16625.8 us
+@@ -334,6 +435,9 @@ static void via1_sixty_hz(void *opaque)
+     /* Negative edge trigger */
+     qemu_irq_lower(irq);
+     qemu_irq_raise(irq);
++#ifdef C89_BROWSER_QEMU_VIA_TRACE
++    c89_via1_trace_irq_state("60hz edge", v1s, s, false);
++#endif
+ 
+     via1_sixty_hz_update(v1s);
+ }
+@@ -347,6 +451,9 @@ static void via1_one_second(void *opaque)
+     /* Negative edge trigger */
+     qemu_irq_lower(irq);
+     qemu_irq_raise(irq);
++#ifdef C89_BROWSER_QEMU_VIA_TRACE
++    c89_via1_trace_irq_state("1s edge", v1s, s, false);
++#endif
+ 
+     via1_one_second_update(v1s);
+ }
+@@ -581,6 +688,21 @@ static void adb_via_poll(void *opaque)
+     uint8_t *data = &s->sr;
+     int olen;
+ 
++#ifdef C89_BROWSER_QEMU_ADB_AUTOPOLL_SUPPRESS
++    /*
++     * C89 browser-qemu experiment: keep early ROM boot from being flooded by
++     * ADB autopoll-ready interrupts while display/SCSI bring-up is isolated.
++     * This intentionally disables useful keyboard/mouse replies and must not
++     * be enabled in the eventual interactive build.
++     */
++    *data = 0xff;
++    v1s->adb_data_in_size = 0;
++    v1s->adb_data_in_index = 0;
++    v1s->adb_data_out_index = 0;
++    s->b |= VIA1B_vADBInt;
++    return;
++#endif
++
+     /*
+      * Setting vADBInt below indicates that an autopoll reply has been
+      * received, however we must block autopoll until the point where
+@@ -632,6 +754,9 @@ static void adb_via_poll(void *opaque)
+ 
+     trace_via1_adb_poll(*data, (s->b & VIA1B_vADBInt) ? "+" : "-",
+                         adb_bus->status, v1s->adb_data_in_index, olen);
++#ifdef C89_BROWSER_QEMU_VIA_TRACE
++    c89_via1_trace_irq_state("adb_poll", v1s, s, true);
++#endif
+ }
+ 
+ static int adb_via_send_len(uint8_t data)
+@@ -1027,6 +1152,13 @@ static void via1_timer_calibration_hack(MOS6522Q800VIA1State *v1s, int addr,
+     }
+ 
+     if (old_timer_hack_state != v1s->timer_hack_state) {
++#ifdef C89_BROWSER_QEMU_VIA_TRACE
++        fprintf(stderr,
++                "[c89-via1] timer_hack_state %d -> %d via %s=0x%02llx\n",
++                old_timer_hack_state, v1s->timer_hack_state,
++                c89_via_reg_name(addr), (unsigned long long)val);
++        c89_via1_trace_irq_state("timer_hack_state", v1s, MOS6522(v1s), true);
++#endif
+         trace_via1_timer_hack_state(v1s->timer_hack_state);
+     }
+ }
+@@ -1064,6 +1196,9 @@ static uint64_t mos6522_q800_via1_read(void *opaque, hwaddr addr, unsigned size)
+         }
+         break;
+     }
++#ifdef C89_BROWSER_QEMU_VIA_TRACE
++    c89_via1_trace_rw("read", addr, ret, size, s, ms);
++#endif
+     return ret;
+ }
+ 
+@@ -1079,6 +1214,10 @@ static void mos6522_q800_via1_write(void *opaque, hwaddr addr, uint64_t val,
+ 
+     via1_timer_calibration_hack(v1s, addr, val, size);
+ 
++#ifdef C89_BROWSER_QEMU_VIA_TRACE
++    c89_via1_trace_rw("write", addr, val, size, v1s, ms);
++#endif
++
+     mos6522_write(ms, addr, val, size);
+ 
+     switch (addr) {
+diff --git a/hw/misc/mos6522.c b/hw/misc/mos6522.c
+index d6ba47bd..3bb4f8ed 100644
+--- a/hw/misc/mos6522.c
++++ b/hw/misc/mos6522.c
+@@ -175,6 +175,11 @@ static void set_counter(MOS6522State *s, MOS6522Timer *ti, unsigned int val)
+     trace_mos6522_set_counter(1 + ti->index, val);
+     ti->load_time = get_load_time(s, ti);
+     ti->counter_value = val;
++#ifdef C89_BROWSER_QEMU_VIA_T2_ONESHOT_HACK
++    if (ti->index == 1) {
++        ti->armed = true;
++    }
++#endif
+     if (ti->index == 0) {
+         mos6522_timer1_update(s, ti, ti->load_time);
+     } else {
+@@ -242,6 +247,13 @@ static void mos6522_timer2_update(MOS6522State *s, MOS6522Timer *ti,
+     if (!ti->timer) {
+         return;
+     }
++#ifdef C89_BROWSER_QEMU_VIA_T2_ONESHOT_HACK
++    if (!ti->armed) {
++        ti->next_irq_time = INT64_MAX;
++        timer_del(ti->timer);
++        return;
++    }
++#endif
+     ti->next_irq_time = get_next_irq_time(s, ti, current_time);
+     if ((s->ier & T2_INT) == 0) {
+         timer_del(ti->timer);
+@@ -250,6 +262,17 @@ static void mos6522_timer2_update(MOS6522State *s, MOS6522Timer *ti,
+     }
+ }
+ 
++#ifdef C89_BROWSER_QEMU_VIA_T2_ONESHOT_HACK
++static void mos6522_timer2_disarm(MOS6522Timer *ti)
++{
++    ti->armed = false;
++    ti->next_irq_time = INT64_MAX;
++    if (ti->timer) {
++        timer_del(ti->timer);
++    }
++}
++#endif
++
+ static void mos6522_timer1(void *opaque)
+ {
+     MOS6522State *s = opaque;
+@@ -265,7 +288,11 @@ static void mos6522_timer2(void *opaque)
+     MOS6522State *s = opaque;
+     MOS6522Timer *ti = &s->timers[1];
+ 
++#ifdef C89_BROWSER_QEMU_VIA_T2_ONESHOT_HACK
++    mos6522_timer2_disarm(ti);
++#else
+     mos6522_timer2_update(s, ti, ti->next_irq_time);
++#endif
+     s->ifr |= T2_INT;
+     mos6522_update_irq(s);
+ }
+@@ -305,7 +332,11 @@ uint64_t mos6522_read(void *opaque, hwaddr addr, unsigned size)
+         s->ifr |= T1_INT;
+     }
+     if (now >= s->timers[1].next_irq_time) {
++#ifdef C89_BROWSER_QEMU_VIA_T2_ONESHOT_HACK
++        mos6522_timer2_disarm(&s->timers[1]);
++#else
+         mos6522_timer2_update(s, &s->timers[1], now);
++#endif
+         s->ifr |= T2_INT;
+     }
+     switch (addr) {
+@@ -616,6 +647,9 @@ static const VMStateDescription vmstate_mos6522_timer = {
+         VMSTATE_UINT16(counter_value, MOS6522Timer),
+         VMSTATE_INT64(load_time, MOS6522Timer),
+         VMSTATE_INT64(next_irq_time, MOS6522Timer),
++#ifdef C89_BROWSER_QEMU_VIA_T2_ONESHOT_HACK
++        VMSTATE_BOOL(armed, MOS6522Timer),
++#endif
+         VMSTATE_TIMER_PTR(timer, MOS6522Timer),
+         VMSTATE_END_OF_LIST()
+     }
+@@ -664,6 +698,10 @@ static void mos6522_reset_hold(Object *obj)
+ 
+     s->timers[1].frequency = s->frequency;
+     s->timers[1].latch = 0xffff;
++    s->timers[1].next_irq_time = INT64_MAX;
++#ifdef C89_BROWSER_QEMU_VIA_T2_ONESHOT_HACK
++    s->timers[1].armed = false;
++#endif
+     timer_del(s->timers[1].timer);
+ }
+ 
+diff --git a/hw/net/allwinner_emac.c b/hw/net/allwinner_emac.c
+index e10965de..e449206c 100644
+--- a/hw/net/allwinner_emac.c
++++ b/hw/net/allwinner_emac.c
+@@ -349,7 +349,7 @@ static void aw_emac_write(void *opaque, hwaddr offset, uint64_t value,
+                               "allwinner_emac: TX length > fifo data length\n");
+             }
+             if (len > 0) {
+-                data = fifo8_pop_buf(fifo, len, &ret);
++                data = fifo8_pop_bufptr(fifo, len, &ret);
+                 qemu_send_packet(nc, data, ret);
+                 aw_emac_tx_reset(s, chan);
+                 /* Raise TX interrupt */
+diff --git a/hw/scsi/esp.c b/hw/scsi/esp.c
+index 9b11d8c5..b7af8256 100644
+--- a/hw/scsi/esp.c
++++ b/hw/scsi/esp.c
+@@ -3,6 +3,7 @@
+  *
+  * Copyright (c) 2005-2006 Fabrice Bellard
+  * Copyright (c) 2012 Herve Poussineau
++ * Copyright (c) 2023 Mark Cave-Ayland
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+@@ -62,14 +63,38 @@ static void esp_lower_irq(ESPState *s)
+ 
+ static void esp_raise_drq(ESPState *s)
+ {
+-    qemu_irq_raise(s->irq_data);
+-    trace_esp_raise_drq();
++    if (!(s->drq_state)) {
++        qemu_irq_raise(s->drq_irq);
++        trace_esp_raise_drq();
++        s->drq_state = true;
++    }
+ }
+ 
+ static void esp_lower_drq(ESPState *s)
+ {
+-    qemu_irq_lower(s->irq_data);
+-    trace_esp_lower_drq();
++    if (s->drq_state) {
++        qemu_irq_lower(s->drq_irq);
++        trace_esp_lower_drq();
++        s->drq_state = false;
++    }
++}
++
++static const char *esp_phase_names[8] = {
++    "DATA OUT", "DATA IN", "COMMAND", "STATUS",
++    "(reserved)", "(reserved)", "MESSAGE OUT", "MESSAGE IN"
++};
++
++static void esp_set_phase(ESPState *s, uint8_t phase)
++{
++    s->rregs[ESP_RSTAT] &= ~7;
++    s->rregs[ESP_RSTAT] |= phase;
++
++    trace_esp_set_phase(esp_phase_names[phase]);
++}
++
++static uint8_t esp_get_phase(ESPState *s)
++{
++    return s->rregs[ESP_RSTAT] & 7;
+ }
+ 
+ void esp_dma_enable(ESPState *s, int irq, int level)
+@@ -99,40 +124,85 @@ void esp_request_cancelled(SCSIRequest *req)
+     }
+ }
+ 
+-static void esp_fifo_push(Fifo8 *fifo, uint8_t val)
++static void esp_update_drq(ESPState *s)
+ {
+-    if (fifo8_num_used(fifo) == fifo->capacity) {
+-        trace_esp_error_fifo_overrun();
++    bool to_device;
++
++    switch (esp_get_phase(s)) {
++    case STAT_MO:
++    case STAT_CD:
++    case STAT_DO:
++        to_device = true;
++        break;
++
++    case STAT_DI:
++    case STAT_ST:
++    case STAT_MI:
++        to_device = false;
++        break;
++
++    default:
+         return;
+     }
+ 
+-    fifo8_push(fifo, val);
++    if (s->dma) {
++        /* DMA request so update DRQ according to transfer direction */
++        if (to_device) {
++            if (fifo8_num_free(&s->fifo) < 2) {
++                esp_lower_drq(s);
++            } else {
++                esp_raise_drq(s);
++            }
++        } else {
++            if (fifo8_num_used(&s->fifo) < 2) {
++                esp_lower_drq(s);
++            } else {
++                esp_raise_drq(s);
++            }
++        }
++    } else {
++        /* Not a DMA request */
++        esp_lower_drq(s);
++    }
+ }
+ 
+-static uint8_t esp_fifo_pop(Fifo8 *fifo)
++static void esp_fifo_push(ESPState *s, uint8_t val)
+ {
+-    if (fifo8_is_empty(fifo)) {
+-        return 0;
++    if (fifo8_num_used(&s->fifo) == s->fifo.capacity) {
++        trace_esp_error_fifo_overrun();
++    } else {
++        fifo8_push(&s->fifo, val);
+     }
+ 
+-    return fifo8_pop(fifo);
++    esp_update_drq(s);
+ }
+ 
+-static uint32_t esp_fifo_pop_buf(Fifo8 *fifo, uint8_t *dest, int maxlen)
++static void esp_fifo_push_buf(ESPState *s, uint8_t *buf, int len)
+ {
+-    const uint8_t *buf;
+-    uint32_t n;
++    fifo8_push_all(&s->fifo, buf, len);
++    esp_update_drq(s);
++}
+ 
+-    if (maxlen == 0) {
+-        return 0;
+-    }
++static uint8_t esp_fifo_pop(ESPState *s)
++{
++    uint8_t val;
+ 
+-    buf = fifo8_pop_buf(fifo, maxlen, &n);
+-    if (dest) {
+-        memcpy(dest, buf, n);
++    if (fifo8_is_empty(&s->fifo)) {
++        val = 0;
++    } else {
++        val = fifo8_pop(&s->fifo);
+     }
+ 
+-    return n;
++    esp_update_drq(s);
++    return val;
++}
++
++static uint32_t esp_fifo_pop_buf(ESPState *s, uint8_t *dest, int maxlen)
++{
++    uint32_t len = fifo8_pop_buf(&s->fifo, dest, maxlen);
++
++    esp_update_drq(s);
++    return len;
+ }
+ 
+ static uint32_t esp_get_tc(ESPState *s)
+@@ -148,9 +218,15 @@ static uint32_t esp_get_tc(ESPState *s)
+ 
+ static void esp_set_tc(ESPState *s, uint32_t dmalen)
+ {
++    uint32_t old_tc = esp_get_tc(s);
++
+     s->rregs[ESP_TCLO] = dmalen;
+     s->rregs[ESP_TCMID] = dmalen >> 8;
+     s->rregs[ESP_TCHI] = dmalen >> 16;
++
++    if (old_tc && dmalen == 0) {
++        s->rregs[ESP_RSTAT] |= STAT_TC;
++    }
+ }
+ 
+ static uint32_t esp_get_stc(ESPState *s)
+@@ -168,12 +244,7 @@ static uint8_t esp_pdma_read(ESPState *s)
+ {
+     uint8_t val;
+ 
+-    if (s->do_cmd) {
+-        val = esp_fifo_pop(&s->cmdfifo);
+-    } else {
+-        val = esp_fifo_pop(&s->fifo);
+-    }
+-
++    val = esp_fifo_pop(s);
+     return val;
+ }
+ 
+@@ -181,23 +252,12 @@ static void esp_pdma_write(ESPState *s, uint8_t val)
+ {
+     uint32_t dmalen = esp_get_tc(s);
+ 
+-    if (dmalen == 0) {
+-        return;
+-    }
++    esp_fifo_push(s, val);
+ 
+-    if (s->do_cmd) {
+-        esp_fifo_push(&s->cmdfifo, val);
+-    } else {
+-        esp_fifo_push(&s->fifo, val);
++    if (dmalen && s->drq_state) {
++        dmalen--;
++        esp_set_tc(s, dmalen);
+     }
+-
+-    dmalen--;
+-    esp_set_tc(s, dmalen);
+-}
+-
+-static void esp_set_pdma_cb(ESPState *s, enum pdma_cb cb)
+-{
+-    s->pdma_cb = cb;
+ }
+ 
+ static int esp_select(ESPState *s)
+@@ -207,75 +267,31 @@ static int esp_select(ESPState *s)
+     target = s->wregs[ESP_WBUSID] & BUSID_DID;
+ 
+     s->ti_size = 0;
+-    fifo8_reset(&s->fifo);
++    s->rregs[ESP_RSEQ] = SEQ_0;
++
++    if (s->current_req) {
++        /* Started a new command before the old one finished. Cancel it. */
++        scsi_req_cancel(s->current_req);
++    }
+ 
+     s->current_dev = scsi_device_find(&s->bus, 0, target, 0);
+     if (!s->current_dev) {
+         /* No such drive */
+         s->rregs[ESP_RSTAT] = 0;
+         s->rregs[ESP_RINTR] = INTR_DC;
+-        s->rregs[ESP_RSEQ] = SEQ_0;
+         esp_raise_irq(s);
+         return -1;
+     }
+ 
+     /*
+      * Note that we deliberately don't raise the IRQ here: this will be done
+-     * either in do_command_phase() for DATA OUT transfers or by the deferred
+-     * IRQ mechanism in esp_transfer_data() for DATA IN transfers
++     * either in esp_transfer_data() or esp_command_complete()
+      */
+-    s->rregs[ESP_RINTR] |= INTR_FC;
+-    s->rregs[ESP_RSEQ] = SEQ_CD;
+     return 0;
+ }
+ 
+-static uint32_t get_cmd(ESPState *s, uint32_t maxlen)
+-{
+-    uint8_t buf[ESP_CMDFIFO_SZ];
+-    uint32_t dmalen, n;
+-    int target;
+-
+-    if (s->current_req) {
+-        /* Started a new command before the old one finished.  Cancel it.  */
+-        scsi_req_cancel(s->current_req);
+-    }
+-
+-    target = s->wregs[ESP_WBUSID] & BUSID_DID;
+-    if (s->dma) {
+-        dmalen = MIN(esp_get_tc(s), maxlen);
+-        if (dmalen == 0) {
+-            return 0;
+-        }
+-        if (s->dma_memory_read) {
+-            s->dma_memory_read(s->dma_opaque, buf, dmalen);
+-            dmalen = MIN(fifo8_num_free(&s->cmdfifo), dmalen);
+-            fifo8_push_all(&s->cmdfifo, buf, dmalen);
+-        } else {
+-            if (esp_select(s) < 0) {
+-                fifo8_reset(&s->cmdfifo);
+-                return -1;
+-            }
+-            esp_raise_drq(s);
+-            fifo8_reset(&s->cmdfifo);
+-            return 0;
+-        }
+-    } else {
+-        dmalen = MIN(fifo8_num_used(&s->fifo), maxlen);
+-        if (dmalen == 0) {
+-            return 0;
+-        }
+-        n = esp_fifo_pop_buf(&s->fifo, buf, dmalen);
+-        n = MIN(fifo8_num_free(&s->cmdfifo), n);
+-        fifo8_push_all(&s->cmdfifo, buf, n);
+-    }
+-    trace_esp_get_cmd(dmalen, target);
+-
+-    if (esp_select(s) < 0) {
+-        fifo8_reset(&s->cmdfifo);
+-        return -1;
+-    }
+-    return dmalen;
+-}
++static void esp_do_dma(ESPState *s);
++static void esp_do_nodma(ESPState *s);
+ 
+ static void do_command_phase(ESPState *s)
+ {
+@@ -289,30 +305,32 @@ static void do_command_phase(ESPState *s)
+     if (!cmdlen || !s->current_dev) {
+         return;
+     }
+-    esp_fifo_pop_buf(&s->cmdfifo, buf, cmdlen);
++    fifo8_pop_buf(&s->cmdfifo, buf, cmdlen);
+ 
+     current_lun = scsi_device_find(&s->bus, 0, s->current_dev->id, s->lun);
++    if (!current_lun) {
++        /* No such drive */
++        s->rregs[ESP_RSTAT] = 0;
++        s->rregs[ESP_RINTR] = INTR_DC;
++        s->rregs[ESP_RSEQ] = SEQ_0;
++        esp_raise_irq(s);
++        return;
++    }
++
+     s->current_req = scsi_req_new(current_lun, 0, s->lun, buf, cmdlen, s);
+     datalen = scsi_req_enqueue(s->current_req);
+     s->ti_size = datalen;
+     fifo8_reset(&s->cmdfifo);
++    s->data_ready = false;
+     if (datalen != 0) {
+-        s->rregs[ESP_RSTAT] = STAT_TC;
+-        s->rregs[ESP_RSEQ] = SEQ_CD;
+-        s->ti_cmd = 0;
+-        esp_set_tc(s, 0);
++        /*
++         * Switch to DATA phase but wait until initial data xfer is
++         * complete before raising the command completion interrupt
++         */
+         if (datalen > 0) {
+-            /*
+-             * Switch to DATA IN phase but wait until initial data xfer is
+-             * complete before raising the command completion interrupt
+-             */
+-            s->data_in_ready = false;
+-            s->rregs[ESP_RSTAT] |= STAT_DI;
++            esp_set_phase(s, STAT_DI);
+         } else {
+-            s->rregs[ESP_RSTAT] |= STAT_DO;
+-            s->rregs[ESP_RINTR] |= INTR_BS | INTR_FC;
+-            esp_raise_irq(s);
+-            esp_lower_drq(s);
++            esp_set_phase(s, STAT_DO);
+         }
+         scsi_req_continue(s->current_req);
+         return;
+@@ -322,7 +340,8 @@ static void do_command_phase(ESPState *s)
+ static void do_message_phase(ESPState *s)
+ {
+     if (s->cmdfifo_cdb_offset) {
+-        uint8_t message = esp_fifo_pop(&s->cmdfifo);
++        uint8_t message = fifo8_is_empty(&s->cmdfifo) ? 0 :
++                          fifo8_pop(&s->cmdfifo);
+ 
+         trace_esp_do_identify(message);
+         s->lun = message & 7;
+@@ -332,7 +351,7 @@ static void do_message_phase(ESPState *s)
+     /* Ignore extended messages for now */
+     if (s->cmdfifo_cdb_offset) {
+         int len = MIN(s->cmdfifo_cdb_offset, fifo8_num_used(&s->cmdfifo));
+-        esp_fifo_pop_buf(&s->cmdfifo, NULL, len);
++        fifo8_drop(&s->cmdfifo, len);
+         s->cmdfifo_cdb_offset = 0;
+     }
+ }
+@@ -344,472 +363,579 @@ static void do_cmd(ESPState *s)
+     do_command_phase(s);
+ }
+ 
+-static void satn_pdma_cb(ESPState *s)
+-{
+-    if (!esp_get_tc(s) && !fifo8_is_empty(&s->cmdfifo)) {
+-        s->cmdfifo_cdb_offset = 1;
+-        s->do_cmd = 0;
+-        do_cmd(s);
+-    }
+-}
+-
+ static void handle_satn(ESPState *s)
+ {
+-    int32_t cmdlen;
+-
+     if (s->dma && !s->dma_enabled) {
+         s->dma_cb = handle_satn;
+         return;
+     }
+-    esp_set_pdma_cb(s, SATN_PDMA_CB);
+-    cmdlen = get_cmd(s, ESP_CMDFIFO_SZ);
+-    if (cmdlen > 0) {
+-        s->cmdfifo_cdb_offset = 1;
+-        s->do_cmd = 0;
+-        do_cmd(s);
+-    } else if (cmdlen == 0) {
+-        s->do_cmd = 1;
+-        /* Target present, but no cmd yet - switch to command phase */
+-        s->rregs[ESP_RSEQ] = SEQ_CD;
+-        s->rregs[ESP_RSTAT] = STAT_CD;
++
++    if (esp_select(s) < 0) {
++        return;
+     }
+-}
+ 
+-static void s_without_satn_pdma_cb(ESPState *s)
+-{
+-    if (!esp_get_tc(s) && !fifo8_is_empty(&s->cmdfifo)) {
+-        s->cmdfifo_cdb_offset = 0;
+-        s->do_cmd = 0;
+-        do_cmd(s);
++    esp_set_phase(s, STAT_MO);
++
++    if (s->dma) {
++        esp_do_dma(s);
++    } else {
++        esp_do_nodma(s);
+     }
+ }
+ 
+ static void handle_s_without_atn(ESPState *s)
+ {
+-    int32_t cmdlen;
+-
+     if (s->dma && !s->dma_enabled) {
+         s->dma_cb = handle_s_without_atn;
+         return;
+     }
+-    esp_set_pdma_cb(s, S_WITHOUT_SATN_PDMA_CB);
+-    cmdlen = get_cmd(s, ESP_CMDFIFO_SZ);
+-    if (cmdlen > 0) {
+-        s->cmdfifo_cdb_offset = 0;
+-        s->do_cmd = 0;
+-        do_cmd(s);
+-    } else if (cmdlen == 0) {
+-        s->do_cmd = 1;
+-        /* Target present, but no cmd yet - switch to command phase */
+-        s->rregs[ESP_RSEQ] = SEQ_CD;
+-        s->rregs[ESP_RSTAT] = STAT_CD;
++
++    if (esp_select(s) < 0) {
++        return;
+     }
+-}
+ 
+-static void satn_stop_pdma_cb(ESPState *s)
+-{
+-    if (!esp_get_tc(s) && !fifo8_is_empty(&s->cmdfifo)) {
+-        trace_esp_handle_satn_stop(fifo8_num_used(&s->cmdfifo));
+-        s->do_cmd = 1;
+-        s->cmdfifo_cdb_offset = 1;
+-        s->rregs[ESP_RSTAT] = STAT_TC | STAT_CD;
+-        s->rregs[ESP_RINTR] |= INTR_BS | INTR_FC;
+-        s->rregs[ESP_RSEQ] = SEQ_CD;
+-        esp_raise_irq(s);
++    esp_set_phase(s, STAT_CD);
++    s->cmdfifo_cdb_offset = 0;
++
++    if (s->dma) {
++        esp_do_dma(s);
++    } else {
++        esp_do_nodma(s);
+     }
+ }
+ 
+ static void handle_satn_stop(ESPState *s)
+ {
+-    int32_t cmdlen;
+-
+     if (s->dma && !s->dma_enabled) {
+         s->dma_cb = handle_satn_stop;
+         return;
+     }
+-    esp_set_pdma_cb(s, SATN_STOP_PDMA_CB);
+-    cmdlen = get_cmd(s, 1);
+-    if (cmdlen > 0) {
+-        trace_esp_handle_satn_stop(fifo8_num_used(&s->cmdfifo));
+-        s->do_cmd = 1;
+-        s->cmdfifo_cdb_offset = 1;
+-        s->rregs[ESP_RSTAT] = STAT_MO;
+-        s->rregs[ESP_RINTR] |= INTR_BS | INTR_FC;
+-        s->rregs[ESP_RSEQ] = SEQ_MO;
+-        esp_raise_irq(s);
+-    } else if (cmdlen == 0) {
+-        s->do_cmd = 1;
+-        /* Target present, switch to message out phase */
+-        s->rregs[ESP_RSEQ] = SEQ_MO;
+-        s->rregs[ESP_RSTAT] = STAT_MO;
++
++    if (esp_select(s) < 0) {
++        return;
++    }
++
++    esp_set_phase(s, STAT_MO);
++    s->cmdfifo_cdb_offset = 0;
++
++    if (s->dma) {
++        esp_do_dma(s);
++    } else {
++        esp_do_nodma(s);
+     }
+ }
+ 
+-static void write_response_pdma_cb(ESPState *s)
++static void handle_pad(ESPState *s)
+ {
+-    s->rregs[ESP_RSTAT] = STAT_TC | STAT_ST;
+-    s->rregs[ESP_RINTR] |= INTR_BS | INTR_FC;
+-    s->rregs[ESP_RSEQ] = SEQ_CD;
+-    esp_raise_irq(s);
++    if (s->dma) {
++        esp_do_dma(s);
++    } else {
++        esp_do_nodma(s);
++    }
+ }
+ 
+ static void write_response(ESPState *s)
+ {
+-    uint8_t buf[2];
+-
+     trace_esp_write_response(s->status);
+ 
+-    buf[0] = s->status;
+-    buf[1] = 0;
+-
+     if (s->dma) {
+-        if (s->dma_memory_write) {
+-            s->dma_memory_write(s->dma_opaque, buf, 2);
+-            s->rregs[ESP_RSTAT] = STAT_TC | STAT_ST;
+-            s->rregs[ESP_RINTR] |= INTR_BS | INTR_FC;
+-            s->rregs[ESP_RSEQ] = SEQ_CD;
+-        } else {
+-            esp_set_pdma_cb(s, WRITE_RESPONSE_PDMA_CB);
+-            esp_raise_drq(s);
+-            return;
+-        }
++        esp_do_dma(s);
+     } else {
+-        fifo8_reset(&s->fifo);
+-        fifo8_push_all(&s->fifo, buf, 2);
+-        s->rregs[ESP_RFLAGS] = 2;
++        esp_do_nodma(s);
+     }
+-    esp_raise_irq(s);
+ }
+ 
+-static void esp_dma_done(ESPState *s)
++static bool esp_cdb_ready(ESPState *s)
+ {
+-    s->rregs[ESP_RSTAT] |= STAT_TC;
+-    s->rregs[ESP_RINTR] |= INTR_BS;
+-    s->rregs[ESP_RFLAGS] = 0;
+-    esp_set_tc(s, 0);
+-    esp_raise_irq(s);
++    int len = fifo8_num_used(&s->cmdfifo) - s->cmdfifo_cdb_offset;
++    const uint8_t *pbuf;
++    uint32_t n;
++    int cdblen;
++
++    if (len <= 0) {
++        return false;
++    }
++
++    pbuf = fifo8_peek_bufptr(&s->cmdfifo, len, &n);
++    if (n < len) {
++        /*
++         * In normal use the cmdfifo should never wrap, but include this check
++         * to prevent a malicious guest from reading past the end of the
++         * cmdfifo data buffer below
++         */
++        return false;
++    }
++
++    cdblen = scsi_cdb_length((uint8_t *)&pbuf[s->cmdfifo_cdb_offset]);
++
++    return cdblen < 0 ? false : (len >= cdblen);
+ }
+ 
+-static void do_dma_pdma_cb(ESPState *s)
++static void esp_dma_ti_check(ESPState *s)
+ {
+-    int to_device = ((s->rregs[ESP_RSTAT] & 7) == STAT_DO);
+-    int len;
+-    uint32_t n;
++    if (esp_get_tc(s) == 0 && fifo8_num_used(&s->fifo) < 2) {
++        s->rregs[ESP_RINTR] |= INTR_BS;
++        esp_raise_irq(s);
++    }
++}
+ 
+-    if (s->do_cmd) {
+-        /* Ensure we have received complete command after SATN and stop */
+-        if (esp_get_tc(s) || fifo8_is_empty(&s->cmdfifo)) {
+-            return;
+-        }
++static void esp_do_dma(ESPState *s)
++{
++    uint32_t len, cmdlen;
++    uint8_t buf[ESP_CMDFIFO_SZ];
+ 
+-        s->ti_size = 0;
+-        if ((s->rregs[ESP_RSTAT] & 7) == STAT_CD) {
+-            /* No command received */
+-            if (s->cmdfifo_cdb_offset == fifo8_num_used(&s->cmdfifo)) {
+-                return;
+-            }
++    len = esp_get_tc(s);
+ 
+-            /* Command has been received */
+-            s->do_cmd = 0;
+-            do_cmd(s);
++    switch (esp_get_phase(s)) {
++    case STAT_MO:
++        if (s->dma_memory_read) {
++            len = MIN(len, fifo8_num_free(&s->cmdfifo));
++            s->dma_memory_read(s->dma_opaque, buf, len);
++            esp_set_tc(s, esp_get_tc(s) - len);
+         } else {
+-            /*
+-             * Extra message out bytes received: update cmdfifo_cdb_offset
+-             * and then switch to command phase
+-             */
+-            s->cmdfifo_cdb_offset = fifo8_num_used(&s->cmdfifo);
+-            s->rregs[ESP_RSTAT] = STAT_TC | STAT_CD;
+-            s->rregs[ESP_RSEQ] = SEQ_CD;
+-            s->rregs[ESP_RINTR] |= INTR_BS;
+-            esp_raise_irq(s);
++            len = esp_fifo_pop_buf(s, buf, fifo8_num_used(&s->fifo));
++            len = MIN(fifo8_num_free(&s->cmdfifo), len);
+         }
+-        return;
+-    }
+-
+-    if (!s->current_req) {
+-        return;
+-    }
+ 
+-    if (to_device) {
+-        /* Copy FIFO data to device */
+-        len = MIN(s->async_len, ESP_FIFO_SZ);
+-        len = MIN(len, fifo8_num_used(&s->fifo));
+-        n = esp_fifo_pop_buf(&s->fifo, s->async_buf, len);
+-        s->async_buf += n;
+-        s->async_len -= n;
+-        s->ti_size += n;
+-
+-        if (n < len) {
+-            /* Unaligned accesses can cause FIFO wraparound */
+-            len = len - n;
+-            n = esp_fifo_pop_buf(&s->fifo, s->async_buf, len);
+-            s->async_buf += n;
+-            s->async_len -= n;
+-            s->ti_size += n;
+-        }
++        fifo8_push_all(&s->cmdfifo, buf, len);
++        s->cmdfifo_cdb_offset += len;
+ 
+-        if (s->async_len == 0) {
+-            scsi_req_continue(s->current_req);
+-            return;
+-        }
++        switch (s->rregs[ESP_CMD]) {
++        case CMD_SELATN | CMD_DMA:
++            if (fifo8_num_used(&s->cmdfifo) >= 1) {
++                /* First byte received, switch to command phase */
++                esp_set_phase(s, STAT_CD);
++                s->rregs[ESP_RSEQ] = SEQ_CD;
++                s->cmdfifo_cdb_offset = 1;
+ 
+-        if (esp_get_tc(s) == 0) {
+-            esp_lower_drq(s);
+-            esp_dma_done(s);
+-        }
++                if (fifo8_num_used(&s->cmdfifo) > 1) {
++                    /* Process any additional command phase data */
++                    esp_do_dma(s);
++                }
++            }
++            break;
+ 
+-        return;
+-    } else {
+-        if (s->async_len == 0) {
+-            /* Defer until the scsi layer has completed */
+-            scsi_req_continue(s->current_req);
+-            s->data_in_ready = false;
+-            return;
+-        }
++        case CMD_SELATNS | CMD_DMA:
++            if (fifo8_num_used(&s->cmdfifo) == 1) {
++                /* First byte received, stop in message out phase */
++                s->rregs[ESP_RSEQ] = SEQ_MO;
++                s->cmdfifo_cdb_offset = 1;
+ 
+-        if (esp_get_tc(s) != 0) {
+-            /* Copy device data to FIFO */
+-            len = MIN(s->async_len, esp_get_tc(s));
+-            len = MIN(len, fifo8_num_free(&s->fifo));
+-            fifo8_push_all(&s->fifo, s->async_buf, len);
+-            s->async_buf += len;
+-            s->async_len -= len;
+-            s->ti_size -= len;
+-            esp_set_tc(s, esp_get_tc(s) - len);
++                /* Raise command completion interrupt */
++                s->rregs[ESP_RINTR] |= INTR_BS | INTR_FC;
++                esp_raise_irq(s);
++            }
++            break;
+ 
++        case CMD_TI | CMD_DMA:
++            /* ATN remains asserted until TC == 0 */
+             if (esp_get_tc(s) == 0) {
+-                /* Indicate transfer to FIFO is complete */
+-                 s->rregs[ESP_RSTAT] |= STAT_TC;
++                esp_set_phase(s, STAT_CD);
++                s->rregs[ESP_CMD] = 0;
++                s->rregs[ESP_RINTR] |= INTR_BS;
++                esp_raise_irq(s);
+             }
+-            return;
++            break;
+         }
++        break;
+ 
+-        /* Partially filled a scsi buffer. Complete immediately.  */
+-        esp_lower_drq(s);
+-        esp_dma_done(s);
+-    }
+-}
+-
+-static void esp_do_dma(ESPState *s)
+-{
+-    uint32_t len, cmdlen;
+-    int to_device = ((s->rregs[ESP_RSTAT] & 7) == STAT_DO);
+-    uint8_t buf[ESP_CMDFIFO_SZ];
+-
+-    len = esp_get_tc(s);
+-    if (s->do_cmd) {
+-        /*
+-         * handle_ti_cmd() case: esp_do_dma() is called only from
+-         * handle_ti_cmd() with do_cmd != NULL (see the assert())
+-         */
++    case STAT_CD:
+         cmdlen = fifo8_num_used(&s->cmdfifo);
+         trace_esp_do_dma(cmdlen, len);
+         if (s->dma_memory_read) {
+             len = MIN(len, fifo8_num_free(&s->cmdfifo));
+             s->dma_memory_read(s->dma_opaque, buf, len);
+             fifo8_push_all(&s->cmdfifo, buf, len);
++            esp_set_tc(s, esp_get_tc(s) - len);
+         } else {
+-            esp_set_pdma_cb(s, DO_DMA_PDMA_CB);
+-            esp_raise_drq(s);
+-            return;
++            len = esp_fifo_pop_buf(s, buf, fifo8_num_used(&s->fifo));
++            len = MIN(fifo8_num_free(&s->cmdfifo), len);
++            fifo8_push_all(&s->cmdfifo, buf, len);
+         }
+         trace_esp_handle_ti_cmd(cmdlen);
+         s->ti_size = 0;
+-        if ((s->rregs[ESP_RSTAT] & 7) == STAT_CD) {
+-            /* No command received */
+-            if (s->cmdfifo_cdb_offset == fifo8_num_used(&s->cmdfifo)) {
+-                return;
+-            }
+-
++        if (esp_get_tc(s) == 0) {
+             /* Command has been received */
+-            s->do_cmd = 0;
+             do_cmd(s);
+-        } else {
+-            /*
+-             * Extra message out bytes received: update cmdfifo_cdb_offset
+-             * and then switch to command phase
+-             */
+-            s->cmdfifo_cdb_offset = fifo8_num_used(&s->cmdfifo);
+-            s->rregs[ESP_RSTAT] = STAT_TC | STAT_CD;
+-            s->rregs[ESP_RSEQ] = SEQ_CD;
+-            s->rregs[ESP_RINTR] |= INTR_BS;
+-            esp_raise_irq(s);
+         }
+-        return;
+-    }
+-    if (!s->current_req) {
+-        return;
+-    }
+-    if (s->async_len == 0) {
+-        /* Defer until data is available.  */
+-        return;
+-    }
+-    if (len > s->async_len) {
+-        len = s->async_len;
+-    }
+-    if (to_device) {
+-        if (s->dma_memory_read) {
+-            s->dma_memory_read(s->dma_opaque, s->async_buf, len);
+-        } else {
+-            esp_set_pdma_cb(s, DO_DMA_PDMA_CB);
+-            esp_raise_drq(s);
++        break;
++
++    case STAT_DO:
++        if (!s->current_req) {
+             return;
+         }
+-    } else {
+-        if (s->dma_memory_write) {
+-            s->dma_memory_write(s->dma_opaque, s->async_buf, len);
+-        } else {
+-            /* Adjust TC for any leftover data in the FIFO */
+-            if (!fifo8_is_empty(&s->fifo)) {
+-                esp_set_tc(s, esp_get_tc(s) - fifo8_num_used(&s->fifo));
++        if (s->async_len == 0 && esp_get_tc(s)) {
++            /* Defer until data is available.  */
++            return;
++        }
++        if (len > s->async_len) {
++            len = s->async_len;
++        }
++
++        switch (s->rregs[ESP_CMD]) {
++        case CMD_TI | CMD_DMA:
++            if (s->dma_memory_read) {
++                s->dma_memory_read(s->dma_opaque, s->async_buf, len);
++                esp_set_tc(s, esp_get_tc(s) - len);
++            } else {
++                /* Copy FIFO data to device */
++                len = MIN(s->async_len, ESP_FIFO_SZ);
++                len = MIN(len, fifo8_num_used(&s->fifo));
++                len = esp_fifo_pop_buf(s, s->async_buf, len);
++            }
++
++            s->async_buf += len;
++            s->async_len -= len;
++            s->ti_size += len;
++            break;
++
++        case CMD_PAD | CMD_DMA:
++            /* Copy TC zero bytes into the incoming stream */
++            if (!s->dma_memory_read) {
++                len = MIN(s->async_len, ESP_FIFO_SZ);
++                len = MIN(len, fifo8_num_free(&s->fifo));
++            }
++
++            memset(s->async_buf, 0, len);
++
++            s->async_buf += len;
++            s->async_len -= len;
++            s->ti_size += len;
++            break;
++        }
++
++        if (s->async_len == 0 && fifo8_num_used(&s->fifo) < 2) {
++            /* Defer until the scsi layer has completed */
++            scsi_req_continue(s->current_req);
++            return;
++        }
++
++        esp_dma_ti_check(s);
++        break;
++
++    case STAT_DI:
++        if (!s->current_req) {
++            return;
++        }
++        if (s->async_len == 0 && esp_get_tc(s)) {
++            /* Defer until data is available.  */
++            return;
++        }
++        if (len > s->async_len) {
++            len = s->async_len;
++        }
++
++        switch (s->rregs[ESP_CMD]) {
++        case CMD_TI | CMD_DMA:
++            if (s->dma_memory_write) {
++                s->dma_memory_write(s->dma_opaque, s->async_buf, len);
++            } else {
++                /* Copy device data to FIFO */
++                len = MIN(len, fifo8_num_free(&s->fifo));
++                esp_fifo_push_buf(s, s->async_buf, len);
+             }
+ 
+-            /* Copy device data to FIFO */
+-            len = MIN(len, fifo8_num_free(&s->fifo));
+-            fifo8_push_all(&s->fifo, s->async_buf, len);
+             s->async_buf += len;
+             s->async_len -= len;
+             s->ti_size -= len;
++            esp_set_tc(s, esp_get_tc(s) - len);
++            break;
+ 
+-            /*
+-             * MacOS toolbox uses a TI length of 16 bytes for all commands, so
+-             * commands shorter than this must be padded accordingly
+-             */
+-            if (len < esp_get_tc(s) && esp_get_tc(s) <= ESP_FIFO_SZ) {
+-                while (fifo8_num_used(&s->fifo) < ESP_FIFO_SZ) {
+-                    esp_fifo_push(&s->fifo, 0);
+-                    len++;
+-                }
++        case CMD_PAD | CMD_DMA:
++            /* Drop TC bytes from the incoming stream */
++            if (!s->dma_memory_write) {
++                len = MIN(len, fifo8_num_free(&s->fifo));
+             }
+ 
++            s->async_buf += len;
++            s->async_len -= len;
++            s->ti_size -= len;
+             esp_set_tc(s, esp_get_tc(s) - len);
+-            esp_set_pdma_cb(s, DO_DMA_PDMA_CB);
+-            esp_raise_drq(s);
++            break;
++        }
+ 
+-            /* Indicate transfer to FIFO is complete */
+-            s->rregs[ESP_RSTAT] |= STAT_TC;
++        if (s->async_len == 0 && s->ti_size == 0 && esp_get_tc(s)) {
++            /* If the guest underflows TC then terminate SCSI request */
++            scsi_req_continue(s->current_req);
+             return;
+         }
++
++        if (s->async_len == 0 && fifo8_num_used(&s->fifo) < 2) {
++            /* Defer until the scsi layer has completed */
++            scsi_req_continue(s->current_req);
++            return;
++        }
++
++        esp_dma_ti_check(s);
++        break;
++
++    case STAT_ST:
++        switch (s->rregs[ESP_CMD]) {
++        case CMD_ICCS | CMD_DMA:
++            len = MIN(len, 1);
++
++            if (len) {
++                buf[0] = s->status;
++
++                if (s->dma_memory_write) {
++                    s->dma_memory_write(s->dma_opaque, buf, len);
++                } else {
++                    esp_fifo_push_buf(s, buf, len);
++                }
++
++                esp_set_tc(s, esp_get_tc(s) - len);
++                esp_set_phase(s, STAT_MI);
++
++                if (esp_get_tc(s) > 0) {
++                    /* Process any message in phase data */
++                    esp_do_dma(s);
++                }
++            }
++            break;
++
++        default:
++            /* Consume remaining data if the guest underflows TC */
++            if (fifo8_num_used(&s->fifo) < 2) {
++                s->rregs[ESP_RINTR] |= INTR_BS;
++                esp_raise_irq(s);
++            }
++            break;
++        }
++        break;
++
++    case STAT_MI:
++        switch (s->rregs[ESP_CMD]) {
++        case CMD_ICCS | CMD_DMA:
++            len = MIN(len, 1);
++
++            if (len) {
++                buf[0] = 0;
++
++                if (s->dma_memory_write) {
++                    s->dma_memory_write(s->dma_opaque, buf, len);
++                } else {
++                    esp_fifo_push_buf(s, buf, len);
++                }
++
++                esp_set_tc(s, esp_get_tc(s) - len);
++
++                /* Raise end of command interrupt */
++                s->rregs[ESP_RINTR] |= INTR_FC;
++                esp_raise_irq(s);
++            }
++            break;
++        }
++        break;
++    }
++}
++
++static void esp_nodma_ti_dataout(ESPState *s)
++{
++    int len;
++
++    if (!s->current_req) {
++        return;
+     }
+-    esp_set_tc(s, esp_get_tc(s) - len);
++    if (s->async_len == 0) {
++        /* Defer until data is available.  */
++        return;
++    }
++    len = MIN(s->async_len, ESP_FIFO_SZ);
++    len = MIN(len, fifo8_num_used(&s->fifo));
++    esp_fifo_pop_buf(s, s->async_buf, len);
+     s->async_buf += len;
+     s->async_len -= len;
+-    if (to_device) {
+-        s->ti_size += len;
+-    } else {
+-        s->ti_size -= len;
+-    }
++    s->ti_size += len;
++
+     if (s->async_len == 0) {
+         scsi_req_continue(s->current_req);
+-        /*
+-         * If there is still data to be read from the device then
+-         * complete the DMA operation immediately.  Otherwise defer
+-         * until the scsi layer has completed.
+-         */
+-        if (to_device || esp_get_tc(s) != 0 || s->ti_size == 0) {
+-            return;
+-        }
++        return;
+     }
+ 
+-    /* Partially filled a scsi buffer. Complete immediately.  */
+-    esp_dma_done(s);
+-    esp_lower_drq(s);
++    s->rregs[ESP_RINTR] |= INTR_BS;
++    esp_raise_irq(s);
+ }
+ 
+ static void esp_do_nodma(ESPState *s)
+ {
+-    int to_device = ((s->rregs[ESP_RSTAT] & 7) == STAT_DO);
++    uint8_t buf[ESP_FIFO_SZ];
+     uint32_t cmdlen;
+     int len;
+ 
+-    if (s->do_cmd) {
+-        cmdlen = fifo8_num_used(&s->cmdfifo);
+-        trace_esp_handle_ti_cmd(cmdlen);
+-        s->ti_size = 0;
+-        if ((s->rregs[ESP_RSTAT] & 7) == STAT_CD) {
+-            /* No command received */
+-            if (s->cmdfifo_cdb_offset == fifo8_num_used(&s->cmdfifo)) {
+-                return;
++    switch (esp_get_phase(s)) {
++    case STAT_MO:
++        switch (s->rregs[ESP_CMD]) {
++        case CMD_SELATN:
++            /* Copy FIFO into cmdfifo */
++            len = esp_fifo_pop_buf(s, buf, fifo8_num_used(&s->fifo));
++            len = MIN(fifo8_num_free(&s->cmdfifo), len);
++            fifo8_push_all(&s->cmdfifo, buf, len);
++
++            if (fifo8_num_used(&s->cmdfifo) >= 1) {
++                /* First byte received, switch to command phase */
++                esp_set_phase(s, STAT_CD);
++                s->rregs[ESP_RSEQ] = SEQ_CD;
++                s->cmdfifo_cdb_offset = 1;
++
++                if (fifo8_num_used(&s->cmdfifo) > 1) {
++                    /* Process any additional command phase data */
++                    esp_do_nodma(s);
++                }
+             }
++            break;
+ 
+-            /* Command has been received */
+-            s->do_cmd = 0;
+-            do_cmd(s);
+-        } else {
+-            /*
+-             * Extra message out bytes received: update cmdfifo_cdb_offset
+-             * and then switch to command phase
+-             */
++        case CMD_SELATNS:
++            /* Copy one byte from FIFO into cmdfifo */
++            len = esp_fifo_pop_buf(s, buf,
++                                   MIN(fifo8_num_used(&s->fifo), 1));
++            len = MIN(fifo8_num_free(&s->cmdfifo), len);
++            fifo8_push_all(&s->cmdfifo, buf, len);
++
++            if (fifo8_num_used(&s->cmdfifo) >= 1) {
++                /* First byte received, stop in message out phase */
++                s->rregs[ESP_RSEQ] = SEQ_MO;
++                s->cmdfifo_cdb_offset = 1;
++
++                /* Raise command completion interrupt */
++                s->rregs[ESP_RINTR] |= INTR_BS | INTR_FC;
++                esp_raise_irq(s);
++            }
++            break;
++
++        case CMD_TI:
++            /* Copy FIFO into cmdfifo */
++            len = esp_fifo_pop_buf(s, buf, fifo8_num_used(&s->fifo));
++            len = MIN(fifo8_num_free(&s->cmdfifo), len);
++            fifo8_push_all(&s->cmdfifo, buf, len);
++
++            /* ATN remains asserted until FIFO empty */
+             s->cmdfifo_cdb_offset = fifo8_num_used(&s->cmdfifo);
+-            s->rregs[ESP_RSTAT] = STAT_TC | STAT_CD;
+-            s->rregs[ESP_RSEQ] = SEQ_CD;
++            esp_set_phase(s, STAT_CD);
++            s->rregs[ESP_CMD] = 0;
+             s->rregs[ESP_RINTR] |= INTR_BS;
+             esp_raise_irq(s);
++            break;
+         }
+-        return;
+-    }
++        break;
+ 
+-    if (!s->current_req) {
+-        return;
+-    }
++    case STAT_CD:
++        switch (s->rregs[ESP_CMD]) {
++        case CMD_TI:
++            /* Copy FIFO into cmdfifo */
++            len = esp_fifo_pop_buf(s, buf, fifo8_num_used(&s->fifo));
++            len = MIN(fifo8_num_free(&s->cmdfifo), len);
++            fifo8_push_all(&s->cmdfifo, buf, len);
+ 
+-    if (s->async_len == 0) {
+-        /* Defer until data is available.  */
+-        return;
+-    }
++            cmdlen = fifo8_num_used(&s->cmdfifo);
++            trace_esp_handle_ti_cmd(cmdlen);
+ 
+-    if (to_device) {
+-        len = MIN(s->async_len, ESP_FIFO_SZ);
+-        len = MIN(len, fifo8_num_used(&s->fifo));
+-        esp_fifo_pop_buf(&s->fifo, s->async_buf, len);
+-        s->async_buf += len;
+-        s->async_len -= len;
+-        s->ti_size += len;
+-    } else {
++            /* CDB may be transferred in one or more TI commands */
++            if (esp_cdb_ready(s)) {
++                /* Command has been received */
++                do_cmd(s);
++            } else {
++                /*
++                 * If data was transferred from the FIFO then raise bus
++                 * service interrupt to indicate transfer complete. Otherwise
++                 * defer until the next FIFO write.
++                 */
++                if (len) {
++                    /* Raise interrupt to indicate transfer complete */
++                    s->rregs[ESP_RINTR] |= INTR_BS;
++                    esp_raise_irq(s);
++                }
++            }
++            break;
++
++        case CMD_SEL | CMD_DMA:
++        case CMD_SELATN | CMD_DMA:
++            /* Copy FIFO into cmdfifo */
++            len = esp_fifo_pop_buf(s, buf, fifo8_num_used(&s->fifo));
++            len = MIN(fifo8_num_free(&s->cmdfifo), len);
++            fifo8_push_all(&s->cmdfifo, buf, len);
++
++            /* Handle when DMA transfer is terminated by non-DMA FIFO write */
++            if (esp_cdb_ready(s)) {
++                /* Command has been received */
++                do_cmd(s);
++            }
++            break;
++
++        case CMD_SEL:
++        case CMD_SELATN:
++            /* FIFO already contain entire CDB: copy to cmdfifo and execute */
++            len = esp_fifo_pop_buf(s, buf, fifo8_num_used(&s->fifo));
++            len = MIN(fifo8_num_free(&s->cmdfifo), len);
++            fifo8_push_all(&s->cmdfifo, buf, len);
++
++            do_cmd(s);
++            break;
++        }
++        break;
++
++    case STAT_DO:
++        /* Accumulate data in FIFO until non-DMA TI is executed */
++        break;
++
++    case STAT_DI:
++        if (!s->current_req) {
++            return;
++        }
++        if (s->async_len == 0) {
++            /* Defer until data is available.  */
++            return;
++        }
+         if (fifo8_is_empty(&s->fifo)) {
+-            fifo8_push(&s->fifo, s->async_buf[0]);
++            esp_fifo_push(s, s->async_buf[0]);
+             s->async_buf++;
+             s->async_len--;
+             s->ti_size--;
+         }
+-    }
+ 
+-    if (s->async_len == 0) {
+-        scsi_req_continue(s->current_req);
+-        return;
+-    }
++        if (s->async_len == 0) {
++            scsi_req_continue(s->current_req);
++            return;
++        }
+ 
+-    s->rregs[ESP_RINTR] |= INTR_BS;
+-    esp_raise_irq(s);
+-}
++        /* If preloading the FIFO, defer until TI command issued */
++        if (s->rregs[ESP_CMD] != CMD_TI) {
++            return;
++        }
+ 
+-static void esp_pdma_cb(ESPState *s)
+-{
+-    switch (s->pdma_cb) {
+-    case SATN_PDMA_CB:
+-        satn_pdma_cb(s);
+-        break;
+-    case S_WITHOUT_SATN_PDMA_CB:
+-        s_without_satn_pdma_cb(s);
+-        break;
+-    case SATN_STOP_PDMA_CB:
+-        satn_stop_pdma_cb(s);
++        s->rregs[ESP_RINTR] |= INTR_BS;
++        esp_raise_irq(s);
+         break;
+-    case WRITE_RESPONSE_PDMA_CB:
+-        write_response_pdma_cb(s);
++
++    case STAT_ST:
++        switch (s->rregs[ESP_CMD]) {
++        case CMD_ICCS:
++            esp_fifo_push(s, s->status);
++            esp_set_phase(s, STAT_MI);
++
++            /* Process any message in phase data */
++            esp_do_nodma(s);
++            break;
++        }
+         break;
+-    case DO_DMA_PDMA_CB:
+-        do_dma_pdma_cb(s);
++
++    case STAT_MI:
++        switch (s->rregs[ESP_CMD]) {
++        case CMD_ICCS:
++            esp_fifo_push(s, 0);
++
++            /* Raise end of command interrupt */
++            s->rregs[ESP_RINTR] |= INTR_FC;
++            esp_raise_irq(s);
++            break;
++        }
+         break;
+-    default:
+-        g_assert_not_reached();
+     }
+ }
+ 
+ void esp_command_complete(SCSIRequest *req, size_t resid)
+ {
+     ESPState *s = req->hba_private;
+-    int to_device = ((s->rregs[ESP_RSTAT] & 7) == STAT_DO);
++    int to_device = (esp_get_phase(s) == STAT_DO);
+ 
+     trace_esp_command_complete();
+ 
+@@ -821,7 +947,6 @@ void esp_command_complete(SCSIRequest *req, size_t resid)
+         if (s->ti_size != 0) {
+             trace_esp_command_complete_unexpected();
+         }
+-        s->ti_size = 0;
+     }
+ 
+     s->async_len = 0;
+@@ -831,15 +956,35 @@ void esp_command_complete(SCSIRequest *req, size_t resid)
+     s->status = req->status;
+ 
+     /*
+-     * If the transfer is finished, switch to status phase. For non-DMA
+-     * transfers from the target the last byte is still in the FIFO
++     * Switch to status phase. For non-DMA transfers from the target the last
++     * byte is still in the FIFO
+      */
+-    if (s->ti_size == 0) {
+-        s->rregs[ESP_RSTAT] = STAT_TC | STAT_ST;
+-        esp_dma_done(s);
+-        esp_lower_drq(s);
++    s->ti_size = 0;
++
++    switch (s->rregs[ESP_CMD]) {
++    case CMD_SEL | CMD_DMA:
++    case CMD_SEL:
++    case CMD_SELATN | CMD_DMA:
++    case CMD_SELATN:
++        /*
++         * No data phase for sequencer command so raise deferred bus service
++         * and function complete interrupt
++         */
++        s->rregs[ESP_RINTR] |= INTR_BS | INTR_FC;
++        s->rregs[ESP_RSEQ] = SEQ_CD;
++        break;
++
++    case CMD_TI | CMD_DMA:
++    case CMD_TI:
++        s->rregs[ESP_CMD] = 0;
++        break;
+     }
+ 
++    /* Raise bus service interrupt to indicate change to STATUS phase */
++    esp_set_phase(s, STAT_ST);
++    s->rregs[ESP_RINTR] |= INTR_BS;
++    esp_raise_irq(s);
++
+     if (s->current_req) {
+         scsi_req_unref(s->current_req);
+         s->current_req = NULL;
+@@ -850,48 +995,66 @@ void esp_command_complete(SCSIRequest *req, size_t resid)
+ void esp_transfer_data(SCSIRequest *req, uint32_t len)
+ {
+     ESPState *s = req->hba_private;
+-    int to_device = ((s->rregs[ESP_RSTAT] & 7) == STAT_DO);
+     uint32_t dmalen = esp_get_tc(s);
+ 
+-    assert(!s->do_cmd);
+     trace_esp_transfer_data(dmalen, s->ti_size);
+     s->async_len = len;
+     s->async_buf = scsi_req_get_buf(req);
+ 
+-    if (!to_device && !s->data_in_ready) {
+-        /*
+-         * Initial incoming data xfer is complete so raise command
+-         * completion interrupt
+-         */
+-        s->data_in_ready = true;
+-        s->rregs[ESP_RSTAT] |= STAT_TC;
+-        s->rregs[ESP_RINTR] |= INTR_BS;
+-        esp_raise_irq(s);
+-    }
++    if (!s->data_ready) {
++        s->data_ready = true;
+ 
+-    if (s->ti_cmd == 0) {
+-        /*
+-         * Always perform the initial transfer upon reception of the next TI
+-         * command to ensure the DMA/non-DMA status of the command is correct.
+-         * It is not possible to use s->dma directly in the section below as
+-         * some OSs send non-DMA NOP commands after a DMA transfer. Hence if the
+-         * async data transfer is delayed then s->dma is set incorrectly.
+-         */
+-        return;
+-    }
++        switch (s->rregs[ESP_CMD]) {
++        case CMD_SEL | CMD_DMA:
++        case CMD_SEL:
++        case CMD_SELATN | CMD_DMA:
++        case CMD_SELATN:
++            /*
++             * Initial incoming data xfer is complete for sequencer command
++             * so raise deferred bus service and function complete interrupt
++             */
++             s->rregs[ESP_RINTR] |= INTR_BS | INTR_FC;
++             s->rregs[ESP_RSEQ] = SEQ_CD;
++             break;
++
++        case CMD_SELATNS | CMD_DMA:
++        case CMD_SELATNS:
++            /*
++             * Initial incoming data xfer is complete so raise command
++             * completion interrupt
++             */
++             s->rregs[ESP_RINTR] |= INTR_BS;
++             s->rregs[ESP_RSEQ] = SEQ_MO;
++             break;
+ 
+-    if (s->ti_cmd == (CMD_TI | CMD_DMA)) {
+-        if (dmalen) {
+-            esp_do_dma(s);
+-        } else if (s->ti_size <= 0) {
++        case CMD_TI | CMD_DMA:
++        case CMD_TI:
+             /*
+-             * If this was the last part of a DMA transfer then the
+-             * completion interrupt is deferred to here.
++             * Bus service interrupt raised because of initial change to
++             * DATA phase
+              */
+-            esp_dma_done(s);
+-            esp_lower_drq(s);
++            s->rregs[ESP_CMD] = 0;
++            s->rregs[ESP_RINTR] |= INTR_BS;
++            break;
+         }
+-    } else if (s->ti_cmd == CMD_TI) {
++
++        esp_raise_irq(s);
++    }
++
++    /*
++     * Always perform the initial transfer upon reception of the next TI
++     * command to ensure the DMA/non-DMA status of the command is correct.
++     * It is not possible to use s->dma directly in the section below as
++     * some OSs send non-DMA NOP commands after a DMA transfer. Hence if the
++     * async data transfer is delayed then s->dma is set incorrectly.
++     */
++
++    if (s->rregs[ESP_CMD] == (CMD_TI | CMD_DMA)) {
++        /* When the SCSI layer returns more data, raise deferred INTR_BS */
++        esp_dma_ti_check(s);
++
++        esp_do_dma(s);
++    } else if (s->rregs[ESP_CMD] == CMD_TI) {
+         esp_do_nodma(s);
+     }
+ }
+@@ -905,15 +1068,17 @@ static void handle_ti(ESPState *s)
+         return;
+     }
+ 
+-    s->ti_cmd = s->rregs[ESP_CMD];
+     if (s->dma) {
+         dmalen = esp_get_tc(s);
+         trace_esp_handle_ti(dmalen);
+-        s->rregs[ESP_RSTAT] &= ~STAT_TC;
+         esp_do_dma(s);
+     } else {
+         trace_esp_handle_ti(s->ti_size);
+         esp_do_nodma(s);
++
++        if (esp_get_phase(s) == STAT_DO) {
++            esp_nodma_ti_dataout(s);
++        }
+     }
+ }
+ 
+@@ -927,7 +1092,6 @@ void esp_hard_reset(ESPState *s)
+     fifo8_reset(&s->fifo);
+     fifo8_reset(&s->cmdfifo);
+     s->dma = 0;
+-    s->do_cmd = 0;
+     s->dma_cb = NULL;
+ 
+     s->rregs[ESP_CFG1] = 7;
+@@ -936,7 +1100,7 @@ void esp_hard_reset(ESPState *s)
+ static void esp_soft_reset(ESPState *s)
+ {
+     qemu_irq_lower(s->irq);
+-    qemu_irq_lower(s->irq_data);
++    qemu_irq_lower(s->drq_irq);
+     esp_hard_reset(s);
+ }
+ 
+@@ -952,31 +1116,100 @@ static void parent_esp_reset(ESPState *s, int irq, int level)
+     }
+ }
+ 
++static void esp_run_cmd(ESPState *s)
++{
++    uint8_t cmd = s->rregs[ESP_CMD];
++
++    if (cmd & CMD_DMA) {
++        s->dma = 1;
++        /* Reload DMA counter.  */
++        if (esp_get_stc(s) == 0) {
++            esp_set_tc(s, 0x10000);
++        } else {
++            esp_set_tc(s, esp_get_stc(s));
++        }
++    } else {
++        s->dma = 0;
++    }
++    switch (cmd & CMD_CMD) {
++    case CMD_NOP:
++        trace_esp_mem_writeb_cmd_nop(cmd);
++        break;
++    case CMD_FLUSH:
++        trace_esp_mem_writeb_cmd_flush(cmd);
++        fifo8_reset(&s->fifo);
++        break;
++    case CMD_RESET:
++        trace_esp_mem_writeb_cmd_reset(cmd);
++        esp_soft_reset(s);
++        break;
++    case CMD_BUSRESET:
++        trace_esp_mem_writeb_cmd_bus_reset(cmd);
++        esp_bus_reset(s);
++        if (!(s->wregs[ESP_CFG1] & CFG1_RESREPT)) {
++            s->rregs[ESP_RINTR] |= INTR_RST;
++            esp_raise_irq(s);
++        }
++        break;
++    case CMD_TI:
++        trace_esp_mem_writeb_cmd_ti(cmd);
++        handle_ti(s);
++        break;
++    case CMD_ICCS:
++        trace_esp_mem_writeb_cmd_iccs(cmd);
++        write_response(s);
++        break;
++    case CMD_MSGACC:
++        trace_esp_mem_writeb_cmd_msgacc(cmd);
++        s->rregs[ESP_RINTR] |= INTR_DC;
++        s->rregs[ESP_RSEQ] = 0;
++        s->rregs[ESP_RFLAGS] = 0;
++        esp_raise_irq(s);
++        break;
++    case CMD_PAD:
++        trace_esp_mem_writeb_cmd_pad(cmd);
++        handle_pad(s);
++        break;
++    case CMD_SATN:
++        trace_esp_mem_writeb_cmd_satn(cmd);
++        break;
++    case CMD_RSTATN:
++        trace_esp_mem_writeb_cmd_rstatn(cmd);
++        break;
++    case CMD_SEL:
++        trace_esp_mem_writeb_cmd_sel(cmd);
++        handle_s_without_atn(s);
++        break;
++    case CMD_SELATN:
++        trace_esp_mem_writeb_cmd_selatn(cmd);
++        handle_satn(s);
++        break;
++    case CMD_SELATNS:
++        trace_esp_mem_writeb_cmd_selatns(cmd);
++        handle_satn_stop(s);
++        break;
++    case CMD_ENSEL:
++        trace_esp_mem_writeb_cmd_ensel(cmd);
++        s->rregs[ESP_RINTR] = 0;
++        break;
++    case CMD_DISSEL:
++        trace_esp_mem_writeb_cmd_dissel(cmd);
++        s->rregs[ESP_RINTR] = 0;
++        esp_raise_irq(s);
++        break;
++    default:
++        trace_esp_error_unhandled_command(cmd);
++        break;
++    }
++}
++
+ uint64_t esp_reg_read(ESPState *s, uint32_t saddr)
+ {
+     uint32_t val;
+ 
+     switch (saddr) {
+     case ESP_FIFO:
+-        if (s->dma_memory_read && s->dma_memory_write &&
+-                (s->rregs[ESP_RSTAT] & STAT_PIO_MASK) == 0) {
+-            /* Data out.  */
+-            qemu_log_mask(LOG_UNIMP, "esp: PIO data read not implemented\n");
+-            s->rregs[ESP_FIFO] = 0;
+-        } else {
+-            if ((s->rregs[ESP_RSTAT] & 0x7) == STAT_DI) {
+-                if (s->ti_size) {
+-                    esp_do_nodma(s);
+-                } else {
+-                    /*
+-                     * The last byte of a non-DMA transfer has been read out
+-                     * of the FIFO so switch to status phase
+-                     */
+-                    s->rregs[ESP_RSTAT] = STAT_TC | STAT_ST;
+-                }
+-            }
+-            s->rregs[ESP_FIFO] = esp_fifo_pop(&s->fifo);
+-        }
++        s->rregs[ESP_FIFO] = esp_fifo_pop(s);
+         val = s->rregs[ESP_FIFO];
+         break;
+     case ESP_RINTR:
+@@ -986,7 +1219,8 @@ uint64_t esp_reg_read(ESPState *s, uint32_t saddr)
+          */
+         val = s->rregs[ESP_RINTR];
+         s->rregs[ESP_RINTR] = 0;
+-        s->rregs[ESP_RSTAT] &= ~STAT_TC;
++        esp_lower_irq(s);
++        s->rregs[ESP_RSTAT] &= STAT_TC | 7;
+         /*
+          * According to the datasheet ESP_RSEQ should be cleared, but as the
+          * emulation currently defers information transfers to the next TI
+@@ -996,7 +1230,6 @@ uint64_t esp_reg_read(ESPState *s, uint32_t saddr)
+          *
+          * s->rregs[ESP_RSEQ] = SEQ_0;
+          */
+-        esp_lower_irq(s);
+         break;
+     case ESP_TCHI:
+         /* Return the unique id if the value has never been written */
+@@ -1031,108 +1264,14 @@ void esp_reg_write(ESPState *s, uint32_t saddr, uint64_t val)
+         s->rregs[ESP_RSTAT] &= ~STAT_TC;
+         break;
+     case ESP_FIFO:
+-        if (s->do_cmd) {
+-            esp_fifo_push(&s->cmdfifo, val);
+-
+-            /*
+-             * If any unexpected message out/command phase data is
+-             * transferred using non-DMA, raise the interrupt
+-             */
+-            if (s->rregs[ESP_CMD] == CMD_TI) {
+-                s->rregs[ESP_RINTR] |= INTR_BS;
+-                esp_raise_irq(s);
+-            }
+-        } else {
+-            esp_fifo_push(&s->fifo, val);
++        if (!fifo8_is_full(&s->fifo)) {
++            esp_fifo_push(s, val);
+         }
++        esp_do_nodma(s);
+         break;
+     case ESP_CMD:
+         s->rregs[saddr] = val;
+-        if (val & CMD_DMA) {
+-            s->dma = 1;
+-            /* Reload DMA counter.  */
+-            if (esp_get_stc(s) == 0) {
+-                esp_set_tc(s, 0x10000);
+-            } else {
+-                esp_set_tc(s, esp_get_stc(s));
+-            }
+-        } else {
+-            s->dma = 0;
+-        }
+-        switch (val & CMD_CMD) {
+-        case CMD_NOP:
+-            trace_esp_mem_writeb_cmd_nop(val);
+-            break;
+-        case CMD_FLUSH:
+-            trace_esp_mem_writeb_cmd_flush(val);
+-            fifo8_reset(&s->fifo);
+-            break;
+-        case CMD_RESET:
+-            trace_esp_mem_writeb_cmd_reset(val);
+-            esp_soft_reset(s);
+-            break;
+-        case CMD_BUSRESET:
+-            trace_esp_mem_writeb_cmd_bus_reset(val);
+-            esp_bus_reset(s);
+-            if (!(s->wregs[ESP_CFG1] & CFG1_RESREPT)) {
+-                s->rregs[ESP_RINTR] |= INTR_RST;
+-                esp_raise_irq(s);
+-            }
+-            break;
+-        case CMD_TI:
+-            trace_esp_mem_writeb_cmd_ti(val);
+-            handle_ti(s);
+-            break;
+-        case CMD_ICCS:
+-            trace_esp_mem_writeb_cmd_iccs(val);
+-            write_response(s);
+-            s->rregs[ESP_RINTR] |= INTR_FC;
+-            s->rregs[ESP_RSTAT] |= STAT_MI;
+-            break;
+-        case CMD_MSGACC:
+-            trace_esp_mem_writeb_cmd_msgacc(val);
+-            s->rregs[ESP_RINTR] |= INTR_DC;
+-            s->rregs[ESP_RSEQ] = 0;
+-            s->rregs[ESP_RFLAGS] = 0;
+-            esp_raise_irq(s);
+-            break;
+-        case CMD_PAD:
+-            trace_esp_mem_writeb_cmd_pad(val);
+-            s->rregs[ESP_RSTAT] = STAT_TC;
+-            s->rregs[ESP_RINTR] |= INTR_FC;
+-            s->rregs[ESP_RSEQ] = 0;
+-            break;
+-        case CMD_SATN:
+-            trace_esp_mem_writeb_cmd_satn(val);
+-            break;
+-        case CMD_RSTATN:
+-            trace_esp_mem_writeb_cmd_rstatn(val);
+-            break;
+-        case CMD_SEL:
+-            trace_esp_mem_writeb_cmd_sel(val);
+-            handle_s_without_atn(s);
+-            break;
+-        case CMD_SELATN:
+-            trace_esp_mem_writeb_cmd_selatn(val);
+-            handle_satn(s);
+-            break;
+-        case CMD_SELATNS:
+-            trace_esp_mem_writeb_cmd_selatns(val);
+-            handle_satn_stop(s);
+-            break;
+-        case CMD_ENSEL:
+-            trace_esp_mem_writeb_cmd_ensel(val);
+-            s->rregs[ESP_RINTR] = 0;
+-            break;
+-        case CMD_DISSEL:
+-            trace_esp_mem_writeb_cmd_dissel(val);
+-            s->rregs[ESP_RINTR] = 0;
+-            esp_raise_irq(s);
+-            break;
+-        default:
+-            trace_esp_error_unhandled_command(val);
+-            break;
+-        }
++        esp_run_cmd(s);
+         break;
+     case ESP_WBUSID ... ESP_WSYNO:
+         break;
+@@ -1181,6 +1320,14 @@ static bool esp_is_version_6(void *opaque, int version_id)
+     return version_id >= 6;
+ }
+ 
++static bool esp_is_between_version_5_and_6(void *opaque, int version_id)
++{
++    ESPState *s = ESP(opaque);
++
++    version_id = MIN(version_id, s->mig_version_id);
++    return version_id >= 5 && version_id <= 6;
++}
++
+ int esp_pre_save(void *opaque)
+ {
+     ESPState *s = ESP(object_resolve_path_component(
+@@ -1216,39 +1363,12 @@ static int esp_post_load(void *opaque, int version_id)
+     return 0;
+ }
+ 
+-/*
+- * PDMA (or pseudo-DMA) is only used on the Macintosh and requires the
+- * guest CPU to perform the transfers between the SCSI bus and memory
+- * itself. This is indicated by the dma_memory_read and dma_memory_write
+- * functions being NULL (in contrast to the ESP PCI device) whilst
+- * dma_enabled is still set.
+- */
+-
+-static bool esp_pdma_needed(void *opaque)
+-{
+-    ESPState *s = ESP(opaque);
+-
+-    return s->dma_memory_read == NULL && s->dma_memory_write == NULL &&
+-           s->dma_enabled;
+-}
+-
+-static const VMStateDescription vmstate_esp_pdma = {
+-    .name = "esp/pdma",
+-    .version_id = 0,
+-    .minimum_version_id = 0,
+-    .needed = esp_pdma_needed,
+-    .fields = (VMStateField[]) {
+-        VMSTATE_UINT8(pdma_cb, ESPState),
+-        VMSTATE_END_OF_LIST()
+-    }
+-};
+-
+ const VMStateDescription vmstate_esp = {
+     .name = "esp",
+-    .version_id = 6,
++    .version_id = 7,
+     .minimum_version_id = 3,
+     .post_load = esp_post_load,
+-    .fields = (VMStateField[]) {
++    .fields = (const VMStateField[]) {
+         VMSTATE_BUFFER(rregs, ESPState),
+         VMSTATE_BUFFER(wregs, ESPState),
+         VMSTATE_INT32(ti_size, ESPState),
+@@ -1269,18 +1389,16 @@ const VMStateDescription vmstate_esp = {
+         VMSTATE_UINT32_TEST(mig_cmdlen, ESPState, esp_is_before_version_5),
+         VMSTATE_UINT32(do_cmd, ESPState),
+         VMSTATE_UINT32_TEST(mig_dma_left, ESPState, esp_is_before_version_5),
+-        VMSTATE_BOOL_TEST(data_in_ready, ESPState, esp_is_version_5),
++        VMSTATE_BOOL_TEST(data_ready, ESPState, esp_is_version_5),
+         VMSTATE_UINT8_TEST(cmdfifo_cdb_offset, ESPState, esp_is_version_5),
+         VMSTATE_FIFO8_TEST(fifo, ESPState, esp_is_version_5),
+         VMSTATE_FIFO8_TEST(cmdfifo, ESPState, esp_is_version_5),
+-        VMSTATE_UINT8_TEST(ti_cmd, ESPState, esp_is_version_5),
++        VMSTATE_UINT8_TEST(mig_ti_cmd, ESPState,
++                           esp_is_between_version_5_and_6),
+         VMSTATE_UINT8_TEST(lun, ESPState, esp_is_version_6),
++        VMSTATE_BOOL(drq_state, ESPState),
+         VMSTATE_END_OF_LIST()
+     },
+-    .subsections = (const VMStateDescription * []) {
+-        &vmstate_esp_pdma,
+-        NULL
+-    }
+ };
+ 
+ static void sysbus_esp_mem_write(void *opaque, hwaddr addr,
+@@ -1329,7 +1447,7 @@ static void sysbus_esp_pdma_write(void *opaque, hwaddr addr,
+         esp_pdma_write(s, val);
+         break;
+     }
+-    esp_pdma_cb(s);
++    esp_do_dma(s);
+ }
+ 
+ static uint64_t sysbus_esp_pdma_read(void *opaque, hwaddr addr,
+@@ -1350,9 +1468,7 @@ static uint64_t sysbus_esp_pdma_read(void *opaque, hwaddr addr,
+         val = (val << 8) | esp_pdma_read(s);
+         break;
+     }
+-    if (fifo8_num_used(&s->fifo) < 2) {
+-        esp_pdma_cb(s);
+-    }
++    esp_do_dma(s);
+     return val;
+ }
+ 
+@@ -1412,7 +1528,7 @@ static void sysbus_esp_realize(DeviceState *dev, Error **errp)
+     }
+ 
+     sysbus_init_irq(sbd, &s->irq);
+-    sysbus_init_irq(sbd, &s->irq_data);
++    sysbus_init_irq(sbd, &s->drq_irq);
+     assert(sysbus->it_shift != -1);
+ 
+     s->chip_id = TCHI_FAS100A;
+@@ -1448,7 +1564,7 @@ static const VMStateDescription vmstate_sysbus_esp_scsi = {
+     .version_id = 2,
+     .minimum_version_id = 1,
+     .pre_save = esp_pre_save,
+-    .fields = (VMStateField[]) {
++    .fields = (const VMStateField[]) {
+         VMSTATE_UINT8_V(esp.mig_version_id, SysBusESPState, 2),
+         VMSTATE_STRUCT(esp, SysBusESPState, 0, vmstate_esp, ESPState),
+         VMSTATE_END_OF_LIST()
+@@ -1465,14 +1581,6 @@ static void sysbus_esp_class_init(ObjectClass *klass, void *data)
+     set_bit(DEVICE_CATEGORY_STORAGE, dc->categories);
+ }
+ 
+-static const TypeInfo sysbus_esp_info = {
+-    .name          = TYPE_SYSBUS_ESP,
+-    .parent        = TYPE_SYS_BUS_DEVICE,
+-    .instance_init = sysbus_esp_init,
+-    .instance_size = sizeof(SysBusESPState),
+-    .class_init    = sysbus_esp_class_init,
+-};
+-
+ static void esp_finalize(Object *obj)
+ {
+     ESPState *s = ESP(obj);
+@@ -1498,19 +1606,22 @@ static void esp_class_init(ObjectClass *klass, void *data)
+     set_bit(DEVICE_CATEGORY_STORAGE, dc->categories);
+ }
+ 
+-static const TypeInfo esp_info = {
+-    .name = TYPE_ESP,
+-    .parent = TYPE_DEVICE,
+-    .instance_init = esp_init,
+-    .instance_finalize = esp_finalize,
+-    .instance_size = sizeof(ESPState),
+-    .class_init = esp_class_init,
++static const TypeInfo esp_info_types[] = {
++    {
++        .name          = TYPE_SYSBUS_ESP,
++        .parent        = TYPE_SYS_BUS_DEVICE,
++        .instance_init = sysbus_esp_init,
++        .instance_size = sizeof(SysBusESPState),
++        .class_init    = sysbus_esp_class_init,
++    },
++    {
++        .name = TYPE_ESP,
++        .parent = TYPE_DEVICE,
++        .instance_init = esp_init,
++        .instance_finalize = esp_finalize,
++        .instance_size = sizeof(ESPState),
++        .class_init = esp_class_init,
++    },
+ };
+ 
+-static void esp_register_types(void)
+-{
+-    type_register_static(&sysbus_esp_info);
+-    type_register_static(&esp_info);
+-}
+-
+-type_init(esp_register_types)
++DEFINE_TYPES(esp_info_types)
+diff --git a/hw/scsi/trace-events b/hw/scsi/trace-events
+index bdd4e2c7..f0f2a98c 100644
+--- a/hw/scsi/trace-events
++++ b/hw/scsi/trace-events
+@@ -197,6 +197,7 @@ esp_mem_writeb_cmd_selatns(uint32_t val) "Select with ATN & stop (0x%2.2x)"
+ esp_mem_writeb_cmd_ensel(uint32_t val) "Enable selection (0x%2.2x)"
+ esp_mem_writeb_cmd_dissel(uint32_t val) "Disable selection (0x%2.2x)"
+ esp_mem_writeb_cmd_ti(uint32_t val) "Transfer Information (0x%2.2x)"
++esp_set_phase(const char *phase) "setting bus phase to %s"
+ 
+ # esp-pci.c
+ esp_pci_error_invalid_dma_direction(void) "invalid DMA transfer direction"
+@@ -301,6 +302,8 @@ lsi_execute_script_stop(void) "SCRIPTS execution stopped"
+ lsi_awoken(void) "Woken by SIGP"
+ lsi_reg_read(const char *name, int offset, uint8_t ret) "Read reg %s 0x%x = 0x%02x"
+ lsi_reg_write(const char *name, int offset, uint8_t val) "Write reg %s 0x%x = 0x%02x"
++lsi_scripts_timer_triggered(void) "SCRIPTS timer triggered"
++lsi_scripts_timer_start(void) "SCRIPTS timer started"
+ 
+ # virtio-scsi.c
+ virtio_scsi_cmd_req(int lun, uint32_t tag, uint8_t cmd) "virtio_scsi_cmd_req lun=%u tag=0x%x cmd=0x%x"
+diff --git a/include/hw/misc/mos6522.h b/include/hw/misc/mos6522.h
+index fba45668..e8f16b4f 100644
+--- a/include/hw/misc/mos6522.h
++++ b/include/hw/misc/mos6522.h
+@@ -109,6 +109,9 @@ typedef struct MOS6522Timer {
+     int64_t next_irq_time;
+     uint64_t frequency;
+     QEMUTimer *timer;
++#ifdef C89_BROWSER_QEMU_VIA_T2_ONESHOT_HACK
++    bool armed;
++#endif
+ } MOS6522Timer;
+ 
+ /**
+diff --git a/include/hw/scsi/esp.h b/include/hw/scsi/esp.h
+index 13b17496..533d856a 100644
+--- a/include/hw/scsi/esp.h
++++ b/include/hw/scsi/esp.h
+@@ -25,7 +25,8 @@ struct ESPState {
+     uint8_t rregs[ESP_REGS];
+     uint8_t wregs[ESP_REGS];
+     qemu_irq irq;
+-    qemu_irq irq_data;
++    qemu_irq drq_irq;
++    bool drq_state;
+     uint8_t chip_id;
+     bool tchi_written;
+     int32_t ti_size;
+@@ -40,8 +41,7 @@ struct ESPState {
+     uint8_t lun;
+     uint32_t do_cmd;
+ 
+-    bool data_in_ready;
+-    uint8_t ti_cmd;
++    bool data_ready;
+     int dma_enabled;
+ 
+     uint32_t async_len;
+@@ -51,7 +51,6 @@ struct ESPState {
+     ESPDMAMemoryReadWriteFunc dma_memory_write;
+     void *dma_opaque;
+     void (*dma_cb)(ESPState *s);
+-    uint8_t pdma_cb;
+ 
+     uint8_t mig_version_id;
+ 
+@@ -63,6 +62,8 @@ struct ESPState {
+     uint8_t mig_ti_buf[ESP_FIFO_SZ];
+     uint8_t mig_cmdbuf[ESP_CMDFIFO_SZ];
+     uint32_t mig_cmdlen;
++
++    uint8_t mig_ti_cmd;
+ };
+ 
+ #define TYPE_SYSBUS_ESP "sysbus-esp"
+@@ -150,15 +151,6 @@ struct SysBusESPState {
+ #define TCHI_FAS100A 0x4
+ #define TCHI_AM53C974 0x12
+ 
+-/* PDMA callbacks */
+-enum pdma_cb {
+-    SATN_PDMA_CB = 0,
+-    S_WITHOUT_SATN_PDMA_CB = 1,
+-    SATN_STOP_PDMA_CB = 2,
+-    WRITE_RESPONSE_PDMA_CB = 3,
+-    DO_DMA_PDMA_CB = 4
+-};
+-
+ void esp_dma_enable(ESPState *s, int irq, int level);
+ void esp_request_cancelled(SCSIRequest *req);
+ void esp_command_complete(SCSIRequest *req, size_t resid);
+diff --git a/include/qemu/fifo8.h b/include/qemu/fifo8.h
+index 16be02f3..d1d06754 100644
+--- a/include/qemu/fifo8.h
++++ b/include/qemu/fifo8.h
+@@ -15,10 +15,9 @@ typedef struct {
+  * @fifo: struct Fifo8 to initialise with new FIFO
+  * @capacity: capacity of the newly created FIFO
+  *
+- * Create a FIFO of the specified size. Clients should call fifo8_destroy()
++ * Create a FIFO of the specified capacity. Clients should call fifo8_destroy()
+  * when finished using the fifo. The FIFO is initially empty.
+  */
+-
+ void fifo8_create(Fifo8 *fifo, uint32_t capacity);
+ 
+ /**
+@@ -26,9 +25,8 @@ void fifo8_create(Fifo8 *fifo, uint32_t capacity);
+  * @fifo: FIFO to cleanup
+  *
+  * Cleanup a FIFO created with fifo8_create(). Frees memory created for FIFO
+-  *storage. The FIFO is no longer usable after this has been called.
++ * storage. The FIFO is no longer usable after this has been called.
+  */
+-
+ void fifo8_destroy(Fifo8 *fifo);
+ 
+ /**
+@@ -39,7 +37,6 @@ void fifo8_destroy(Fifo8 *fifo);
+  * Push a data byte to the FIFO. Behaviour is undefined if the FIFO is full.
+  * Clients are responsible for checking for fullness using fifo8_is_full().
+  */
+-
+ void fifo8_push(Fifo8 *fifo, uint8_t data);
+ 
+ /**
+@@ -52,7 +49,6 @@ void fifo8_push(Fifo8 *fifo, uint8_t data);
+  * Clients are responsible for checking the space left in the FIFO using
+  * fifo8_num_free().
+  */
+-
+ void fifo8_push_all(Fifo8 *fifo, const uint8_t *data, uint32_t num);
+ 
+ /**
+@@ -64,34 +60,85 @@ void fifo8_push_all(Fifo8 *fifo, const uint8_t *data, uint32_t num);
+  *
+  * Returns: The popped data byte.
+  */
+-
+ uint8_t fifo8_pop(Fifo8 *fifo);
+ 
+ /**
+  * fifo8_pop_buf:
+  * @fifo: FIFO to pop from
++ * @dest: the buffer to write the data into (can be NULL)
++ * @destlen: size of @dest and maximum number of bytes to pop
++ *
++ * Pop a number of elements from the FIFO up to a maximum of @destlen.
++ * The popped data is copied into the @dest buffer.
++ * Care is taken when the data wraps around in the ring buffer.
++ *
++ * Returns: number of bytes popped.
++ */
++uint32_t fifo8_pop_buf(Fifo8 *fifo, uint8_t *dest, uint32_t destlen);
++
++/**
++ * fifo8_pop_bufptr:
++ * @fifo: FIFO to pop from
+  * @max: maximum number of bytes to pop
+- * @num: actual number of returned bytes
++ * @numptr: pointer filled with number of bytes returned (can be NULL)
+  *
+- * Pop a number of elements from the FIFO up to a maximum of max. The buffer
++ * New code should prefer to use fifo8_pop_buf() instead of fifo8_pop_bufptr().
++ *
++ * Pop a number of elements from the FIFO up to a maximum of @max. The buffer
+  * containing the popped data is returned. This buffer points directly into
+- * the FIFO backing store and data is invalidated once any of the fifo8_* APIs
+- * are called on the FIFO.
++ * the internal FIFO backing store and data (without checking for overflow!)
++ * and is invalidated once any of the fifo8_* APIs are called on the FIFO.
+  *
+  * The function may return fewer bytes than requested when the data wraps
+  * around in the ring buffer; in this case only a contiguous part of the data
+  * is returned.
+  *
+- * The number of valid bytes returned is populated in *num; will always return
+- * at least 1 byte. max must not be 0 or greater than the number of bytes in
+- * the FIFO.
++ * The number of valid bytes returned is populated in *@numptr; will always
++ * return at least 1 byte. max must not be 0 or greater than the number of
++ * bytes in the FIFO.
+  *
+  * Clients are responsible for checking the availability of requested data
+  * using fifo8_num_used().
+  *
+  * Returns: A pointer to popped data.
+  */
+-const uint8_t *fifo8_pop_buf(Fifo8 *fifo, uint32_t max, uint32_t *num);
++const uint8_t *fifo8_pop_bufptr(Fifo8 *fifo, uint32_t max, uint32_t *numptr);
++
++/**
++ * fifo8_peek_bufptr: read upto max bytes from the fifo
++ * @fifo: FIFO to read from
++ * @max: maximum number of bytes to peek
++ * @numptr: pointer filled with number of bytes returned (can be NULL)
++ *
++ * Peek into a number of elements from the FIFO up to a maximum of @max.
++ * The buffer containing the data peeked into is returned. This buffer points
++ * directly into the FIFO backing store. Since data is invalidated once any
++ * of the fifo8_* APIs are called on the FIFO, it is the caller responsibility
++ * to access it before doing further API calls.
++ *
++ * The function may return fewer bytes than requested when the data wraps
++ * around in the ring buffer; in this case only a contiguous part of the data
++ * is returned.
++ *
++ * The number of valid bytes returned is populated in *@numptr; will always
++ * return at least 1 byte. max must not be 0 or greater than the number of
++ * bytes in the FIFO.
++ *
++ * Clients are responsible for checking the availability of requested data
++ * using fifo8_num_used().
++ *
++ * Returns: A pointer to peekable data.
++ */
++const uint8_t *fifo8_peek_bufptr(Fifo8 *fifo, uint32_t max, uint32_t *numptr);
++
++/**
++ * fifo8_drop:
++ * @fifo: FIFO to drop bytes
++ * @len: number of bytes to drop
++ *
++ * Drop (consume) bytes from a FIFO.
++ */
++void fifo8_drop(Fifo8 *fifo, uint32_t len);
+ 
+ /**
+  * fifo8_reset:
+@@ -99,7 +146,6 @@ const uint8_t *fifo8_pop_buf(Fifo8 *fifo, uint32_t max, uint32_t *num);
+  *
+  * Reset a FIFO. All data is discarded and the FIFO is emptied.
+  */
+-
+ void fifo8_reset(Fifo8 *fifo);
+ 
+ /**
+@@ -110,7 +156,6 @@ void fifo8_reset(Fifo8 *fifo);
+  *
+  * Returns: True if the fifo is empty, false otherwise.
+  */
+-
+ bool fifo8_is_empty(Fifo8 *fifo);
+ 
+ /**
+@@ -121,7 +166,6 @@ bool fifo8_is_empty(Fifo8 *fifo);
+  *
+  * Returns: True if the fifo is full, false otherwise.
+  */
+-
+ bool fifo8_is_full(Fifo8 *fifo);
+ 
+ /**
+@@ -132,7 +176,6 @@ bool fifo8_is_full(Fifo8 *fifo);
+  *
+  * Returns: Number of free bytes.
+  */
+-
+ uint32_t fifo8_num_free(Fifo8 *fifo);
+ 
+ /**
+@@ -143,7 +186,6 @@ uint32_t fifo8_num_free(Fifo8 *fifo);
+  *
+  * Returns: Number of used bytes.
+  */
+-
+ uint32_t fifo8_num_used(Fifo8 *fifo);
+ 
+ extern const VMStateDescription vmstate_fifo8;
+diff --git a/meson.build b/meson.build
+index c748cae0..49348da9 100644
+--- a/meson.build
++++ b/meson.build
+@@ -226,7 +226,7 @@ qemu_ldflags = []
+ if targetos == 'darwin'
+   # Disable attempts to use ObjectiveC features in os/object.h since they
+   # won't work when we're compiling with gcc as a C compiler.
+-  if compiler.get_id() == 'gcc'
++  if cc.get_id() == 'gcc'
+     qemu_common_flags += '-DOS_OBJECT_USE_OBJC=0'
+   endif
+ elif targetos == 'sunos'
+diff --git a/target/m68k/cpu.h b/target/m68k/cpu.h
+index 6cfc696d..10973074 100644
+--- a/target/m68k/cpu.h
++++ b/target/m68k/cpu.h
+@@ -609,6 +609,10 @@ void m68k_cpu_transaction_failed(CPUState *cs, hwaddr physaddr, vaddr addr,
+ #define TB_FLAGS_TRACE          16
+ #define TB_FLAGS_TRACE_BIT      (1 << TB_FLAGS_TRACE)
+ 
++#ifdef C89_BROWSER_QEMU_ROM_RAMTEST_HACK
++bool c89_browser_qemu_m68k_rom_ramtest_fast_forward(CPUM68KState *env);
++#endif
++
+ static inline void cpu_get_tb_cpu_state(CPUM68KState *env, vaddr *pc,
+                                         uint64_t *cs_base, uint32_t *flags)
+ {
+diff --git a/target/m68k/helper.c b/target/m68k/helper.c
+index 0a1544cd..3097fe6c 100644
+--- a/target/m68k/helper.c
++++ b/target/m68k/helper.c
+@@ -29,6 +29,283 @@
+ 
+ #define SIGNBIT (1u << 31)
+ 
++#ifdef C89_BROWSER_QEMU_ROM_RAMTEST_HACK
++bool c89_browser_qemu_m68k_rom_ramtest_fast_forward(CPUM68KState *env)
++{
++    static bool reported;
++#ifdef C89_BROWSER_QEMU_ROM_DELAY_HACK
++    static bool delay_reported;
++#endif
++    uint32_t pc = env->pc;
++    uint32_t ram_top = env->aregs[4];
++    uint32_t ret = env->aregs[6];
++
++#ifdef C89_BROWSER_QEMU_ROM_DELAY_HACK
++    /*
++     * C89 browser-qemu: the Quadra ROM has a tiny VIA Timer 2 delay helper:
++     *
++     *   408008bc  lea     0x1c00(a1),a0
++     *   408008c0  move.b  d1,0x1000(a1)  ; VIA1 T2CL
++     *   408008c4  move.b  d2,0x1200(a1)  ; VIA1 T2CH
++     *   408008ca  btst    #0,(a0)        ; VIA1 IER mirror
++     *   408008ce  dbra    d0,408008ca
++     *   408008d2  jmp     (a2)
++     *
++     * The bit test does not control the branch; DBRA ignores flags. Native
++     * QEMU burns through the calibrated delay quickly, but wasm32 TCI can
++     * spend minutes here before ESP/SCSI is even touched. Shorten only this
++     * ROM helper when its continuation is still inside the Quadra ROM.
++     */
++    if (pc >= 0x408008c0 && pc <= 0x408008c8 &&
++        env->aregs[2] >= 0x40800000 && env->aregs[2] < 0x40900000 &&
++        env->aregs[1] >= 0x50000000 && env->aregs[1] < 0x54000000 &&
++        (env->aregs[1] & 0x0003ffff) == 0x00000000) {
++        env->dregs[0] &= 0xffff0000;
++        if (!delay_reported) {
++            qemu_printf("C89 browser-qemu: shortened Quadra ROM VIA delay at "
++                        "pc=0x%08x return=0x%08x a1=0x%08x d0=0x%08x\n",
++                        pc, env->aregs[2], env->aregs[1], env->dregs[0]);
++            delay_reported = true;
++        }
++        return false;
++    }
++    if (pc >= 0x408008ca && pc <= 0x408008d2 &&
++        env->aregs[2] >= 0x40800000 && env->aregs[2] < 0x40900000 &&
++        env->aregs[0] >= 0x50000000 && env->aregs[0] < 0x54000000 &&
++        (env->aregs[0] & 0x0003ffff) == 0x00001c00) {
++        env->dregs[0] |= 0x0000ffff;
++        env->pc = env->aregs[2];
++        if (!delay_reported) {
++            qemu_printf("C89 browser-qemu: skipped Quadra ROM VIA delay at "
++                        "pc=0x%08x return=0x%08x a0=0x%08x d0=0x%08x\n",
++                        pc, env->aregs[2], env->aregs[0], env->dregs[0]);
++            delay_reported = true;
++        }
++        return true;
++    }
++#endif
++
++    if (pc < 0x408477de || pc > 0x408479dc) {
++        return false;
++    }
++    if (ret < 0x40800000 || ret >= 0x40900000) {
++        return false;
++    }
++    if (ram_top < 0x00ffff00 || ram_top > 0x08000000 ||
++        (ram_top & 0xff) != 0xac) {
++        return false;
++    }
++
++    /*
++     * C89 browser-qemu: no-audio browser boot probe helper.
++     *
++     * The Quadra ROM's destructive RAM test writes and then XOR-walks all
++     * RAM before disk boot. On the wasm32 fallback TCG path this dominates
++     * startup and can starve browser control. Fast-forward only this ROM
++     * subroutine, leave desktop QEMU and non-browser builds untouched, and
++     * report success through D6 as the ROM's own test does.
++     */
++    env->dregs[6] = 0;
++    env->aregs[2] = ram_top;
++    env->pc = ret;
++    if (!reported) {
++        qemu_printf("C89 browser-qemu: skipped Quadra ROM RAM test at "
++                    "pc=0x%08x top=0x%08x return=0x%08x d7=0x%08x\n",
++                    pc, ram_top, ret, env->dregs[7]);
++        reported = true;
++    }
++    return true;
++}
++#endif
++
++#ifdef C89_BROWSER_QEMU_M68K_MOVEC_TLB_FLUSH
++static void c89_browser_qemu_m68k_mmu_control_flush(CPUM68KState *env,
++                                                     uint32_t reg,
++                                                     uint32_t old_val,
++                                                     uint32_t new_val)
++{
++    if (old_val == new_val) {
++        return;
++    }
++
++    tlb_flush(env_cpu(env));
++#ifdef C89_BROWSER_QEMU_M68K_TB_TRACE
++    fprintf(stderr,
++            "[c89-m68k-movec-flush] pc=0x%08x reg=0x%03x "
++            "old=0x%08x new=0x%08x tcr=0x%04x srp=0x%08x urp=0x%08x\n",
++            env->pc, reg, old_val, new_val,
++            env->mmu.tcr, env->mmu.srp, env->mmu.urp);
++    fflush(stderr);
++#endif
++}
++#define C89_M68K_MOVEC_MMU_CONTROL_FLUSH(env, reg, old_val, new_val) \
++    c89_browser_qemu_m68k_mmu_control_flush(env, reg, old_val, new_val)
++#else
++#define C89_M68K_MOVEC_MMU_CONTROL_FLUSH(env, reg, old_val, new_val) \
++    do { } while (0)
++#endif
++
++#ifdef C89_BROWSER_QEMU_M68K_MMU_WALK_TRACE
++static bool c89_browser_qemu_m68k_mmu_walk_interesting(CPUM68KState *env,
++                                                       target_ulong address,
++                                                       int access_type)
++{
++    uint32_t pc = env->pc;
++
++    if ((env->mmu.tcr & M68K_TCR_ENABLED) == 0) {
++        return false;
++    }
++    if (pc >= 0x408815a0 && pc <= 0x40881610) {
++        return true;
++    }
++    if (address >= 0x40800000 && address < 0x40900000) {
++        return true;
++    }
++    if (address >= 0x00170000 && address < 0x00190000) {
++        return true;
++    }
++    if (access_type & ACCESS_PTEST) {
++        return true;
++    }
++    return false;
++}
++
++static void c89_browser_qemu_m68k_mmu_walk_trace(CPUM68KState *env,
++                                                  bool enabled,
++                                                  const char *stage,
++                                                  target_ulong address,
++                                                  int access_type,
++                                                  uint32_t entry,
++                                                  uint32_t desc,
++                                                  int txres,
++                                                  hwaddr physical,
++                                                  int prot,
++                                                  target_ulong page_size)
++{
++    static unsigned log_count;
++
++    if (!enabled || log_count >= 800) {
++        return;
++    }
++    log_count++;
++    fprintf(stderr,
++            "[c89-m68k-mmu-walk] n=%u stage=%s pc=0x%08x addr=0x%08x "
++            "access=0x%x entry=0x%08x desc=0x%08x tx=%d phys=0x%llx "
++            "prot=0x%x page=0x%08x tcr=0x%04x srp=0x%08x urp=0x%08x "
++            "ittr0=0x%08x ittr1=0x%08x dttr0=0x%08x dttr1=0x%08x\n",
++            log_count, stage, env->pc, (uint32_t)address, access_type,
++            entry, desc, txres, (unsigned long long)physical, prot,
++            (uint32_t)page_size, env->mmu.tcr, env->mmu.srp, env->mmu.urp,
++            env->mmu.ttr[M68K_ITTR0], env->mmu.ttr[M68K_ITTR1],
++            env->mmu.ttr[M68K_DTTR0], env->mmu.ttr[M68K_DTTR1]);
++    fflush(stderr);
++}
++#define C89_M68K_MMU_WALK_INTERESTING(env, address, access_type) \
++    c89_browser_qemu_m68k_mmu_walk_interesting(env, address, access_type)
++#define C89_M68K_MMU_WALK_TRACE(env, enabled, stage, address, access_type, \
++                                entry, desc, txres, physical, prot, page_size) \
++    c89_browser_qemu_m68k_mmu_walk_trace(env, enabled, stage, address, \
++                                         access_type, entry, desc, txres, \
++                                         physical, prot, page_size)
++#else
++#define C89_M68K_MMU_WALK_INTERESTING(env, address, access_type) false
++#define C89_M68K_MMU_WALK_TRACE(env, enabled, stage, address, access_type, \
++                                entry, desc, txres, physical, prot, page_size) \
++    do { } while (0)
++#endif
++
++#ifdef C89_BROWSER_QEMU_M68K_PC_TRACE
++static const char *c89_browser_qemu_m68k_pc_phase(uint32_t pc)
++{
++    if (pc >= 0x40847a60 && pc <= 0x40847a90) {
++        return "rom-checksum";
++    }
++    if (pc >= 0x40847fe0 && pc <= 0x40848060) {
++        return "via-wait";
++    }
++    if (pc >= 0x408008bc && pc <= 0x408008d2) {
++        return "via-delay";
++    }
++    if (pc >= 0x40848120 && pc <= 0x40848298) {
++        return "via-timing";
++    }
++    if (pc >= 0x408bd300 && pc <= 0x408bd420) {
++        return "asc-startup";
++    }
++    if (pc >= 0x408477c0 && pc <= 0x408479dc) {
++        return "rom-ramtest";
++    }
++    if (pc >= 0x40809b40 && pc <= 0x40809c00) {
++        return "via-autovector";
++    }
++    if (pc >= 0x408099b0 && pc <= 0x40809a30) {
++        return "rom-dispatch";
++    }
++    if (pc >= 0x408ba080 && pc <= 0x408ba180) {
++        return "scsi-manager";
++    }
++    if (pc >= 0x40899700 && pc <= 0x40899770) {
++        return "scsi-status";
++    }
++    if (pc >= 0x408d1e80 && pc <= 0x408d2048) {
++        return "scsi-dma";
++    }
++    if (pc >= 0x40800000 && pc < 0x40900000) {
++        return "quadra-rom";
++    }
++    if (pc < 0x01000000) {
++        return "low-memory";
++    }
++    return "other";
++}
++
++void c89_browser_qemu_m68k_pc_trace(CPUM68KState *env)
++{
++    static uint32_t last_pc;
++    static const char *last_phase;
++    static unsigned long long tb_count;
++    static unsigned repeat_count;
++    static unsigned log_count;
++    uint32_t pc = env->pc;
++    uint32_t sr = env->sr | cpu_m68k_get_ccr(env);
++    const char *phase = c89_browser_qemu_m68k_pc_phase(pc);
++    bool phase_changed = last_phase != phase;
++    bool pc_changed = pc != last_pc;
++    bool low_memory = pc < 0x01000000;
++    bool periodic = (tb_count % 200000ULL) == 0;
++
++    tb_count++;
++    if (!pc_changed && !phase_changed) {
++        repeat_count++;
++    }
++    if (log_count >= 1200 && !periodic) {
++        return;
++    }
++    if (log_count >= 48 && !phase_changed && !low_memory && !periodic) {
++        return;
++    }
++    if (!pc_changed && !phase_changed && !periodic) {
++        return;
++    }
++
++    fprintf(stderr,
++            "[c89-m68k-pc] tb=%llu pc=0x%08x phase=%s sr=0x%04x "
++            "d0=0x%08x d1=0x%08x d6=0x%08x d7=0x%08x "
++            "a0=0x%08x a1=0x%08x a4=0x%08x a5=0x%08x "
++            "a6=0x%08x a7=0x%08x repeat=%u\n",
++            tb_count, pc, phase, sr,
++            env->dregs[0], env->dregs[1], env->dregs[6], env->dregs[7],
++            env->aregs[0], env->aregs[1], env->aregs[4], env->aregs[5],
++            env->aregs[6], env->aregs[7], repeat_count);
++    fflush(stderr);
++
++    last_pc = pc;
++    last_phase = phase;
++    repeat_count = 0;
++    log_count++;
++}
++#endif
++
+ /* Sort alphabetically, except for "any". */
+ static gint m68k_cpu_list_compare(gconstpointer a, gconstpointer b)
+ {
+@@ -226,7 +503,11 @@ void HELPER(m68k_movec_to)(CPUM68KState *env, uint32_t reg, uint32_t val)
+     case M68K_CR_TC:
+         if (m68k_feature(env, M68K_FEATURE_M68040)
+          || m68k_feature(env, M68K_FEATURE_M68060)) {
++            uint32_t old_tcr = env->mmu.tcr;
++
+             env->mmu.tcr = val;
++            C89_M68K_MOVEC_MMU_CONTROL_FLUSH(env, reg, old_tcr,
++                                             env->mmu.tcr);
+             return;
+         }
+         break;
+@@ -241,7 +522,11 @@ void HELPER(m68k_movec_to)(CPUM68KState *env, uint32_t reg, uint32_t val)
+     case M68K_CR_SRP:
+         if (m68k_feature(env, M68K_FEATURE_M68040)
+          || m68k_feature(env, M68K_FEATURE_M68060)) {
++            uint32_t old_srp = env->mmu.srp;
++
+             env->mmu.srp = val;
++            C89_M68K_MOVEC_MMU_CONTROL_FLUSH(env, reg, old_srp,
++                                             env->mmu.srp);
+             return;
+         }
+         break;
+@@ -249,7 +534,11 @@ void HELPER(m68k_movec_to)(CPUM68KState *env, uint32_t reg, uint32_t val)
+     case M68K_CR_URP:
+         if (m68k_feature(env, M68K_FEATURE_M68040)
+          || m68k_feature(env, M68K_FEATURE_M68060)) {
++            uint32_t old_urp = env->mmu.urp;
++
+             env->mmu.urp = val;
++            C89_M68K_MOVEC_MMU_CONTROL_FLUSH(env, reg, old_urp,
++                                             env->mmu.urp);
+             return;
+         }
+         break;
+@@ -278,28 +567,44 @@ void HELPER(m68k_movec_to)(CPUM68KState *env, uint32_t reg, uint32_t val)
+     /* MC68040/MC68LC040 */
+     case M68K_CR_ITT0: /* MC68EC040 only: M68K_CR_IACR0 */
+         if (m68k_feature(env, M68K_FEATURE_M68040)) {
++            uint32_t old_ttr = env->mmu.ttr[M68K_ITTR0];
++
+             env->mmu.ttr[M68K_ITTR0] = val;
++            C89_M68K_MOVEC_MMU_CONTROL_FLUSH(env, reg, old_ttr,
++                                             env->mmu.ttr[M68K_ITTR0]);
+             return;
+         }
+         break;
+     /* MC68040/MC68LC040 */
+     case M68K_CR_ITT1: /* MC68EC040 only: M68K_CR_IACR1 */
+         if (m68k_feature(env, M68K_FEATURE_M68040)) {
++            uint32_t old_ttr = env->mmu.ttr[M68K_ITTR1];
++
+             env->mmu.ttr[M68K_ITTR1] = val;
++            C89_M68K_MOVEC_MMU_CONTROL_FLUSH(env, reg, old_ttr,
++                                             env->mmu.ttr[M68K_ITTR1]);
+             return;
+         }
+         break;
+     /* MC68040/MC68LC040 */
+     case M68K_CR_DTT0: /* MC68EC040 only: M68K_CR_DACR0 */
+         if (m68k_feature(env, M68K_FEATURE_M68040)) {
++            uint32_t old_ttr = env->mmu.ttr[M68K_DTTR0];
++
+             env->mmu.ttr[M68K_DTTR0] = val;
++            C89_M68K_MOVEC_MMU_CONTROL_FLUSH(env, reg, old_ttr,
++                                             env->mmu.ttr[M68K_DTTR0]);
+             return;
+         }
+         break;
+     /* MC68040/MC68LC040 */
+     case M68K_CR_DTT1: /* MC68EC040 only: M68K_CR_DACR1 */
+         if (m68k_feature(env, M68K_FEATURE_M68040)) {
++            uint32_t old_ttr = env->mmu.ttr[M68K_DTTR1];
++
+             env->mmu.ttr[M68K_DTTR1] = val;
++            C89_M68K_MOVEC_MMU_CONTROL_FLUSH(env, reg, old_ttr,
++                                             env->mmu.ttr[M68K_DTTR1]);
+             return;
+         }
+         break;
+@@ -764,11 +1069,19 @@ static int get_physical_address(CPUM68KState *env, hwaddr *physical,
+     int page_bits;
+     int i;
+     MemTxResult txres;
++    bool trace = C89_M68K_MMU_WALK_INTERESTING(env, address, access_type);
++
++    C89_M68K_MMU_WALK_TRACE(env, trace, "begin", address, access_type,
++                            0, 0, 0, 0, 0, 0);
+ 
+     /* Transparent Translation (physical = logical) */
+     for (i = 0; i < M68K_MAX_TTR; i++) {
+-        if (check_TTR(env->mmu.TTR(access_type, i),
+-                      prot, address, access_type)) {
++        uint32_t ttr = env->mmu.TTR(access_type, i);
++
++        if (check_TTR(ttr, prot, address, access_type)) {
++            C89_M68K_MMU_WALK_TRACE(env, trace, "ttr-hit", address,
++                                    access_type, i, ttr, 0, address,
++                                    *prot, TARGET_PAGE_SIZE);
+             if (access_type & ACCESS_PTEST) {
+                 /* Transparent Translation Register bit */
+                 env->mmu.mmusr = M68K_MMU_T_040 | M68K_MMU_R_040;
+@@ -777,6 +1090,8 @@ static int get_physical_address(CPUM68KState *env, hwaddr *physical,
+             *page_size = TARGET_PAGE_SIZE;
+             return 0;
+         }
++        C89_M68K_MMU_WALK_TRACE(env, trace, "ttr-miss", address,
++                                access_type, i, ttr, 0, 0, 0, 0);
+     }
+ 
+     /* Page Table Root Pointer */
+@@ -794,10 +1109,16 @@ static int get_physical_address(CPUM68KState *env, hwaddr *physical,
+     entry = M68K_POINTER_BASE(next) | M68K_ROOT_INDEX(address);
+ 
+     next = address_space_ldl(cs->as, entry, MEMTXATTRS_UNSPECIFIED, &txres);
++    C89_M68K_MMU_WALK_TRACE(env, trace, "root-load", address, access_type,
++                            entry, next, txres, 0, *prot, 0);
+     if (txres != MEMTX_OK) {
++        C89_M68K_MMU_WALK_TRACE(env, trace, "root-txfail", address,
++                                access_type, entry, next, txres, 0, *prot, 0);
+         goto txfail;
+     }
+     if (!M68K_UDT_VALID(next)) {
++        C89_M68K_MMU_WALK_TRACE(env, trace, "root-invalid", address,
++                                access_type, entry, next, txres, 0, *prot, 0);
+         return -1;
+     }
+     if (!(next & M68K_DESC_USED) && !debug) {
+@@ -821,10 +1142,16 @@ static int get_physical_address(CPUM68KState *env, hwaddr *physical,
+     entry = M68K_POINTER_BASE(next) | M68K_POINTER_INDEX(address);
+ 
+     next = address_space_ldl(cs->as, entry, MEMTXATTRS_UNSPECIFIED, &txres);
++    C89_M68K_MMU_WALK_TRACE(env, trace, "pointer-load", address,
++                            access_type, entry, next, txres, 0, *prot, 0);
+     if (txres != MEMTX_OK) {
++        C89_M68K_MMU_WALK_TRACE(env, trace, "pointer-txfail", address,
++                                access_type, entry, next, txres, 0, *prot, 0);
+         goto txfail;
+     }
+     if (!M68K_UDT_VALID(next)) {
++        C89_M68K_MMU_WALK_TRACE(env, trace, "pointer-invalid", address,
++                                access_type, entry, next, txres, 0, *prot, 0);
+         return -1;
+     }
+     if (!(next & M68K_DESC_USED) && !debug) {
+@@ -852,16 +1179,29 @@ static int get_physical_address(CPUM68KState *env, hwaddr *physical,
+     }
+ 
+     next = address_space_ldl(cs->as, entry, MEMTXATTRS_UNSPECIFIED, &txres);
++    C89_M68K_MMU_WALK_TRACE(env, trace, "page-load", address, access_type,
++                            entry, next, txres, 0, *prot, 0);
+     if (txres != MEMTX_OK) {
++        C89_M68K_MMU_WALK_TRACE(env, trace, "page-txfail", address,
++                                access_type, entry, next, txres, 0, *prot, 0);
+         goto txfail;
+     }
+ 
+     if (!M68K_PDT_VALID(next)) {
++        C89_M68K_MMU_WALK_TRACE(env, trace, "page-invalid", address,
++                                access_type, entry, next, txres, 0, *prot, 0);
+         return -1;
+     }
+     if (M68K_PDT_INDIRECT(next)) {
+-        next = address_space_ldl(cs->as, M68K_INDIRECT_POINTER(next),
++        uint32_t indirect_entry = M68K_INDIRECT_POINTER(next);
++        C89_M68K_MMU_WALK_TRACE(env, trace, "page-indirect", address,
++                                access_type, indirect_entry, next, txres,
++                                0, *prot, 0);
++        next = address_space_ldl(cs->as, indirect_entry,
+                                  MEMTXATTRS_UNSPECIFIED, &txres);
++        C89_M68K_MMU_WALK_TRACE(env, trace, "page-indirect-load", address,
++                                access_type, indirect_entry, next, txres,
++                                0, *prot, 0);
+         if (txres != MEMTX_OK) {
+             goto txfail;
+         }
+@@ -903,6 +1243,9 @@ static int get_physical_address(CPUM68KState *env, hwaddr *physical,
+     page_mask = ~(*page_size - 1);
+     *physical = (next & page_mask) + (address & (*page_size - 1));
+ 
++    C89_M68K_MMU_WALK_TRACE(env, trace, "success", address, access_type,
++                            entry, next, txres, *physical, *prot, *page_size);
++
+     if (access_type & ACCESS_PTEST) {
+         env->mmu.mmusr |= next & M68K_MMU_SR_MASK_040;
+         env->mmu.mmusr |= *physical & 0xfffff000;
+@@ -929,6 +1272,8 @@ txfail:
+      * suitable guest fault here if this is not a debug access.
+      * For now just return that the translation failed.
+      */
++    C89_M68K_MMU_WALK_TRACE(env, trace, "txfail", address, access_type,
++                            entry, next, txres, 0, *prot, 0);
+     return -1;
+ }
+ 
+@@ -1051,6 +1396,18 @@ bool m68k_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
+ 
+     cs->exception_index = EXCP_ACCESS;
+     env->mmu.ar = address;
++#ifdef C89_BROWSER_QEMU_M68K_EXC_TRACE
++    fprintf(stderr,
++            "[c89-m68k-exc] tlb-fill-fault pc=0x%08x addr=0x%08x "
++            "size=%d qemu_access=%d mmu_idx=%d ret=%d prot=0x%x "
++            "ssw=0x%04x sr=0x%04x tcr=0x%04x srp=0x%08x urp=0x%08x "
++            "fault=%d retaddr=0x%llx\n",
++            env->pc, (uint32_t)address, size, qemu_access_type, mmu_idx,
++            ret, prot, env->mmu.ssw, env->sr | cpu_m68k_get_ccr(env),
++            env->mmu.tcr, env->mmu.srp, env->mmu.urp,
++            env->mmu.fault ? 1 : 0, (unsigned long long)retaddr);
++    fflush(stderr);
++#endif
+     cpu_loop_exit_restore(cs, retaddr);
+ }
+ #endif /* !CONFIG_USER_ONLY */
+diff --git a/target/m68k/op_helper.c b/target/m68k/op_helper.c
+index 1ce850bb..ccbbe762 100644
+--- a/target/m68k/op_helper.c
++++ b/target/m68k/op_helper.c
+@@ -184,6 +184,48 @@ static const char *m68k_exception_name(int index)
+     return "Unassigned";
+ }
+ 
++#ifdef C89_BROWSER_QEMU_M68K_EXC_TRACE
++static void c89_browser_qemu_m68k_exc_trace(CPUM68KState *env, CPUState *cs,
++                                            const char *where, uint32_t sp)
++{
++    uint32_t sr = env->sr | cpu_m68k_get_ccr(env);
++
++    fprintf(stderr,
++            "[c89-m68k-exc] %s idx=%d name=\"%s\" pc=0x%08x sp=0x%08x "
++            "sr=0x%04x mmu_fault=%d ar=0x%08x ssw=0x%04x tcr=0x%04x "
++            "urp=0x%08x srp=0x%08x vbr=0x%08x pending_level=%u "
++            "pending_vector=0x%02x\n",
++            where, cs->exception_index,
++            m68k_exception_name(cs->exception_index), env->pc, sp, sr,
++            env->mmu.fault ? 1 : 0, env->mmu.ar, env->mmu.ssw,
++            env->mmu.tcr, env->mmu.urp, env->mmu.srp, env->vbr,
++            env->pending_level, env->pending_vector);
++    fflush(stderr);
++}
++
++static void c89_browser_qemu_m68k_frame_store_trace(CPUM68KState *env,
++                                                    const char *label,
++                                                    uint32_t sp,
++                                                    unsigned bits,
++                                                    uint32_t value)
++{
++    fprintf(stderr,
++            "[c89-m68k-exc] frame-store label=%s pc=0x%08x addr=0x%08x "
++            "bits=%u value=0x%08x ar=0x%08x ssw=0x%04x srp=0x%08x "
++            "urp=0x%08x mmu_fault=%d\n",
++            label, env->pc, sp, bits, value, env->mmu.ar, env->mmu.ssw,
++            env->mmu.srp, env->mmu.urp, env->mmu.fault ? 1 : 0);
++    fflush(stderr);
++}
++#define C89_M68K_EXC_TRACE(where, sp) \
++    c89_browser_qemu_m68k_exc_trace(env, cs, where, sp)
++#define C89_M68K_FRAME_STORE_TRACE(label, sp, bits, value) \
++    c89_browser_qemu_m68k_frame_store_trace(env, label, sp, bits, value)
++#else
++#define C89_M68K_EXC_TRACE(where, sp) do { } while (0)
++#define C89_M68K_FRAME_STORE_TRACE(label, sp, bits, value) do { } while (0)
++#endif
++
+ static void cf_interrupt_all(CPUM68KState *env, int is_hw)
+ {
+     CPUState *cs = env_cpu(env);
+@@ -307,6 +349,7 @@ static void m68k_interrupt_all(CPUM68KState *env, int is_hw)
+                  ++count, m68k_exception_name(cs->exception_index),
+                  vector, env->pc, env->aregs[7], sr);
+     }
++    C89_M68K_EXC_TRACE(is_hw ? "entry-hw" : "entry-sw", env->aregs[7]);
+ 
+     /*
+      * MC68040UM/AD,  chapter 9.3.10
+@@ -332,57 +375,76 @@ static void m68k_interrupt_all(CPUM68KState *env, int is_hw)
+     switch (cs->exception_index) {
+     case EXCP_ACCESS:
+         if (env->mmu.fault) {
++            C89_M68K_EXC_TRACE("double-access-before-abort", sp);
+             cpu_abort(cs, "DOUBLE MMU FAULT\n");
+         }
+         env->mmu.fault = true;
++        C89_M68K_EXC_TRACE("access-frame-begin", sp);
+         /* push data 3 */
+         sp -= 4;
++        C89_M68K_FRAME_STORE_TRACE("data3", sp, 32, 0);
+         cpu_stl_mmuidx_ra(env, sp, 0, MMU_KERNEL_IDX, 0);
+         /* push data 2 */
+         sp -= 4;
++        C89_M68K_FRAME_STORE_TRACE("data2", sp, 32, 0);
+         cpu_stl_mmuidx_ra(env, sp, 0, MMU_KERNEL_IDX, 0);
+         /* push data 1 */
+         sp -= 4;
++        C89_M68K_FRAME_STORE_TRACE("data1", sp, 32, 0);
+         cpu_stl_mmuidx_ra(env, sp, 0, MMU_KERNEL_IDX, 0);
+         /* write back 1 / push data 0 */
+         sp -= 4;
++        C89_M68K_FRAME_STORE_TRACE("data0", sp, 32, 0);
+         cpu_stl_mmuidx_ra(env, sp, 0, MMU_KERNEL_IDX, 0);
+         /* write back 1 address */
+         sp -= 4;
++        C89_M68K_FRAME_STORE_TRACE("wb1-address", sp, 32, 0);
+         cpu_stl_mmuidx_ra(env, sp, 0, MMU_KERNEL_IDX, 0);
+         /* write back 2 data */
+         sp -= 4;
++        C89_M68K_FRAME_STORE_TRACE("wb2-data", sp, 32, 0);
+         cpu_stl_mmuidx_ra(env, sp, 0, MMU_KERNEL_IDX, 0);
+         /* write back 2 address */
+         sp -= 4;
++        C89_M68K_FRAME_STORE_TRACE("wb2-address", sp, 32, 0);
+         cpu_stl_mmuidx_ra(env, sp, 0, MMU_KERNEL_IDX, 0);
+         /* write back 3 data */
+         sp -= 4;
++        C89_M68K_FRAME_STORE_TRACE("wb3-data", sp, 32, 0);
+         cpu_stl_mmuidx_ra(env, sp, 0, MMU_KERNEL_IDX, 0);
+         /* write back 3 address */
+         sp -= 4;
++        C89_M68K_FRAME_STORE_TRACE("wb3-address", sp, 32, env->mmu.ar);
+         cpu_stl_mmuidx_ra(env, sp, env->mmu.ar, MMU_KERNEL_IDX, 0);
+         /* fault address */
+         sp -= 4;
++        C89_M68K_FRAME_STORE_TRACE("fault-address", sp, 32, env->mmu.ar);
+         cpu_stl_mmuidx_ra(env, sp, env->mmu.ar, MMU_KERNEL_IDX, 0);
+         /* write back 1 status */
+         sp -= 2;
++        C89_M68K_FRAME_STORE_TRACE("wb1-status", sp, 16, 0);
+         cpu_stw_mmuidx_ra(env, sp, 0, MMU_KERNEL_IDX, 0);
+         /* write back 2 status */
+         sp -= 2;
++        C89_M68K_FRAME_STORE_TRACE("wb2-status", sp, 16, 0);
+         cpu_stw_mmuidx_ra(env, sp, 0, MMU_KERNEL_IDX, 0);
+         /* write back 3 status */
+         sp -= 2;
++        C89_M68K_FRAME_STORE_TRACE("wb3-status", sp, 16, 0);
+         cpu_stw_mmuidx_ra(env, sp, 0, MMU_KERNEL_IDX, 0);
+         /* special status word */
+         sp -= 2;
++        C89_M68K_FRAME_STORE_TRACE("ssw", sp, 16, env->mmu.ssw);
+         cpu_stw_mmuidx_ra(env, sp, env->mmu.ssw, MMU_KERNEL_IDX, 0);
+         /* effective address */
+         sp -= 4;
++        C89_M68K_FRAME_STORE_TRACE("effective-address", sp, 32, env->mmu.ar);
+         cpu_stl_mmuidx_ra(env, sp, env->mmu.ar, MMU_KERNEL_IDX, 0);
+ 
++        C89_M68K_EXC_TRACE("access-before-format7-frame", sp);
+         do_stack_frame(env, &sp, 7, oldsr, 0, env->pc);
+         env->mmu.fault = false;
++        C89_M68K_EXC_TRACE("access-frame-complete", sp);
+         if (qemu_loglevel_mask(CPU_LOG_INT)) {
+             qemu_log("            "
+                      "ssw:  %08x ea:   %08x sfc:  %d    dfc: %d\n",
+@@ -426,8 +488,10 @@ static void m68k_interrupt_all(CPUM68KState *env, int is_hw)
+     }
+ 
+     env->aregs[7] = sp;
++    C89_M68K_EXC_TRACE("before-vector-fetch", sp);
+     /* Jump to vector.  */
+     env->pc = cpu_ldl_mmuidx_ra(env, env->vbr + vector, MMU_KERNEL_IDX, 0);
++    C89_M68K_EXC_TRACE("after-vector-fetch", env->aregs[7]);
+ }
+ 
+ static void do_interrupt_all(CPUM68KState *env, int is_hw)
+@@ -503,6 +567,17 @@ void m68k_cpu_transaction_failed(CPUState *cs, hwaddr physaddr, vaddr addr,
+         }
+ 
+         env->mmu.ar = addr;
++#ifdef C89_BROWSER_QEMU_M68K_EXC_TRACE
++        fprintf(stderr,
++                "[c89-m68k-exc] transaction-failed pc=0x%08x addr=0x%08x "
++                "phys=0x%llx size=%u access=%d mmu_idx=%d response=%d "
++                "ssw=0x%04x sr=0x%04x ar=0x%08x fault=%d retaddr=0x%llx\n",
++                env->pc, (uint32_t)addr, (unsigned long long)physaddr,
++                size, access_type, mmu_idx, response, env->mmu.ssw,
++                env->sr | cpu_m68k_get_ccr(env), env->mmu.ar,
++                env->mmu.fault ? 1 : 0, (unsigned long long)retaddr);
++        fflush(stderr);
++#endif
+ 
+         cs->exception_index = EXCP_ACCESS;
+         cpu_loop_exit(cs);
+diff --git a/tcg/wasm32.c b/tcg/wasm32.c
+index d60ce4b5..f5ac7131 100644
+--- a/tcg/wasm32.c
++++ b/tcg/wasm32.c
+@@ -30,6 +30,103 @@
+ #include <emscripten/threading.h>
+ #include "wasm32.h"
+ 
++#ifndef C89_BROWSER_QEMU_TCI_CHAIN_PUMP
++#define C89_BROWSER_QEMU_TCI_CHAIN_PUMP 0
++#endif
++#ifndef C89_BROWSER_QEMU_TCI_CHAIN_PUMP_INTERVAL
++#define C89_BROWSER_QEMU_TCI_CHAIN_PUMP_INTERVAL 1024
++#endif
++#if C89_BROWSER_QEMU_TCI_CHAIN_PUMP
++#include "hw/core/cpu.h"
++extern __thread int c89_browser_qemu_tci_chain_pump_cnt;
++#endif
++
++#ifndef C89_BROWSER_QEMU_TCG_SLEEP_PUMP_INTERVAL
++#define C89_BROWSER_QEMU_TCG_SLEEP_PUMP_INTERVAL 0
++#endif
++#ifndef C89_BROWSER_QEMU_TCG_SLEEP_PUMP_MS
++#define C89_BROWSER_QEMU_TCG_SLEEP_PUMP_MS 0
++#endif
++
++#ifndef C89_BROWSER_QEMU_TCI_ONLY
++#define C89_BROWSER_QEMU_TCI_ONLY 0
++#endif
++
++#ifndef C89_BROWSER_QEMU_TCG_EXIT_PUMP_INTERVAL
++#define C89_BROWSER_QEMU_TCG_EXIT_PUMP_INTERVAL 0
++#endif
++
++#if C89_BROWSER_QEMU_TCG_EXIT_PUMP_INTERVAL > 0
++#include "hw/core/cpu.h"
++#endif
++
++#ifdef C89_BROWSER_QEMU_M68K_PC_TRACE
++void c89_browser_qemu_m68k_pc_trace(CPUArchState *env);
++#endif
++
++#ifdef C89_BROWSER_QEMU_M68K_TB_TRACE
++extern __thread struct wasmContext ctx;
++
++static bool c89_browser_qemu_wasm32_tb_watch_pc(uint32_t pc)
++{
++    return (pc >= 0x40881000 && pc <= 0x40883000) ||
++           (pc >= 0x40800000 && pc <= 0x40802000);
++}
++
++static void c89_browser_qemu_wasm32_tb_path_trace(CPUArchState *env,
++                                                  const char *path,
++                                                  const void *start_tb_ptr,
++                                                  uint32_t res,
++                                                  int fidx,
++                                                  int counter)
++{
++    static uint32_t last_sig;
++    static unsigned long long seq;
++    static unsigned log_count;
++    uint32_t pc = env->pc;
++    uint32_t sig = pc ^ res ^ (uint32_t)(uintptr_t)start_tb_ptr ^
++                   ((uint32_t)fidx << 24) ^ (uint32_t)path[0];
++    bool watched = c89_browser_qemu_wasm32_tb_watch_pc(pc);
++    bool changed = sig != last_sig;
++    bool periodic = (seq % 200000ULL) == 0;
++
++    seq++;
++    if (!watched && !changed && !periodic) {
++        return;
++    }
++    if (log_count >= 2000 && !watched && !periodic) {
++        return;
++    }
++    if (log_count >= 160 && !watched && !periodic) {
++        return;
++    }
++
++    fprintf(stderr,
++            "[c89-wasm32-tb] n=%llu path=%s envpc=0x%08x "
++            "start_tb_ptr=%p ctx_tb_ptr=%p res=0x%08x fidx=%d counter=%d\n",
++            seq, path, pc, start_tb_ptr, ctx.tb_ptr, res, fidx, counter);
++    fflush(stderr);
++
++    last_sig = sig;
++    log_count++;
++}
++#endif
++
++#if C89_BROWSER_QEMU_TCI_CHAIN_PUMP
++__thread int c89_browser_qemu_tci_chain_pump_cnt;
++
++static inline void c89_browser_qemu_tci_chain_exit_request(void)
++{
++    if (++c89_browser_qemu_tci_chain_pump_cnt >=
++        C89_BROWSER_QEMU_TCI_CHAIN_PUMP_INTERVAL) {
++        c89_browser_qemu_tci_chain_pump_cnt = 0;
++        if (current_cpu) {
++            cpu_exit(current_cpu);
++        }
++    }
++}
++#endif
++
+ __thread uintptr_t tci_tb_ptr;
+ 
+ /* Disassemble TCI bytecode. */
+@@ -191,13 +288,58 @@ static int get_instance_running_local(void *tb_ptr)
+     return elm->fidx;
+ }
+ 
+-#define MAX_EXEC_NUM 50000
++#define MAX_EXEC_NUM 128
+ __thread int exec_cnt = MAX_EXEC_NUM;
++
++#if C89_BROWSER_QEMU_TCG_SLEEP_PUMP_INTERVAL > 0 && C89_BROWSER_QEMU_TCG_SLEEP_PUMP_MS > 0
++__thread int c89_browser_qemu_tcg_sleep_pump_cnt;
++
++static inline void c89_browser_qemu_tcg_sleep_pump(void)
++{
++    if (++c89_browser_qemu_tcg_sleep_pump_cnt <
++        C89_BROWSER_QEMU_TCG_SLEEP_PUMP_INTERVAL) {
++        return;
++    }
++    c89_browser_qemu_tcg_sleep_pump_cnt = 0;
++    emscripten_thread_sleep(C89_BROWSER_QEMU_TCG_SLEEP_PUMP_MS);
++}
++#else
++static inline void c89_browser_qemu_tcg_sleep_pump(void)
++{
++}
++#endif
++
++#if C89_BROWSER_QEMU_TCG_EXIT_PUMP_INTERVAL > 0
++__thread int c89_browser_qemu_tcg_exit_pump_cnt;
++
++static inline void c89_browser_qemu_tcg_exit_pump(void)
++{
++    if (++c89_browser_qemu_tcg_exit_pump_cnt <
++        C89_BROWSER_QEMU_TCG_EXIT_PUMP_INTERVAL) {
++        return;
++    }
++
++    c89_browser_qemu_tcg_exit_pump_cnt = 0;
++    if (current_cpu) {
++        cpu_exit(current_cpu);
++    }
++}
++#else
++static inline void c89_browser_qemu_tcg_exit_pump(void)
++{
++}
++#endif
+ static inline void trysleep()
+ {
+     if (--exec_cnt == 0) {
++        emscripten_current_thread_process_queued_calls();
++        c89_browser_qemu_tcg_sleep_pump();
++        c89_browser_qemu_tcg_exit_pump();
++#if C89_BROWSER_QEMU_THREAD_YIELD
++        emscripten_thread_sleep(0);
++#endif
+         if (!can_add_instance()) {
+-            emscripten_sleep(0); // return to the browser main loop
++            emscripten_thread_sleep(0);
+             check_instance_garbage_collected();
+         }
+         exec_cnt = MAX_EXEC_NUM;
+@@ -544,6 +686,132 @@ static uint64_t tlb_load(CPUArchState *env, uint64_t taddr, MemOp mop, uint64_t*
+     return 0;
+ }
+ 
++/* C89 browser-qemu: endian-correct wasm32 TCI fast path.
++ *
++ * The fallback TCI helpers below are correct but slow. qemu-wasm's direct
++ * TLB-hit path bypasses those helpers, so it must still honor MemOp byte
++ * order for big-endian guests such as m68k/q800.
++ */
++static uint64_t c89_browser_qemu_wasm32_tci_ld_fast(uint64_t target_addr,
++                                                    MemOp mop)
++{
++    const void *addr = (const void *)(uintptr_t)target_addr;
++    bool be = memop_big_endian(mop);
++
++    switch (mop & MO_SSIZE) {
++    case MO_UB:
++        return ldub_p(addr);
++    case MO_SB:
++        return ldsb_p(addr);
++    case MO_UW:
++        return be ? (uint16_t)lduw_be_p(addr) : (uint16_t)lduw_le_p(addr);
++    case MO_SW:
++        return be ? (int16_t)lduw_be_p(addr) : (int16_t)lduw_le_p(addr);
++    case MO_UL:
++        return be ? (uint32_t)ldl_be_p(addr) : (uint32_t)ldl_le_p(addr);
++    case MO_SL:
++        return be ? (int32_t)ldl_be_p(addr) : (int32_t)ldl_le_p(addr);
++    case MO_UQ:
++        return be ? ldq_be_p(addr) : ldq_le_p(addr);
++    case MO_SQ:
++        return be ? (int64_t)ldq_be_p(addr) : (int64_t)ldq_le_p(addr);
++    default:
++        g_assert_not_reached();
++    }
++}
++
++static void c89_browser_qemu_wasm32_tci_st_fast(uint64_t target_addr,
++                                                uint64_t val,
++                                                MemOp mop)
++{
++    void *addr = (void *)(uintptr_t)target_addr;
++    bool be = memop_big_endian(mop);
++
++    switch (mop & MO_SIZE) {
++    case MO_UB:
++        stb_p(addr, (uint8_t)val);
++        break;
++    case MO_UW:
++        if (be) {
++            stw_be_p(addr, (uint16_t)val);
++        } else {
++            stw_le_p(addr, (uint16_t)val);
++        }
++        break;
++    case MO_UL:
++        if (be) {
++            stl_be_p(addr, (uint32_t)val);
++        } else {
++            stl_le_p(addr, (uint32_t)val);
++        }
++        break;
++    case MO_UQ:
++        if (be) {
++            stq_be_p(addr, val);
++        } else {
++            stq_le_p(addr, val);
++        }
++        break;
++    default:
++        g_assert_not_reached();
++    }
++}
++
++#ifdef C89_BROWSER_QEMU_WASM32_PGTABLE_TRACE
++static bool c89_browser_qemu_wasm32_pgt_addr(uint64_t taddr)
++{
++    return taddr >= 0x00ffa000 && taddr < 0x01000000;
++}
++
++static bool c89_browser_qemu_wasm32_pgt_root_addr(uint64_t taddr)
++{
++    return taddr >= 0x00fffa00 && taddr < 0x00fffb00;
++}
++
++static void c89_browser_qemu_wasm32_pgt_trace(CPUArchState *env,
++                                               const char *op,
++                                               uint64_t taddr,
++                                               uint64_t target_addr,
++                                               uint64_t val,
++                                               MemOp mop,
++                                               bool fast)
++{
++    static unsigned log_count;
++    uint32_t mem32be = 0;
++    bool is_store = op[0] == 's';
++
++    if (!c89_browser_qemu_wasm32_pgt_addr(taddr)) {
++        return;
++    }
++    if (is_store && val == 0 && !c89_browser_qemu_wasm32_pgt_root_addr(taddr)) {
++        return;
++    }
++    if (log_count >= 5000) {
++        return;
++    }
++
++    if (target_addr != 0 && (taddr & 3) == 0) {
++        mem32be = ldl_be_p((const void *)(uintptr_t)target_addr);
++    }
++
++    log_count++;
++    fprintf(stderr,
++            "[c89-wasm32-pgt] n=%u op=%s pc=0x%08x taddr=0x%08llx "
++            "target=0x%08llx val=0x%08llx mop=0x%x size=%u be=%d "
++            "fast=%d mem32be=0x%08x\n",
++            log_count, op, env->pc, (unsigned long long)taddr,
++            (unsigned long long)target_addr, (unsigned long long)val,
++            mop, (unsigned)(mop & MO_SIZE), memop_big_endian(mop),
++            fast, mem32be);
++    fflush(stderr);
++}
++#define C89_WASM32_PGT_TRACE(env, op, taddr, target_addr, val, mop, fast) \
++    c89_browser_qemu_wasm32_pgt_trace(env, op, taddr, target_addr, val, mop, fast)
++#else
++#define C89_WASM32_PGT_TRACE(env, op, taddr, target_addr, val, mop, fast) \
++    do { } while (0)
++#endif
++
+ static uint64_t tci_qemu_ld(CPUArchState *env, uint64_t taddr,
+                             MemOpIdx oi, const void *tb_ptr, uint64_t* ptr)
+ {
+@@ -552,24 +820,9 @@ static uint64_t tci_qemu_ld(CPUArchState *env, uint64_t taddr,
+ 
+     uint64_t target_addr = tlb_load(env, taddr, mop, ptr, true);
+     if (target_addr != 0) {
+-        switch (mop & MO_SSIZE) {
+-        case MO_UB:
+-            return *(uint8_t*)target_addr;
+-        case MO_SB:
+-            return *(int8_t*)target_addr;
+-        case MO_UW:
+-            return *(uint16_t*)target_addr;
+-        case MO_SW:
+-            return *(int16_t*)target_addr;
+-        case MO_UL:
+-            return *(uint32_t*)target_addr;
+-        case MO_SL:
+-            return *(int32_t*)target_addr;
+-        case MO_UQ:
+-            return *(uint64_t*)target_addr;
+-        default:
+-            g_assert_not_reached();
+-        }
++        uint64_t val = c89_browser_qemu_wasm32_tci_ld_fast(target_addr, mop);
++        C89_WASM32_PGT_TRACE(env, "ld-fast", taddr, target_addr, val, mop, true);
++        return val;
+     }
+ 
+     switch (mop & MO_SSIZE) {
+@@ -600,22 +853,8 @@ static void tci_qemu_st(CPUArchState *env, uint64_t taddr, uint64_t val,
+ 
+     uint64_t target_addr = tlb_load(env, taddr, mop, ptr, false);
+     if (target_addr != 0) {
+-        switch (mop & MO_SIZE) {
+-        case MO_UB:
+-            *(uint8_t*)target_addr = (uint8_t)val;
+-            break;
+-        case MO_UW:
+-            *(uint16_t*)target_addr = (uint16_t)val;
+-            break;
+-        case MO_UL:
+-            *(uint32_t*)target_addr = (uint32_t)val;
+-            break;
+-        case MO_UQ:
+-            *(uint64_t*)target_addr = (uint64_t)val;
+-            break;
+-        default:
+-            g_assert_not_reached();
+-        }
++        c89_browser_qemu_wasm32_tci_st_fast(target_addr, val, mop);
++        C89_WASM32_PGT_TRACE(env, "st-fast", taddr, target_addr, val, mop, true);
+         return;
+     }
+     
+@@ -635,6 +874,7 @@ static void tci_qemu_st(CPUArchState *env, uint64_t taddr, uint64_t val,
+     default:
+         g_assert_not_reached();
+     }
++    C89_WASM32_PGT_TRACE(env, "st-slow", taddr, 0, val, mop, false);
+ }
+ 
+ #if TCG_TARGET_REG_BITS == 64
+@@ -1224,9 +1464,15 @@ static inline uintptr_t tcg_qemu_tb_exec_tci(CPUArchState *env)
+             if (*(uint32_t **)ptr != 0) {
+                 tb_ptr = *(uint32_t **)ptr;
+                 ctx.tb_ptr = tb_ptr;
++#if C89_BROWSER_QEMU_TCI_CHAIN_PUMP
++                c89_browser_qemu_tci_chain_exit_request();
++#endif
+                 int tb_counter_ptr = (uint32_t)tb_ptr + counter_vec_off;
+-                if ((*(int32_t*)tb_counter_ptr >= 0) && (*(int32_t*)tb_counter_ptr < INSTANTIATE_NUM)) {
+-                    *(int32_t*)tb_counter_ptr += 1;
++                if (C89_BROWSER_QEMU_TCI_ONLY ||
++                    ((*(int32_t*)tb_counter_ptr >= 0) && (*(int32_t*)tb_counter_ptr < INSTANTIATE_NUM))) {
++                    if (!C89_BROWSER_QEMU_TCI_ONLY) {
++                        *(int32_t*)tb_counter_ptr += 1;
++                    }
+                 } else {
+                     // enter to wasm TB
+                     return 0;
+@@ -1245,9 +1491,15 @@ static inline uintptr_t tcg_qemu_tb_exec_tci(CPUArchState *env)
+             tb_ptr = ptr;
+ 
+             ctx.tb_ptr = tb_ptr;
++#if C89_BROWSER_QEMU_TCI_CHAIN_PUMP
++            c89_browser_qemu_tci_chain_exit_request();
++#endif
+             int tb_counter_ptr = (uint32_t)tb_ptr + counter_vec_off;
+-            if ((*(int32_t*)tb_counter_ptr >= 0) && (*(int32_t*)tb_counter_ptr < INSTANTIATE_NUM)) {
+-                *(int32_t*)tb_counter_ptr += 1;
++            if (C89_BROWSER_QEMU_TCI_ONLY ||
++                ((*(int32_t*)tb_counter_ptr >= 0) && (*(int32_t*)tb_counter_ptr < INSTANTIATE_NUM))) {
++                if (!C89_BROWSER_QEMU_TCI_ONLY) {
++                    *(int32_t*)tb_counter_ptr += 1;
++                }
+             } else {
+                 // enter to wasm TB
+                 return 0;
+@@ -1320,29 +1572,50 @@ static inline uintptr_t tcg_qemu_tb_exec_tci(CPUArchState *env)
+ uintptr_t QEMU_DISABLE_CFI tcg_qemu_tb_exec(CPUArchState *env,
+                                             const void *v_tb_ptr)
+ {
++    /* C89 browser-qemu: ensure wasm32 TCG JS state exists in this pthread. */
++    if (!initdone) {
++        init_wasm32();
++    }
+     ctx.env = env;
+     ctx.tb_ptr = (uint32_t*)v_tb_ptr;
+     ctx.do_init = 1;
+     while (true) {
++#ifdef C89_BROWSER_QEMU_M68K_PC_TRACE
++        c89_browser_qemu_m68k_pc_trace(env);
++#endif
+         trysleep();
+         int tb_counter_ptr = (uint32_t)ctx.tb_ptr + counter_vec_off;
+         uint32_t res;
+-        int fidx = get_instance_running_local(ctx.tb_ptr);
++        const void *c89_start_tb_ptr = ctx.tb_ptr;
++        const char *c89_path = "unknown";
++        int c89_counter = *(int32_t*)tb_counter_ptr;
++        int fidx = C89_BROWSER_QEMU_TCI_ONLY ? 0 : get_instance_running_local(ctx.tb_ptr);
+         if (fidx > 0) {
++            c89_path = "wasm-cache";
+             res = ((wasm_func_ptr)(fidx))(&ctx);
+-        } else if (*(int32_t*)tb_counter_ptr < INSTANTIATE_NUM) {
+-            *(int32_t*)tb_counter_ptr += 1;
++        } else if (C89_BROWSER_QEMU_TCI_ONLY || c89_counter < INSTANTIATE_NUM) {
++            c89_path = "tci-cold";
++            if (!C89_BROWSER_QEMU_TCI_ONLY) {
++                *(int32_t*)tb_counter_ptr += 1;
++            }
+             res = tcg_qemu_tb_exec_tci(env);
+         } else if (!can_add_instance()) {
++            c89_path = "tci-cap";
+             remove_instance_running_local();
+             check_instance_garbage_collected();
+             res = tcg_qemu_tb_exec_tci(env);
+         } else {
+-            int fidx = instantiate_wasm();
++            c89_path = "wasm-new";
++            fidx = instantiate_wasm();
+             add_instance_running_local(fidx, ctx.tb_ptr);
+             res = ((wasm_func_ptr)(fidx))(&ctx);
+         }
+         if ((uint32_t)ctx.tb_ptr == 0) {
++#ifdef C89_BROWSER_QEMU_M68K_TB_TRACE
++            c89_browser_qemu_wasm32_tb_path_trace(env, c89_path,
++                                                  c89_start_tb_ptr, res,
++                                                  fidx, c89_counter);
++#endif
+             return res;
+         }
+     }
+diff --git a/tcg/wasm32.h b/tcg/wasm32.h
+index 82ac7e37..6a148bef 100644
+--- a/tcg/wasm32.h
++++ b/tcg/wasm32.h
+@@ -37,6 +37,6 @@ int get_core_nums();
+ 
+ void init_wasm32();
+ 
+-#define INSTANTIATE_NUM 1500
++#define INSTANTIATE_NUM 2147483647
+ 
+ #endif
+diff --git a/ui/console-vc.c b/ui/console-vc.c
+index 9c13cc29..1bcc4167 100644
+--- a/ui/console-vc.c
++++ b/ui/console-vc.c
+@@ -287,7 +287,7 @@ static void kbd_send_chars(QemuTextConsole *s)
+         const uint8_t *buf;
+         uint32_t size;
+ 
+-        buf = fifo8_pop_buf(&s->out_fifo, MIN(len, avail), &size);
++        buf = fifo8_pop_bufptr(&s->out_fifo, MIN(len, avail), &size);
+         qemu_chr_be_write(s->chr, buf, size);
+         len = qemu_chr_be_can_write(s->chr);
+         avail -= size;
+diff --git a/util/fifo8.c b/util/fifo8.c
+index d4d1c135..1ffa19d9 100644
+--- a/util/fifo8.c
++++ b/util/fifo8.c
+@@ -16,12 +16,17 @@
+ #include "migration/vmstate.h"
+ #include "qemu/fifo8.h"
+ 
++void fifo8_reset(Fifo8 *fifo)
++{
++    fifo->num = 0;
++    fifo->head = 0;
++}
++
+ void fifo8_create(Fifo8 *fifo, uint32_t capacity)
+ {
+     fifo->data = g_new(uint8_t, capacity);
+     fifo->capacity = capacity;
+-    fifo->head = 0;
+-    fifo->num = 0;
++    fifo8_reset(fifo);
+ }
+ 
+ void fifo8_destroy(Fifo8 *fifo)
+@@ -66,23 +71,70 @@ uint8_t fifo8_pop(Fifo8 *fifo)
+     return ret;
+ }
+ 
+-const uint8_t *fifo8_pop_buf(Fifo8 *fifo, uint32_t max, uint32_t *num)
++static const uint8_t *fifo8_peekpop_buf(Fifo8 *fifo, uint32_t max,
++                                        uint32_t *numptr, bool do_pop)
+ {
+     uint8_t *ret;
++    uint32_t num;
+ 
+     assert(max > 0 && max <= fifo->num);
+-    *num = MIN(fifo->capacity - fifo->head, max);
++    num = MIN(fifo->capacity - fifo->head, max);
+     ret = &fifo->data[fifo->head];
+-    fifo->head += *num;
+-    fifo->head %= fifo->capacity;
+-    fifo->num -= *num;
++
++    if (do_pop) {
++        fifo->head += num;
++        fifo->head %= fifo->capacity;
++        fifo->num -= num;
++    }
++    if (numptr) {
++        *numptr = num;
++    }
+     return ret;
+ }
+ 
+-void fifo8_reset(Fifo8 *fifo)
++const uint8_t *fifo8_peek_bufptr(Fifo8 *fifo, uint32_t max, uint32_t *numptr)
+ {
+-    fifo->num = 0;
+-    fifo->head = 0;
++    return fifo8_peekpop_buf(fifo, max, numptr, false);
++}
++
++const uint8_t *fifo8_pop_bufptr(Fifo8 *fifo, uint32_t max, uint32_t *numptr)
++{
++    return fifo8_peekpop_buf(fifo, max, numptr, true);
++}
++
++uint32_t fifo8_pop_buf(Fifo8 *fifo, uint8_t *dest, uint32_t destlen)
++{
++    const uint8_t *buf;
++    uint32_t n1, n2 = 0;
++    uint32_t len;
++
++    if (destlen == 0) {
++        return 0;
++    }
++
++    len = destlen;
++    buf = fifo8_pop_bufptr(fifo, len, &n1);
++    if (dest) {
++        memcpy(dest, buf, n1);
++    }
++
++    /* Add FIFO wraparound if needed */
++    len -= n1;
++    len = MIN(len, fifo8_num_used(fifo));
++    if (len) {
++        buf = fifo8_pop_bufptr(fifo, len, &n2);
++        if (dest) {
++            memcpy(&dest[n1], buf, n2);
++        }
++    }
++
++    return n1 + n2;
++}
++
++void fifo8_drop(Fifo8 *fifo, uint32_t len)
++{
++    len -= fifo8_pop_buf(fifo, NULL, len);
++    assert(len == 0);
+ }
+ 
+ bool fifo8_is_empty(Fifo8 *fifo)
+@@ -109,7 +161,7 @@ const VMStateDescription vmstate_fifo8 = {
+     .name = "Fifo8",
+     .version_id = 1,
+     .minimum_version_id = 1,
+-    .fields = (VMStateField[]) {
++    .fields = (const VMStateField[]) {
+         VMSTATE_VBUFFER_UINT32(data, Fifo8, 1, NULL, capacity),
+         VMSTATE_UINT32(head, Fifo8),
+         VMSTATE_UINT32(num, Fifo8),
+diff --git a/util/qemu-config.c b/util/qemu-config.c
+index 42076efe..069ecf17 100644
+--- a/util/qemu-config.c
++++ b/util/qemu-config.c
+@@ -9,8 +9,8 @@
+ #include "qemu/config-file.h"
+ #include "hw/boards.h"
+ 
+-static QemuOptsList *vm_config_groups[48];
+-static QemuOptsList *drive_config_groups[5];
++static QemuOptsList *vm_config_groups[256];
++static QemuOptsList *drive_config_groups[32];
+ 
+ static QemuOptsList *find_list(QemuOptsList **lists, const char *group,
+                                Error **errp)

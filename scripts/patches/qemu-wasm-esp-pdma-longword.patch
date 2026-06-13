@@ -1,0 +1,59 @@
+diff --git a/hw/scsi/esp.c b/hw/scsi/esp.c
+index 3eebbf67..fdb127a1 100644
+--- a/hw/scsi/esp.c
++++ b/hw/scsi/esp.c
+@@ -1583,6 +1583,7 @@ static void sysbus_esp_pdma_write(void *opaque, hwaddr addr,
+     ESPState *s = ESP(&sysbus->esp);
+ 
+     trace_esp_pdma_write(size);
++    C89_ESP_TRACE(s, "pdma-write", 0xfe, size);
+ 
+     switch (size) {
+     case 1:
+@@ -1592,6 +1593,13 @@ static void sysbus_esp_pdma_write(void *opaque, hwaddr addr,
+         esp_pdma_write(s, val >> 8);
+         esp_pdma_write(s, val);
+         break;
++    case 4:
++        esp_pdma_write(s, val >> 24);
++        esp_pdma_write(s, val >> 16);
++        esp_pdma_cb(s);
++        esp_pdma_write(s, val >> 8);
++        esp_pdma_write(s, val);
++        break;
+     }
+     esp_pdma_cb(s);
+ }
+@@ -1604,6 +1612,7 @@ static uint64_t sysbus_esp_pdma_read(void *opaque, hwaddr addr,
+     uint64_t val = 0;
+ 
+     trace_esp_pdma_read(size);
++    C89_ESP_TRACE(s, "pdma-read", 0xfe, size);
+ 
+     switch (size) {
+     case 1:
+@@ -1613,6 +1622,15 @@ static uint64_t sysbus_esp_pdma_read(void *opaque, hwaddr addr,
+         val = esp_pdma_read(s);
+         val = (val << 8) | esp_pdma_read(s);
+         break;
++    case 4:
++        val = esp_pdma_read(s);
++        val = (val << 8) | esp_pdma_read(s);
++        if (fifo8_num_used(&s->fifo) < 2) {
++            esp_pdma_cb(s);
++        }
++        val = (val << 8) | esp_pdma_read(s);
++        val = (val << 8) | esp_pdma_read(s);
++        break;
+     }
+     if (fifo8_num_used(&s->fifo) < 2) {
+         esp_pdma_cb(s);
+@@ -1636,7 +1654,7 @@ static const MemoryRegionOps sysbus_esp_pdma_ops = {
+     .valid.min_access_size = 1,
+     .valid.max_access_size = 4,
+     .impl.min_access_size = 1,
+-    .impl.max_access_size = 2,
++    .impl.max_access_size = 4,
+ };
+ 
+ static const struct SCSIBusInfo esp_scsi_info = {
