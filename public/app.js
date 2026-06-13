@@ -1491,7 +1491,13 @@
       pty: qemuPty,
       c89Disk: qemuDiskShared || undefined,
       preRun: [createRuntimeDirs],
-      elementPointerLock: true,
+      // Pointer lock OFF: auto-requesting it on any canvas click engages real
+      // pointer lock in a headed browser (no-op in headless), and the ensuing
+      // relative-mouse event flood through synchronous main-thread->worker
+      // input proxying wedges the renderer ("clicking crashes it"; headless
+      // never reproduced it). A/UX uses the absolute/relative mouse fine
+      // without lock. Re-enable only after input proxying is made non-blocking.
+      elementPointerLock: false,
       thisProgram: "qemu-system-m68k",
       mainScriptUrlOrBlob: qemuAsset(runtimeDir, "out.js"),
       locateFile(path) {
@@ -2202,7 +2208,10 @@
       document.exitPointerLock();
       return;
     }
-    canvas.requestPointerLock();
+    // Pointer lock is currently a renderer-wedge hazard in headed browsers
+    // (relative-mouse flood through blocking input proxying). Disabled until
+    // input proxying is non-blocking; focusing the canvas is enough for input.
+    log("pointer lock disabled (known headed-browser wedge); canvas focused for input");
   });
 
   fullscreenButton.addEventListener("click", () => {
