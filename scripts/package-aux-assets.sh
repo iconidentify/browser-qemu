@@ -99,6 +99,8 @@ for artifact in qemu-system-m68k.wasm qemu-system-m68k.worker.js; do
   cp "${QEMU_BUILD}/${artifact}" "${PUBLIC_QEMU}/${artifact}"
 done
 
+node "${ROOT}/scripts/patch-qemu-out-js-input.mjs" "${PUBLIC_QEMU}/out.js"
+
 docker run --rm \
   -v "${PACK_DIR}:/pack:ro" \
   -v "${PUBLIC_QEMU}:/public-qemu" \
@@ -113,7 +115,7 @@ var args = [
   "-accel", "tcg,tb-size=500",
   "-L", "/pack/",
   "-bios", "/pack/Quadra800.rom",
-  "-display", "sdl,gl=off,show-cursor=on",
+  "-display", "sdl,gl=off,show-cursor=off",
   "-g", "1152x870x8",
   "-audio", "none",
 EOF

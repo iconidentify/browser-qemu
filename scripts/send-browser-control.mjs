@@ -12,14 +12,16 @@ function usage() {
   console.error(`Usage:
   node scripts/send-browser-control.mjs hmp <command...> [--stay-monitor]
   node scripts/send-browser-control.mjs key <qemu-key>
-  node scripts/send-browser-control.mjs pulse start [--interval-ms 30000]
+  node scripts/send-browser-control.mjs text <guest text...> [--delay-ms 45]
+  node scripts/send-browser-control.mjs pulse start [--mode yield|sample] [--interval-ms 30000]
   node scripts/send-browser-control.mjs pulse stop
 
 Examples:
   node scripts/send-browser-control.mjs hmp help --stay-monitor
   node scripts/send-browser-control.mjs key a
   node scripts/send-browser-control.mjs key ret
-  node scripts/send-browser-control.mjs pulse start --interval-ms 30000
+  node scripts/send-browser-control.mjs text root
+  node scripts/send-browser-control.mjs pulse start --mode yield --interval-ms 2000
   node scripts/send-browser-control.mjs pulse stop`);
 }
 
@@ -96,10 +98,30 @@ if (mode === "hmp") {
     process.exit(2);
   }
   writeCommand({ type: "key", key });
+} else if (mode === "text") {
+  let delayMs = 45;
+  const delayIndex = args.findIndex((arg) => arg === "--delay-ms" || arg === "--delay");
+  if (delayIndex !== -1) {
+    const value = Number.parseInt(args[delayIndex + 1] || "", 10);
+    if (!Number.isFinite(value) || value <= 0) {
+      console.error(`${args[delayIndex]} must be a positive integer`);
+      process.exit(2);
+    }
+    delayMs = value;
+    args.splice(delayIndex, 2);
+  }
+
+  const text = args.join(" ");
+  if (!text) {
+    usage();
+    process.exit(2);
+  }
+  writeCommand({ type: "text", text, delayMs });
 } else if (mode === "pulse") {
   const action = args.shift();
   if (action === "start") {
     let intervalMs = 30000;
+    let pulseMode = "sample";
     for (let index = 0; index < args.length; index += 1) {
       const arg = args[index];
       if (arg === "--interval-ms" || arg === "--interval") {
@@ -110,12 +132,20 @@ if (mode === "hmp") {
         }
         intervalMs = value;
         index += 1;
+      } else if (arg === "--mode") {
+        const value = String(args[index + 1] || "").toLowerCase();
+        if (value !== "yield" && value !== "sample") {
+          console.error("--mode must be yield or sample");
+          process.exit(2);
+        }
+        pulseMode = value;
+        index += 1;
       } else {
         usage();
         process.exit(2);
       }
     }
-    writeCommand({ type: "pulse", action: "start", intervalMs });
+    writeCommand({ type: "pulse", action: "start", intervalMs, mode: pulseMode });
   } else if (action === "stop") {
     if (args.length) {
       usage();

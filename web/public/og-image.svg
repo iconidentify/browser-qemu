@@ -1,0 +1,128 @@
+<svg width="1200" height="630" viewBox="0 0 1200 630" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Warm beige gradient background -->
+    <radialGradient id="shellBg" cx="50%" cy="30%" r="70%">
+      <stop offset="0%" stop-color="#F0EBE3"/>
+      <stop offset="50%" stop-color="#E8E2D8"/>
+      <stop offset="100%" stop-color="#D8D2C8"/>
+    </radialGradient>
+
+    <!-- Housing gradient for 3D plastic effect -->
+    <linearGradient id="housingGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FAF8F4"/>
+      <stop offset="4%" stop-color="#EDE8DF"/>
+      <stop offset="96%" stop-color="#EDE8DF"/>
+      <stop offset="100%" stop-color="#D4CFC4"/>
+    </linearGradient>
+
+    <!-- Screen glow effect -->
+    <radialGradient id="screenGlow" cx="50%" cy="50%" r="60%">
+      <stop offset="0%" stop-color="#2A2824"/>
+      <stop offset="70%" stop-color="#1A1918"/>
+      <stop offset="100%" stop-color="#0A0908"/>
+    </radialGradient>
+
+    <!-- CRT scanlines pattern -->
+    <pattern id="scanlines" patternUnits="userSpaceOnUse" width="2" height="2">
+      <rect width="2" height="1" fill="rgba(0,0,0,0.08)"/>
+    </pattern>
+
+    <!-- Subtle noise texture -->
+    <filter id="noise">
+      <feTurbulence type="fractalNoise" baseFrequency="0.8" numOctaves="3" result="noise"/>
+      <feColorMatrix type="saturate" values="0"/>
+      <feBlend in="SourceGraphic" in2="noise" mode="overlay"/>
+    </filter>
+
+    <!-- Drop shadow for housing -->
+    <filter id="housingShadow" x="-5%" y="-5%" width="110%" height="120%">
+      <feDropShadow dx="0" dy="8" stdDeviation="16" flood-color="#000" flood-opacity="0.15"/>
+      <feDropShadow dx="0" dy="24" stdDeviation="40" flood-color="#000" flood-opacity="0.1"/>
+    </filter>
+
+    <!-- Inner shadow for bezel -->
+    <filter id="bezelShadow">
+      <feOffset dx="0" dy="4"/>
+      <feGaussianBlur stdDeviation="8"/>
+      <feComposite in2="SourceAlpha" operator="arithmetic" k2="-1" k3="1"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.6 0"/>
+      <feBlend in="SourceGraphic" mode="normal"/>
+    </filter>
+
+    <!-- LED glow -->
+    <filter id="ledGlow">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="630" fill="url(#shellBg)"/>
+
+  <!-- Main housing -->
+  <g filter="url(#housingShadow)">
+    <rect x="300" y="80" width="600" height="470" rx="20" ry="20" fill="url(#housingGradient)"/>
+
+    <!-- Housing chamfer highlights -->
+    <rect x="300" y="80" width="600" height="470" rx="20" ry="20" fill="none"
+          stroke="#FAF8F4" stroke-width="2" stroke-opacity="0.5"/>
+  </g>
+
+  <!-- DIALTONE branding -->
+  <text x="600" y="128" text-anchor="middle"
+        font-family="'EB Garamond', Georgia, serif"
+        font-size="22" font-weight="500"
+        letter-spacing="0.25em"
+        fill="#5A5850">DIALTONE</text>
+
+  <!-- Screen bezel -->
+  <g filter="url(#bezelShadow)">
+    <rect x="340" y="145" width="520" height="340" rx="12" ry="12" fill="#3A3832"/>
+  </g>
+
+  <!-- Inner bezel -->
+  <rect x="352" y="157" width="496" height="316" rx="8" ry="8" fill="#1A1918"/>
+
+  <!-- Screen area -->
+  <rect x="360" y="165" width="480" height="300" rx="4" ry="4" fill="url(#screenGlow)"/>
+
+  <!-- Scanlines overlay -->
+  <rect x="360" y="165" width="480" height="300" rx="4" ry="4" fill="url(#scanlines)" opacity="0.35"/>
+
+  <!-- CRT vignette -->
+  <rect x="360" y="165" width="480" height="300" rx="4" ry="4"
+        fill="none" stroke="#000" stroke-width="60" stroke-opacity="0.12"/>
+
+  <!-- Fake Mac desktop hint -->
+  <rect x="360" y="165" width="480" height="22" fill="#AAAAAA" rx="2" ry="2" opacity="0.15"/>
+
+  <!-- Control strip -->
+  <rect x="340" y="500" width="520" height="36" rx="10" ry="10" fill="#E0DBD0" stroke="#C8C3B8"/>
+
+  <!-- Status LEDs cluster -->
+  <g transform="translate(370, 518)">
+    <!-- PWR LED -->
+    <g>
+      <circle cx="0" cy="0" r="4" fill="#22C55E" filter="url(#ledGlow)"/>
+      <text x="0" y="14" text-anchor="middle" font-family="Monaco, monospace" font-size="8" fill="#8A887E">PWR</text>
+    </g>
+
+    <!-- NET LED -->
+    <g transform="translate(50, 0)">
+      <circle cx="0" cy="0" r="4" fill="#22C55E" filter="url(#ledGlow)"/>
+      <text x="0" y="14" text-anchor="middle" font-family="Monaco, monospace" font-size="8" fill="#8A887E">NET</text>
+    </g>
+  </g>
+
+  <!-- Theme button hint -->
+  <rect x="800" y="508" width="28" height="20" rx="4" ry="4" fill="#EDE8DF" stroke="#C8C3B8"/>
+
+  <!-- Tagline -->
+  <text x="600" y="590" text-anchor="middle"
+        font-family="'Geneva', 'Helvetica Neue', sans-serif"
+        font-size="16"
+        fill="#5A5850">Classic Mac OS in your browser</text>
+</svg>

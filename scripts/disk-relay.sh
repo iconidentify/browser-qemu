@@ -21,7 +21,7 @@ RELAY_SRC="${RELAY_SRC:-${HOME}/Documents/source/68k_web/apps/relay}"
 RELAY_BIND="${RELAY_BIND:-127.0.0.1:8080}"
 SERVE_PORT="${SERVE_PORT:-8088}"
 RAM="${RAM:-128}"
-HEAP="${HEAP:-1280}"
+HEAP="${HEAP:-384}"
 DISK_NAME="${DISK_NAME:-aux-3.1.1-disk.img}"
 
 DISK_ROOT="${ROOT}/build/relay-disks"

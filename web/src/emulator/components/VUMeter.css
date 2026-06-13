@@ -1,0 +1,92 @@
+/**
+ * VUMeter Styles
+ *
+ * Compact, retro LED-style audio level meter.
+ * Subtle enough to not distract, but provides useful feedback.
+ */
+
+.vu-meter {
+  display: flex;
+  align-items: center;
+  padding: 0 0.25rem;
+}
+
+.vu-meter-bar {
+  display: flex;
+  gap: 2px;
+  padding: 4px 6px;
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 3px;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+.vu-segment {
+  width: 4px;
+  height: 10px;
+  border-radius: 1px;
+  transition: opacity 0.05s ease, box-shadow 0.05s ease;
+}
+
+/* Unlit segments (dark versions of their colors) */
+.vu-segment.green {
+  background: #0A2A14;
+}
+
+.vu-segment.yellow {
+  background: #2A2A0A;
+}
+
+.vu-segment.red {
+  background: #2A0A0A;
+}
+
+/* Lit segments with variable brightness */
+.vu-segment.green.lit {
+  --b: var(--segment-brightness, 1);
+  background: color-mix(in srgb, #22C55E calc(var(--b) * 100%), #0A2A14);
+  opacity: calc(0.4 + var(--b) * 0.6);
+  box-shadow:
+    0 0 calc(4px * var(--b)) rgba(34, 197, 94, calc(0.5 * var(--b))),
+    0 0 calc(8px * var(--b)) rgba(34, 197, 94, calc(0.3 * var(--b)));
+}
+
+.vu-segment.yellow.lit {
+  --b: var(--segment-brightness, 1);
+  background: color-mix(in srgb, #EAB308 calc(var(--b) * 100%), #2A2A0A);
+  opacity: calc(0.4 + var(--b) * 0.6);
+  box-shadow:
+    0 0 calc(4px * var(--b)) rgba(234, 179, 8, calc(0.5 * var(--b))),
+    0 0 calc(8px * var(--b)) rgba(234, 179, 8, calc(0.3 * var(--b)));
+}
+
+.vu-segment.red.lit {
+  --b: var(--segment-brightness, 1);
+  background: color-mix(in srgb, #EF4444 calc(var(--b) * 100%), #2A0A0A);
+  opacity: calc(0.4 + var(--b) * 0.6);
+  box-shadow:
+    0 0 calc(4px * var(--b)) rgba(239, 68, 68, calc(0.5 * var(--b))),
+    0 0 calc(8px * var(--b)) rgba(239, 68, 68, calc(0.3 * var(--b)));
+}
+
+/* Clipping animation */
+.vu-segment.red.clipping {
+  animation: clip-flash 0.1s ease-in-out;
+}
+
+@keyframes clip-flash {
+  0%, 100% {
+    background: #EF4444;
+  }
+  50% {
+    background: #FF0000;
+    box-shadow:
+      0 0 8px rgba(255, 0, 0, 0.8),
+      0 0 16px rgba(255, 0, 0, 0.5);
+  }
+}
+
+/* Dark theme - segments are already dark-friendly */
+.theme-dark .vu-meter-bar {
+  background: rgba(0, 0, 0, 0.3);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.4);
+}

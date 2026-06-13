@@ -154,12 +154,24 @@
             <button id="runFor10s" type="button" disabled>Run 10s</button>
             <button id="runFor30s" type="button" disabled>Run 30s</button>
             <button id="runFor60s" type="button" disabled>Run 60s</button>
+            <button id="pulseYield2s" type="button" disabled>Yield 2s</button>
             <button id="pulseRun30s" type="button" disabled>Pulse 30s</button>
             <button id="pulseRunOff" type="button" disabled>Pulse off</button>
             <button id="inputSelfTest" type="button">Input self-test</button>
             <button id="runRomProbe" type="button">ROM 5s probe</button>
             <button id="probeSnapshot" type="button">Probe snapshot</button>
           </div>
+          <form id="guestTextForm" class="hmp-form">
+            <label>
+              Guest text
+              <input id="guestText" type="text" value="" spellcheck="false" autocomplete="off">
+            </label>
+            <div class="button-row">
+              <button id="sendGuestText" type="submit" disabled>Send text</button>
+              <button id="sendGuestTab" type="button" disabled>Tab</button>
+              <button id="sendGuestReturn" type="button" disabled>Return</button>
+            </div>
+          </form>
           <form id="hmpForm" class="hmp-form">
             <label>
               HMP command
@@ -183,11 +195,15 @@
     </main>
 
     <section class="serial-panel" aria-label="Serial console">
-      <h2>Serial</h2>
+      <div class="serial-head">
+        <h2>Serial</h2>
+        <button id="copySerial" type="button">Copy log</button>
+      </div>
       <pre id="serialLog"></pre>
     </section>
 
     <script src="./net-bridge.js"></script>
+    <script src="./shared-input.js"></script>
     <script src="./aux-agent.js"></script>
     <script src="./app.js"></script>
   </body>

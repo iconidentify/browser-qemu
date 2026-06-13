@@ -11,6 +11,10 @@ let wasmHeap = null;
 let waitAtomicIndex = 0;
 let pollTimer = 0;
 let pulseTimer = 0;
+let pulseMode = "sample";
+let keySequenceTimer = 0;
+let keySequenceDelayMs = 45;
+const pendingKeySequence = [];
 
 function postLog(line) {
   self.postMessage({ type: "log", line });
@@ -76,9 +80,93 @@ function queueHmp(command, returnToGuest = false, source = "control worker") {
   }
 }
 
-function queueKey(key, source = "control worker") {
+function queueKey(key, source = "control worker", logKey = true) {
   writeBytes(textEncoder.encode(encodeHmp(`sendkey ${key}`, true)));
-  postLog(`${source} queued key: ${key} + cont`);
+  if (logKey) postLog(`${source} queued key: ${key} + cont`);
+}
+
+function hmpKeyForChar(char) {
+  if (/^[a-z]$/.test(char)) return char;
+  if (/^[A-Z]$/.test(char)) return `shift-${char.toLowerCase()}`;
+  if (/^[0-9]$/.test(char)) return char;
+
+  const named = {
+    "\n": "ret",
+    "\r": "ret",
+    "\t": "tab",
+    " ": "spc",
+    "-": "minus",
+    "=": "equal",
+    "[": "bracket_left",
+    "]": "bracket_right",
+    "\\": "backslash",
+    ";": "semicolon",
+    "'": "apostrophe",
+    "`": "grave_accent",
+    ",": "comma",
+    ".": "dot",
+    "/": "slash",
+    "!": "shift-1",
+    "@": "shift-2",
+    "#": "shift-3",
+    "$": "shift-4",
+    "%": "shift-5",
+    "^": "shift-6",
+    "&": "shift-7",
+    "*": "shift-8",
+    "(": "shift-9",
+    ")": "shift-0",
+    "_": "shift-minus",
+    "+": "shift-equal",
+    "{": "shift-bracket_left",
+    "}": "shift-bracket_right",
+    "|": "shift-backslash",
+    ":": "shift-semicolon",
+    "\"": "shift-apostrophe",
+    "~": "shift-grave_accent",
+    "<": "shift-comma",
+    ">": "shift-dot",
+    "?": "shift-slash",
+  };
+
+  return named[char] || "";
+}
+
+function hmpKeysForText(text) {
+  const keys = [];
+  for (const char of String(text || "")) {
+    const key = hmpKeyForChar(char);
+    if (key) keys.push(key);
+    else postLog(`control worker skipped unsupported guest text char U+${char.codePointAt(0).toString(16)}`);
+  }
+  return keys;
+}
+
+function pumpKeySequence() {
+  if (!pendingKeySequence.length) {
+    keySequenceTimer = 0;
+    return;
+  }
+
+  const item = pendingKeySequence.shift();
+  queueKey(item.key, item.source, false);
+  keySequenceTimer = setTimeout(pumpKeySequence, keySequenceDelayMs);
+}
+
+function queueKeySequence(keys, source = "control worker", delayMs = 45) {
+  const normalized = (Array.isArray(keys) ? keys : [])
+    .map((key) => String(key || "").trim())
+    .filter(Boolean);
+  if (!normalized.length) return;
+
+  keySequenceDelayMs = Math.max(15, Math.min(500, Number(delayMs) || 45));
+  for (const key of normalized) pendingKeySequence.push({ key, source });
+  postLog(`${source} queued ${normalized.length} guest key${normalized.length === 1 ? "" : "s"} (${keySequenceDelayMs}ms spacing)`);
+  if (!keySequenceTimer) pumpKeySequence();
+}
+
+function queueText(text, source = "control worker", delayMs = 45) {
+  queueKeySequence(hmpKeysForText(text), source, delayMs);
 }
 
 function queueRunFor(durationMs) {
@@ -100,6 +188,15 @@ function queuePulseSample(source = "control worker pulse") {
   queueHmp("cont", true, source);
 }
 
+function queueYieldPulse() {
+  writeBytes(textEncoder.encode(`${encodeHmp("stop", false)}${encodeHmp("cont", true)}`));
+}
+
+function queuePulseTick() {
+  if (pulseMode === "yield") queueYieldPulse();
+  else queuePulseSample();
+}
+
 function stopPulseRun(source = "control worker pulse") {
   if (!pulseTimer) return false;
   clearInterval(pulseTimer);
@@ -108,12 +205,15 @@ function stopPulseRun(source = "control worker pulse") {
   return true;
 }
 
-function startPulseRun(intervalMs) {
-  const boundedMs = Math.max(5000, Math.min(60000, Number(intervalMs) || 30000));
+function startPulseRun(intervalMs, mode = "sample") {
+  pulseMode = mode === "yield" ? "yield" : "sample";
+  const minMs = pulseMode === "yield" ? 1000 : 5000;
+  const fallbackMs = pulseMode === "yield" ? 2000 : 30000;
+  const boundedMs = Math.max(minMs, Math.min(60000, Number(intervalMs) || fallbackMs));
   stopPulseRun();
   queueHmp("cont", true, "control worker pulse");
-  pulseTimer = setInterval(() => queuePulseSample(), boundedMs);
-  postLog(`control worker pulse every ${(boundedMs / 1000).toFixed(0)}s`);
+  pulseTimer = setInterval(queuePulseTick, boundedMs);
+  postLog(`control worker ${pulseMode} pulse every ${(boundedMs / 1000).toFixed(1)}s`);
 }
 
 function queueCommand(item) {
@@ -132,9 +232,19 @@ function queueCommand(item) {
     return;
   }
 
+  if (item.type === "keys" && Array.isArray(item.keys)) {
+    queueKeySequence(item.keys, "control file", item.delayMs);
+    return;
+  }
+
+  if (item.type === "text" && typeof item.text === "string") {
+    queueText(item.text, "control file", item.delayMs);
+    return;
+  }
+
   if (item.type === "pulse") {
     if (item.action === "start") {
-      startPulseRun(item.intervalMs);
+      startPulseRun(item.intervalMs, item.mode);
     } else if (item.action === "stop") {
       if (!stopPulseRun("control file pulse")) {
         postLog("control file pulse already stopped");
@@ -238,13 +348,23 @@ self.onmessage = (event) => {
     return;
   }
 
+  if (message.type === "queue-keys" && Array.isArray(message.keys)) {
+    queueKeySequence(message.keys, "page", message.delayMs);
+    return;
+  }
+
+  if (message.type === "queue-text" && typeof message.text === "string") {
+    queueText(message.text, "page", message.delayMs);
+    return;
+  }
+
   if (message.type === "run-for") {
     queueRunFor(message.durationMs);
     return;
   }
 
   if (message.type === "start-pulse") {
-    startPulseRun(message.intervalMs);
+    startPulseRun(message.intervalMs, message.mode);
     return;
   }
 

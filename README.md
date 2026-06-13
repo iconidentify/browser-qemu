@@ -2,13 +2,36 @@
 
 This directory is the first feasibility/prototype slice for booting the existing A/UX 3.1.1 Quadra-style QEMU setup in a browser via WebAssembly.
 
-MILESTONE, June 13, 2026: full boot to the A/UX X11/fvwm desktop with a root
-login, in Chrome. Reliable recipe: `make serve`, then `make browser`
-(pinned-priority Chrome, see scripts/launch-aux-chrome.sh) with
-`autostart=lazy`; type the login via the HMP control channel. See ROADMAP.md
-for the plan to production (dialtone disk/ethernet backend, reliability,
-deployment) and VENDOR.md for how the vendor tree and large artifacts are
-managed.
+MILESTONE, June 13, 2026: A/UX boots to the login screen in a normal headed
+Chrome tab with the growable-memory wasm build (`heap=384` initial,
+2 GB max). The browser shell now has 68k_web-style shared ADB input, a fixed
+guest-resolution canvas, a host-side Classic Mac cursor, queued guest-text
+controls (`make hmp-text TEXT=root`), and a proven WebSocket Ethernet path:
+`?net=1&netZone=codex-net` connected QEMU's `wasmbridge` NIC to the Dialtone
+relay, `scripts/probe-guest-net.mjs` saw ARP/ICMP/TCP replies from
+`10.1.1.20`, and `scripts/auxctl-zone.mjs --zone codex-net exec 'uname -a; id'`
+ran inside A/UX as root.
+
+Reliable headed recipe: `make serve`, then run `make browser-interactive` or
+open
+`http://127.0.0.1:8088/?ram=128&heap=384&pace=1&input=shared&cursor=host&fps=8&res=800x600&autostart=lazy-pulse&pulseMode=yield&pulseMs=2000`.
+Leave the lightweight yield pulse running during hands-on login with root /
+31337leet; it gives qemu-wasm tiny stop/continue scheduling windows without the
+heavy register/block diagnostic dump. `input=shared` writes browser mouse/keyboard
+events into wasm memory and QEMU drains them directly into the q800 ADB devices;
+`input=hmp`, `input=hybrid`, and `input=sdl` are diagnostic escape hatches.
+`fps=8` caps page-side framebuffer repaint work so X11 does not bury Chrome;
+`autostart=lazy-pulse&pulseMode=yield` uses the worker-backed `stop; cont`
+cadence instead of leaving the emulator hot forever. The heavier
+`pulseMode=sample` cadence is for diagnostics. The older headed
+`pace=0` recipe can still grey-screen/freeze Chrome before the first pulse stop
+is serviced; keep it for headless or instrumented ROM/SCSI probes. Use
+continuous `autostart=lazy` only for focused debugging, then close or pause the
+tab before interacting for long.
+For networking, start/keep Dialtone on `:8080`, add `&net=1&netZone=<zone>`,
+and drive auxagent with `node scripts/auxctl-zone.mjs --zone <zone> ...`.
+See ROADMAP.md for the plan to production and VENDOR.md for how the vendor
+tree and large artifacts are managed.
 
 ## Disk: read-only by default, easy admin writes
 
@@ -80,7 +103,7 @@ The prototype now has a working SDL-enabled `qemu-system-m68k` WebAssembly runti
 - Current long-window trace proof: `make build-qemu-balanced-t2-esp-pc-trace`, then `make smoke-headless-via-scsi-pc-trace-long DURATION=360 INTERVAL=30`, produced `build/probes/browser-via-scsi-pc-trace-360-30-20260611-212949.json`. The browser run reached target 1 READ sector `0`, completed that transfer, then issued target 1 READ sector `64` (`count=11`). It ended in the VIA/autovector handler with ESP data-ready for that 5632-byte transfer: `stat=0x91`, `intr=0x18`, `ti_size=5632`, `async=5632`, `ready=1`. Disk range stats still showed only the initial 1 MiB lazy reads, so this remains a ROM/ESP pseudo-DMA drain/progress issue rather than a missing disk chunk.
 - FIFO512 is a useful negative, not the fix. `make build-qemu-balanced-esp-pdma-fifo512-esp-pc-trace`, then `make smoke-headless-via-scsi-fifo512-pc-trace-long DURATION=360 INTERVAL=30`, produced `build/probes/browser-via-scsi-fifo512-pc-trace-360-30-20260611-214957.json`. It still reached only target 1 sectors `0` and `64`; the 5632-byte sector-64 data-ready edge happened right at the end of the window, with the same `stat=0x91`, `intr=0x18`, `ti_size=5632`, `async=5632`, `ready=1` state. Increasing the internal pseudo-DMA FIFO did not by itself produce later target 1 reads.
 - Cadence is now the sharper blocker. A longer FIFO512 run with coarser external stop/sample/continue cadence, `build/probes/browser-via-scsi-fifo512-pc-trace-480-60-20260611-215816.json`, did not reach SCSI at all and ended around `PC=0x4080b140` with VIA1 active `one_second + sixty_hz + adb_ready + t2`. The follow-up exit-pump probe at the same 60s cadence also did not reach SCSI, and the continuous exit-pump run stayed at the early low-memory ROM loop. The browser needs either the known 30s worker-backed pulse workaround or a deeper qemu-wasm main-loop/TCG scheduling fix.
-- The browser shell's `lazy-pulse` automation now accepts a tunable pulse cadence: `?autostart=lazy-pulse&pulseMs=30000`. The matching smoke target is `make smoke-headless-lazy-pulse DURATION=45 INTERVAL=15 PULSE_MS=30000`.
+- The browser shell's `lazy-pulse` automation now accepts a tunable pulse cadence and mode: `?autostart=lazy-pulse&pulseMode=yield&pulseMs=2000` for interactive headed runs, or `pulseMode=sample&pulseMs=30000` for diagnostic stop/status/register/block/continue sampling. The matching smoke target is `make smoke-headless-lazy-pulse DURATION=45 INTERVAL=15 PULSE_MS=30000`.
 - The focused blocker is QEMU/ROM progress under wasm fallback TCG and virtual timer/interrupt behavior. The display/input bridge is alive enough for continued boot work: canvas framebuffer samples update, the canvas captures focus, the stay-paused input self-test passes, and HMP-backed `sendkey`/mouse fallback controls are present.
 - Dynamic mini-WASM TB execution is now past the original browser glue blockers but is not yet a usable boot path. The patcher decodes qemu-wasm helper import signatures, wraps helper imports, and registers the mini-WASM `start` export with an ABI-aware wrapper. With `EMULATE_FUNCTION_POINTER_CASTS=1`, the dynamic build gets past the previous `LinkError`, parser failure, and `function signature mismatch`, then aborts in guest execution with `qemu: fatal: DOUBLE MMU FAULT`.
 - Latest dynamic diagnostic: `make build-qemu-balanced-dyn-tb-exc-trace` produced a runnable wasm with PC and m68k exception tracing. A 5s headless probe recorded 113 PC trace lines and 29 exception trace lines. The last normal PC trace was ROM code around `PC=0x408820ba`; then the guest took an instruction-fetch access fault at `PC=0x4080010e` (`qemu_access=2`, `SSW=0x0526`, `TCR=0xc000`, `SRP=0x00fffa00`). While building the 68040 access-fault frame, the first stack push (`label=data3`) wrote `0x0017fffc`; that stack write faulted (`qemu_access=1`, `SSW=0x0405`) while `mmu_fault=1`, causing the double fault.
@@ -115,7 +138,7 @@ The prototype now has a working SDL-enabled `qemu-system-m68k` WebAssembly runti
 - The first RAM write sweep crossed the top successfully: `A2` climbed from `0x00083b80` to `0x00f0cbe8`, then a 1s step moved into the next RAM verification phase at `PC=0x40847882`.
 - The previous second ROM RAM verification loop is no longer the active blocker when `QEMU_WASM_ROM_RAMTEST_HACK=1` is enabled. Keep that history because it explains why the browser build carries the ROM RAM-test fast-forward patch.
 - HMP in this runtime does not expose a `set` command, so quick monitor-side register/IFR pokes are not available. The next blocker is a source-level VIA/autovector trace or emulation fix, not a monitor-only tweak.
-- The browser shell now bounds the serial log, samples the framebuffer through a small probe canvas, and provides HMP-backed keyboard/mouse fallback (`sendkey`, `mouse_move`, `mouse_button`) for the display/input bridge while SDL direct input is still being proven.
+- The browser shell now bounds the serial log, samples the framebuffer through a small probe canvas, and uses the shared ADB input bridge as the normal keyboard/mouse path. HMP commands such as `sendkey`, `mouse_move`, and `mouse_button` remain diagnostic-only escape hatches.
 
 - `make build-qemu` builds `m68k-softmmu` from the inspected `ktock/qemu-wasm` fork with Emscripten SDL2 support enabled.
 - `make build-qemu-responsive` rebuilds with `WASM32_QUEUE_PUMP_INTERVAL=32` and `QEMU_WASM_THREAD_YIELD=1` so the fallback TCG interpreter yields more often during long CPU-bound ROM code.
@@ -134,7 +157,7 @@ The prototype now has a working SDL-enabled `qemu-system-m68k` WebAssembly runti
 - The page-side HMP buttons now prefer that same worker path when it is available. `Run 2s`, `Run 10s`, and `Run 30s` queue `cont` from the worker and schedule worker-side `stop` + `info status`; `HMP Stop` gives the page a direct stop control while the VM is running.
 - `Start lazy paused` launches `qemu-lazy` with `-S`; from there `make hmp-status`, `make hmp-cont`, `make hmp-stop`, and `make hmp-run-for DURATION=2` provide the current debug loop.
 - Terminal control IDs are timestamp-sized now, so a live browser page will not silently discard fresh commands after `control.local.seq` is removed or after a crash/reload cycle.
-- The browser shell has a default-on `Pace CPU` checkbox that adds `-icount shift=10,sleep=on` to lazy/smoke QEMU launches. That keeps the page more responsive, but it can distort the ROM timer/dispatch route: the long `shift=8,sleep=off` run did not reach SCSI by 480s, while the no-icount run did. Use `?pace=0` for ROM/SCSI progress probes, then pause the VM promptly.
+- The browser shell has a default-on `Pace CPU` checkbox that adds `-icount shift=10,sleep=on` to lazy/smoke QEMU launches. That keeps the page more responsive, but it can distort the ROM timer/dispatch route: the long `shift=8,sleep=off` run did not reach SCSI by 480s, while the no-icount run did. Use `?pace=0` only for ROM/SCSI progress probes, preferably headless or already paused; in normal headed Chrome it can still monopolize the renderer before the pulse worker can stop it.
 - The browser shell has a RAM selector (`16`, `32`, `64`, `128` MB) and accepts `?ram=16` in the URL. The selected value rewrites the packaged `-m` argument at launch time without repackaging the local ROM/disk assets.
 - The browser shell accepts `?heap=768` or `?heap=1280` to set `Module.INITIAL_MEMORY` before importing `out.js`. The value must not exceed the memory maximum baked into the wasm binary, so raising it beyond the build target requires rebuilding.
 - The browser shell accepts `?autostart=lazy-paused` and `?inputSelfTest=1` for repeatable smoke tests. Together they start `qemu-lazy` with `-S` and run the stay-paused input bridge diagnostic as soon as QEMU resolves its runtime promise.
@@ -147,7 +170,7 @@ The prototype now has a working SDL-enabled `qemu-system-m68k` WebAssembly runti
 
 Local browser verification:
 
-- `qemu-smoke` reaches `Running...` with `-display sdl,gl=off,show-cursor=on`; Chrome screenshot capture shows the SDL canvas attached at 1152x870.
+- `qemu-smoke` reaches `Running...` with `-display sdl,gl=off,show-cursor=off`; Chrome screenshot capture shows the SDL canvas attached at 1152x870 while the page supplies the host cursor.
 - `qemu-smoke` stayed at `QEMU running` with the DOM heartbeat/probe responsive after 18 seconds using the queue-pump build.
 - A fresh in-app Browser check loaded the shell at `http://127.0.0.1:8088/` with `Isolation ready`, hidden `#probeState` present, and `smoke, lazy ready`.
 - Starting `qemu-smoke` from the in-app Browser reached `QEMU running`; the serial log showed the launch args without `-monitor none`.
@@ -439,11 +462,15 @@ The shell now launches the generated runtimes:
 
 Display and input bridge shape:
 
-- QEMU uses `-display sdl,gl=off,show-cursor=on`.
+- QEMU uses `-display sdl,gl=off,show-cursor=off`; the page supplies the host-side
+  Classic Mac cursor.
 - Emscripten SDL renders to `Module.canvas`, which is the page's `#canvas`.
-- SDL keyboard events are mapped by QEMU's `ui/sdl2-input.c` into QEMU qcodes.
+- Browser keyboard/mouse events are translated in `public/shared-input.js`,
+  written into wasm memory, and drained by `ui/wasminput.c` into the q800 ADB
+  keyboard/mouse devices.
 - The shell keeps focus on the canvas, prevents host page defaults while captured/running, and provides pointer-lock/fullscreen controls.
-- Browser-side `sendKey`/`sendMouse` shims remain as future hooks, but the active bridge is SDL events into QEMU.
+- Browser-side `sendKey`/`sendMouse` shims remain as future hooks, but the active
+  bridge is shared ADB input, not SDL or monitor text injection.
 - Debug input can now bypass SDL by writing to the Emscripten PTY that backs `-monitor stdio`. The HMP buttons and terminal helper enqueue plain HMP commands such as `sendkey a`.
 - Terminal-driven HMP uses `public/control-worker.js`, which polls ignored `public/control.local.json` from a Web Worker and writes bytes into a shared PTY ring. The generated runtime patch exposes the PTY wait atomic index so the worker can wake QEMU after queuing bytes without relying on page timers.
 - The generated launch modules intentionally use `-monitor stdio` and `-serial none` for now. A/UX has not provided useful browser serial output yet, and the dedicated monitor avoids serial/HMP mux state bugs.
@@ -480,16 +507,19 @@ Current input/display status:
 
 - The SDL canvas attaches, QEMU/HMP are controllable, and the framebuffer is proven alive: paused prelaunch clears to black, then after `make hmp-cont` QEMU mode-sets the canvas back to 1152x870 and the framebuffer checksum changes.
 - The display surface was previously distorted by the host page's `max-height` rule. The canvas CSS now preserves the Quadra 1152x870 aspect ratio instead of squashing the framebuffer vertically.
-- The active bridge now has two input paths: native browser SDL events into QEMU, plus an HMP fallback that maps keydown to `sendkey` and mouse/pointer movement to `mouse_move` / `mouse_button`.
-- The page's `Pulse 30s` button and `make hmp-pulse-start INTERVAL=30` both run the current best browser cadence: continue the VM, then every 30s stop/sample/register/block/continue from the control worker. `make hmp-pulse-stop` stops that cadence without stopping the VM; pair it with `make hmp-stop` before screenshots or page inspection.
+- The active browser input path is shared ADB input. Early headed verification
+  shows mouse and keyboard counters moving through `sharedInput`, with `KeyX`
+  reaching QEMU as ADB `0x07`; HMP/hybrid/SDL modes remain diagnostic-only.
+- The page's `Yield 2s` button and `make hmp-yield-pulse-start INTERVAL=2` run the current interactive cadence: every two seconds the control worker queues only `stop; cont`, giving Chrome/QEMU a scheduling window with minimal HMP output. The `Pulse 30s` button and `make hmp-sample-pulse-start INTERVAL=30` keep the diagnostic stop/status/register/block/continue cadence. Do not switch to full pulse-off for normal interaction yet; pair pulse-off with `make hmp-stop` only before screenshots or page inspection.
 - The diagnostic `Input self-test` button and `?inputSelfTest=1` path exercise canvas focus, keyboard counters, mouse counters, and worker-backed HMP input without letting the paused VM run.
 - For quick manual probes, use the page's `ROM 5s probe` button or `make hmp-rom-probe DURATION=5` to collect status/register/block/disk/framebuffer evidence in one pass.
 - The remaining blocker is guest progress rather than canvas plumbing: the current full A/UX lazy run reaches live ROM framebuffer output, monitor control, and early ESP/SCSI reads, but it has not yet advanced into visible A/UX disk boot.
 - Running guest CPU can saturate the in-app renderer while the ROM sits in a tight CPU loop. Keep `Pace CPU` checked for casual manual page work, but use `?pace=0` for serious ROM/SCSI progress probes; start paused and run `make hmp-stop` before screenshots/navigation.
 - Heavy browser screenshot capture can still time out while the guest is running. Prefer `#probeState.framebuffer` while running, then pause with `make hmp-stop` before taking screenshots.
-- Browser/CDP click dispatch into the running QEMU tab can still be flaky, so terminal-driven HMP remains the reliable debug input path.
+- The host cursor is instant CSS copied from the 68k_web approach. The remaining
+  cursor gap is QEMU-side suppression/export of the actual guest cursor bitmap so
+  A/UX stops drawing a laggy software cursor into the framebuffer.
 - The browser shell now includes a generic HMP command box plus `make hmp CMD="..."`; use those for disassembly and memory probes instead of adding temporary buttons.
-- A cleaner long-term bridge may be a tiny JS-exported QEMU input shim around QEMU's internal input APIs, rather than depending entirely on browser SDL event proxying.
 
 ## Known-Good Desktop A/UX Launch Shape
 

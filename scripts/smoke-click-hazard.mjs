@@ -24,14 +24,18 @@ const opts = {
   stock: false,
   outDir: path.join(root, "build", "click-hazard"),
 };
+opts.net = false; opts.watchOnly = false; opts.watchSecs = 220;
 const argv = process.argv.slice(2);
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
   if (a === "--url") opts.url = argv[++i];
   else if (a === "--stock") opts.stock = true;
+  else if (a === "--net") opts.net = true;
+  else if (a === "--watch-only") opts.watchOnly = true;
+  else if (a === "--watch-secs") opts.watchSecs = Number.parseInt(argv[++i], 10);
   else if (a === "--ready-timeout") opts.readyTimeout = Number.parseInt(argv[++i], 10) * 1000;
 }
-if (!opts.url) opts.url = `${opts.server}/?build=click-hazard&ram=128&heap=1280&pace=0&autostart=lazy`;
+if (!opts.url) opts.url = `${opts.server}/?build=click-hazard&ram=128&heap=1280&pace=0&autostart=lazy${opts.net ? "&net=1" : ""}`;
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 const stamp = (o) => console.log(JSON.stringify(o));
@@ -98,7 +102,40 @@ try {
   await cdp.send("Page.enable");
   await cdp.send("Runtime.enable");
   await cdp.send("Page.navigate", { url: opts.url });
-  stamp({ event: "navigated", url: opts.url, stock: opts.stock });
+  stamp({ event: "navigated", url: opts.url, stock: opts.stock, net: opts.net });
+
+  // Watch-only: measure renderer main-thread responsiveness through the WHOLE
+  // boot (no gestures). A headed wedge shows as eval latency ballooning /
+  // timeouts and the framebuffer freezing.
+  if (opts.watchOnly) {
+    let maxMs = 0, timeouts = 0, reachedLogin = false, lastChk = null, frozenStreak = 0, maxFrozen = 0;
+    const t0 = Date.now();
+    for (let i = 0; Date.now() - t0 < opts.watchSecs * 1000; i++) {
+      const q = await evalQuick(cdp, "Date.now()", 4000);
+      if (!q.ok) timeouts++; else maxMs = Math.max(maxMs, q.ms);
+      const f = await fb(cdp);
+      if (f) {
+        if (f.checksum === 374339293) reachedLogin = true;
+        if (lastChk !== null && f.checksum === lastChk) { frozenStreak++; maxFrozen = Math.max(maxFrozen, frozenStreak); }
+        else frozenStreak = 0;
+        lastChk = f.checksum;
+      }
+      const elapsed = Math.round((Date.now() - t0) / 1000);
+      if (i % 3 === 0 || !q.ok || q.ms > 800) {
+        stamp({ event: "watch", elapsed, evalMs: q.ms, evalOk: q.ok, fb: f && { c: f.checksum, nb: f.nonBlack, hb: f.heartbeat } });
+      }
+      await delay(2000);
+    }
+    await shot("watch-end.png");
+    stamp({
+      event: "watch-verdict",
+      stock: opts.stock, net: opts.net,
+      rendererResponsive: timeouts === 0 && maxMs < 1500,
+      maxEvalLatencyMs: maxMs, evalTimeouts: timeouts,
+      reachedLogin,
+    });
+    throw { __done: true };
+  }
 
   // Wait for a SETTLED framebuffer: same checksum across consecutive samples
   // (login screen idle), not just any non-black frame mid-boot.
@@ -193,7 +230,7 @@ try {
     distinctFramebuffers: rFb.size,
   });
 } catch (e) {
-  stamp({ event: "fatal", message: String(e && e.message ? e.message : e) });
+  if (!(e && e.__done)) stamp({ event: "fatal", message: String(e && e.message ? e.message : e) });
 } finally {
   try { if (cdp) cdp.ws.close(); } catch {}
   try { chrome.kill("SIGKILL"); } catch {}

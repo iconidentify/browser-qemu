@@ -1,0 +1,167 @@
+/**
+ * CreateDiskForm styles
+ */
+
+.create-disk-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.form-field label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim, rgba(255, 255, 255, 0.6));
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.input-with-suffix {
+  display: flex;
+  align-items: center;
+  background: var(--input-bg, rgba(0, 0, 0, 0.3));
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.input-with-suffix input {
+  flex: 1;
+  padding: 10px 12px;
+  border: none;
+  background: transparent;
+  color: var(--text-primary, #fff);
+  font-family: var(--font-mono, monospace);
+  font-size: 14px;
+}
+
+.input-with-suffix input:focus {
+  outline: none;
+}
+
+.input-with-suffix:focus-within {
+  border-color: var(--accent-primary, #4a9eff);
+}
+
+.input-suffix {
+  padding: 10px 12px;
+  color: var(--text-dim, rgba(255, 255, 255, 0.5));
+  font-family: var(--font-mono, monospace);
+  font-size: 14px;
+  background: var(--input-suffix-bg, rgba(255, 255, 255, 0.05));
+  border-left: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
+}
+
+.size-presets {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.preset-btn {
+  padding: 8px 12px;
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.15));
+  border-radius: 6px;
+  background: var(--input-bg, rgba(0, 0, 0, 0.3));
+  color: var(--text-primary, #fff);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.preset-btn:hover {
+  background: var(--control-hover, rgba(255, 255, 255, 0.1));
+  border-color: var(--border-hover, rgba(255, 255, 255, 0.25));
+}
+
+.preset-btn.active {
+  background: var(--accent-primary, #4a9eff);
+  border-color: var(--accent-primary, #4a9eff);
+  color: #fff;
+}
+
+.preset-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.custom-size {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.custom-size input {
+  width: 100px;
+  padding: 8px 12px;
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
+  border-radius: 6px;
+  background: var(--input-bg, rgba(0, 0, 0, 0.3));
+  color: var(--text-primary, #fff);
+  font-family: var(--font-mono, monospace);
+  font-size: 14px;
+}
+
+.custom-size input:focus {
+  outline: none;
+  border-color: var(--accent-primary, #4a9eff);
+}
+
+.custom-size .input-suffix {
+  border: none;
+  background: none;
+  padding: 0;
+}
+
+.size-hint {
+  font-size: 11px;
+  color: var(--text-dim, rgba(255, 255, 255, 0.4));
+  margin-top: 4px;
+}
+
+.form-error {
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #fca5a5;
+  font-size: 13px;
+}
+
+.form-success {
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: rgba(34, 197, 94, 0.15);
+  border: 1px solid rgba(34, 197, 94, 0.3);
+  color: #86efac;
+  font-size: 13px;
+}
+
+.create-btn {
+  padding: 12px 20px;
+  border: none;
+  border-radius: 6px;
+  background: var(--accent-primary, #4a9eff);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.create-btn:hover:not(:disabled) {
+  background: var(--accent-hover, #3a8eef);
+}
+
+.create-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

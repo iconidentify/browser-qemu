@@ -1,0 +1,87 @@
+/**
+ * Vintage Loading Screen Styles
+ *
+ * Minimalist, period-appropriate loading screen that evokes
+ * the feel of early Macintosh boot sequences.
+ */
+
+/* Canvas container needs positioning context for the loading overlay */
+.emulator-canvas-container {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: #000;
+}
+
+/* Container - fills the CRT screen area */
+.loading-screen {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: #1A1918;
+  color: #E8E8E8;
+  padding: 24px;
+}
+
+/* Title */
+.loading-title {
+  font-family: var(--font-mono, 'Monaco', monospace);
+  font-size: 14px;
+  letter-spacing: 0.05em;
+  margin-bottom: 24px;
+  opacity: 0.9;
+}
+
+/* Details container */
+.loading-details {
+  width: 280px;
+  text-align: center;
+}
+
+/* Filename display */
+.loading-filename {
+  font-family: var(--font-mono, 'Monaco', monospace);
+  font-size: 11px;
+  color: var(--text-dim, #808080);
+  margin-bottom: 16px;
+  opacity: 0.8;
+}
+
+/* Progress bar track */
+.loading-progress-bar {
+  height: 4px;
+  background: var(--screen-bezel, #3A3832);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+
+/* Progress bar fill */
+.loading-progress-fill {
+  height: 100%;
+  background: var(--led-power-on, #22C55E);
+  transition: width 0.15s ease-out;
+  box-shadow: 0 0 8px var(--led-power-glow, rgba(34, 197, 94, 0.5));
+}
+
+/* Stats row */
+.loading-stats {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-family: var(--font-mono, 'Monaco', monospace);
+  font-size: 10px;
+}
+
+.loading-size {
+  color: var(--text-dim, #808080);
+}
+
+.loading-percentage {
+  color: var(--text-on-dark, #E8E8E8);
+  letter-spacing: 0.1em;
+}

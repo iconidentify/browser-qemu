@@ -46,6 +46,14 @@ function c89DiskDataView() {
  return disk.dataView;
 }
 
+function c89DiskHeapU32() {
+ return typeof GROWABLE_HEAP_U32 === "function" ? GROWABLE_HEAP_U32() : HEAPU32;
+}
+
+function c89DiskHeapU8() {
+ return typeof GROWABLE_HEAP_U8 === "function" ? GROWABLE_HEAP_U8() : HEAPU8;
+}
+
 function c89DiskTrackOpen(fd, pathPtr) {
  try {
   var c = c89DiskCtrl();
@@ -78,8 +86,8 @@ function c89DiskTryPread(fd, iov, iovcnt, offset, pnum) {
  while (Atomics.compareExchange(c, C89D_LOCK, 0, 1) !== 0) Atomics.wait(c, C89D_LOCK, 1);
  try {
   for (var i = 0; i < iovcnt && !hitEof; i++) {
-   var ptr = HEAPU32[(iov + i * 8) >> 2];
-   var len = HEAPU32[(iov + i * 8 + 4) >> 2];
+   var ptr = c89DiskHeapU32()[(iov + i * 8) >> 2];
+   var len = c89DiskHeapU32()[(iov + i * 8 + 4) >> 2];
    var done = 0;
    while (done < len) {
     var at = pos + total + done;
@@ -87,7 +95,7 @@ function c89DiskTryPread(fd, iov, iovcnt, offset, pnum) {
     var want = Math.min(len - done, dataBuf.length, size - at);
     var got = c89DiskRoundTrip(c, 0, at, want);
     if (got > 0) {
-     HEAPU8.set(dataBuf.subarray(0, got), ptr + done);
+     c89DiskHeapU8().set(dataBuf.subarray(0, got), ptr + done);
      done += got;
     }
     if (got < want) { hitEof = true; break; }
@@ -102,7 +110,7 @@ function c89DiskTryPread(fd, iov, iovcnt, offset, pnum) {
  }
  Atomics.store(c, C89D_LOCK, 0);
  Atomics.notify(c, C89D_LOCK, 1);
- HEAPU32[pnum >> 2] = total;
+ c89DiskHeapU32()[pnum >> 2] = total;
  return 0;
 }
 
@@ -151,14 +159,14 @@ function c89DiskTryPwrite(fd, iov, iovcnt, offset, pnum) {
  while (Atomics.compareExchange(c, C89D_LOCK, 0, 1) !== 0) Atomics.wait(c, C89D_LOCK, 1);
  try {
   for (var i = 0; i < iovcnt; i++) {
-   var ptr = HEAPU32[(iov + i * 8) >> 2];
-   var len = HEAPU32[(iov + i * 8 + 4) >> 2];
+   var ptr = c89DiskHeapU32()[(iov + i * 8) >> 2];
+   var len = c89DiskHeapU32()[(iov + i * 8 + 4) >> 2];
    var done = 0;
    while (done < len) {
     var at = pos + total + done;
     if (at >= size) throw new Error("write past end of disk at " + at);
     var want = Math.min(len - done, dataBuf.length, size - at);
-    dataBuf.set(HEAPU8.subarray(ptr + done, ptr + done + want), 0);
+    dataBuf.set(c89DiskHeapU8().subarray(ptr + done, ptr + done + want), 0);
     var got = c89DiskRoundTrip(c, 1, at, want);
     if (got !== want) throw new Error("short write (" + got + " of " + want + ")");
     done += got;
@@ -173,12 +181,12 @@ function c89DiskTryPwrite(fd, iov, iovcnt, offset, pnum) {
  }
  Atomics.store(c, C89D_LOCK, 0);
  Atomics.notify(c, C89D_LOCK, 1);
- HEAPU32[pnum >> 2] = total;
+ c89DiskHeapU32()[pnum >> 2] = total;
  return 0;
 }
 `;
 
-const preadPattern = /function _fd_pread\(fd, iov, iovcnt, offset, pnum\) \{\s*\n\s*if \(ENVIRONMENT_IS_PTHREAD\)\s*\n\s*return proxyToMainThread\((\d+), 1, fd, iov, iovcnt, offset, pnum\);/;
+const preadPattern = /function _fd_pread\(fd, iov, iovcnt, offset, pnum\) \{\s*\n\s*if \(ENVIRONMENT_IS_PTHREAD\)\s*(?:\n\s*)?return proxyToMainThread\((\d+), 1, fd, iov, iovcnt, offset, pnum\);/;
 // The v1 helper block (read-only bridge) spans from its comment through the
 // end of c89DiskTryPread; v2 replaces it wholesale to add the write path.
 const helperSpanV1 = /\/\* c89 disk worker bridge \(browser-qemu Phase 1\): serve guest disk preads\n   from a dedicated disk worker[\s\S]*?\n HEAPU32\[pnum >> 2\] = total;\n return 0;\n\}\n/;
@@ -206,7 +214,7 @@ if (source.includes("function c89DiskTryPwrite(")) {
   process.exit(1);
 }
 
-const pwritePattern = /function _fd_pwrite\(fd, iov, iovcnt, offset, pnum\) \{\s*\n\s*if \(ENVIRONMENT_IS_PTHREAD\)\s*\n\s*return proxyToMainThread\((\d+), 1, fd, iov, iovcnt, offset, pnum\);/;
+const pwritePattern = /function _fd_pwrite\(fd, iov, iovcnt, offset, pnum\) \{\s*\n\s*if \(ENVIRONMENT_IS_PTHREAD\)\s*(?:\n\s*)?return proxyToMainThread\((\d+), 1, fd, iov, iovcnt, offset, pnum\);/;
 
 if (source.includes("var c89w = c89DiskTryPwrite(")) {
   // Already patched.
@@ -223,7 +231,7 @@ if (source.includes("var c89w = c89DiskTryPwrite(")) {
   process.exit(1);
 }
 
-const openatPattern = /(function ___syscall_openat\(dirfd, path, flags, varargs\) \{\s*\n\s*if \(ENVIRONMENT_IS_PTHREAD\)\s*\n\s*return )proxyToMainThread\((\d+), 1, dirfd, path, flags, varargs\);/;
+const openatPattern = /(function ___syscall_openat\(dirfd, path, flags, varargs\) \{\s*\n\s*if \(ENVIRONMENT_IS_PTHREAD\)\s*(?:\n\s*)?return )proxyToMainThread\((\d+), 1, dirfd, path, flags, varargs\);/;
 
 if (source.includes("c89DiskTrackOpen(proxyToMainThread(")) {
   // Already patched.
@@ -261,11 +269,27 @@ const loadMessageReplacement = `          'wasmMemory': wasmMemory,
             guestPath: Module['c89Disk'].guestPath
           } : null,
         });`;
+const loadMessagePattern =
+  /(\s*)(['"])wasmMemory\2:\s*wasmMemory,\n(\s*)(['"])wasmModule\4:\s*wasmModule,?\n(\s*)\}\);/;
 
-if (source.includes("'c89Disk': Module['c89Disk']")) {
+if (source.includes("'c89Disk': Module['c89Disk']") || source.includes('"c89Disk": Module[\'c89Disk\']')) {
   // Already patched.
 } else if (source.includes(loadMessageLines)) {
   source = source.replace(loadMessageLines, loadMessageReplacement);
+  patched = true;
+} else if (loadMessagePattern.test(source)) {
+  source = source.replace(
+    loadMessagePattern,
+    (match, indent1, quote1, indent2, quote2, indent3) =>
+      `${indent1}${quote1}wasmMemory${quote1}: wasmMemory,
+${indent2}${quote2}wasmModule${quote2}: wasmModule,
+${indent2}${quote2}c89Disk${quote2}: Module['c89Disk'] ? {
+${indent2}  control: Module['c89Disk'].control,
+${indent2}  data: Module['c89Disk'].data,
+${indent2}  guestPath: Module['c89Disk'].guestPath
+${indent2}} : null,
+${indent3}});`
+  );
   patched = true;
 } else {
   console.error(`${file}: pthread load postMessage marker not found`);

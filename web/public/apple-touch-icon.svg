@@ -1,0 +1,51 @@
+<svg width="180" height="180" viewBox="0 0 180 180" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="housingGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FAF8F4"/>
+      <stop offset="50%" stop-color="#EDE8DF"/>
+      <stop offset="100%" stop-color="#D4CFC4"/>
+    </linearGradient>
+    <radialGradient id="screenGrad" cx="50%" cy="50%" r="60%">
+      <stop offset="0%" stop-color="#2A2824"/>
+      <stop offset="100%" stop-color="#1A1918"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="180" height="180" fill="#E8E2D8"/>
+
+  <!-- Housing -->
+  <rect x="25" y="15" width="130" height="150" rx="12" fill="url(#housingGrad)"/>
+
+  <!-- Housing highlight -->
+  <rect x="25" y="15" width="130" height="150" rx="12" fill="none" stroke="#FAF8F4" stroke-width="2" stroke-opacity="0.6"/>
+
+  <!-- Screen bezel -->
+  <rect x="38" y="32" width="104" height="90" rx="6" fill="#3A3832"/>
+
+  <!-- Screen inner -->
+  <rect x="44" y="38" width="92" height="78" rx="4" fill="url(#screenGrad)"/>
+
+  <!-- Scanlines hint -->
+  <g opacity="0.1">
+    <line x1="44" y1="50" x2="136" y2="50" stroke="#000" stroke-width="1"/>
+    <line x1="44" y1="60" x2="136" y2="60" stroke="#000" stroke-width="1"/>
+    <line x1="44" y1="70" x2="136" y2="70" stroke="#000" stroke-width="1"/>
+    <line x1="44" y1="80" x2="136" y2="80" stroke="#000" stroke-width="1"/>
+    <line x1="44" y1="90" x2="136" y2="90" stroke="#000" stroke-width="1"/>
+    <line x1="44" y1="100" x2="136" y2="100" stroke="#000" stroke-width="1"/>
+  </g>
+
+  <!-- Control strip -->
+  <rect x="38" y="132" width="104" height="22" rx="6" fill="#E0DBD0" stroke="#C8C3B8"/>
+
+  <!-- Power LED -->
+  <circle cx="55" cy="143" r="4" fill="#22C55E"/>
+
+  <!-- Branding -->
+  <text x="90" y="28" text-anchor="middle"
+        font-family="Georgia, serif"
+        font-size="10" font-weight="500"
+        letter-spacing="0.15em"
+        fill="#5A5850">DIALTONE</text>
+</svg>

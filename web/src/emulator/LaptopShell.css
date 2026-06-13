@@ -1,0 +1,673 @@
+/**
+ * LaptopShell styles - Mobile laptop interface
+ *
+ * Creates a PowerBook-like appearance with screen, control strip, and trackpad.
+ */
+
+.laptop-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+  max-height: 100dvh;
+  background: var(--shell-bg, #3A3836);
+  overflow: hidden;
+
+  /* Safe area for notched devices */
+  padding-top: env(safe-area-inset-top);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+
+  /* Prevent iOS context menu globally */
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Screen area - shrinks to fit content, not flexible */
+.laptop-screen-area {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 8px;
+  padding-bottom: 4px;
+  overflow: hidden;
+}
+
+.laptop-screen-bezel {
+  background: var(--screen-bezel, #1A1918);
+  padding: 6px;
+  border-radius: var(--screen-radius, 6px);
+  box-shadow:
+    inset 0 2px 8px rgba(0, 0, 0, 0.5),
+    0 2px 4px rgba(0, 0, 0, 0.3);
+  width: 100%;
+  max-height: 100%;
+}
+
+.laptop-screen-inner {
+  position: relative;
+  width: 100%;
+  max-width: 640px;
+  max-height: 100%;
+  aspect-ratio: 640 / 480;
+  margin: 0 auto; /* Center horizontally within bezel */
+  background: var(--screen-inner, #0A0909);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.laptop-screen-inner canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  image-rendering: pixelated;
+}
+
+/* Glide mode - scale to fit width, allow vertical panning */
+.laptop-screen-inner--glide {
+  width: 100%;
+  max-width: none;
+  max-height: none;
+  aspect-ratio: 640 / 480;
+  overflow: visible;
+  transition: transform 0.05s ease-out;
+}
+
+.laptop-screen-inner--glide canvas {
+  width: 100%;
+  height: 100%;
+}
+
+.laptop-power-off {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim, #787674);
+  font-size: 14px;
+  background: var(--screen-inner, #0A0909);
+}
+
+/* Loading placeholder - uses normal flow to properly size parent container */
+.laptop-loading-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim, #787674);
+  font-size: 14px;
+  background: var(--screen-inner, #0A0909);
+}
+
+.laptop-retry-btn {
+  margin-top: 16px;
+  padding: 8px 16px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 4px;
+  color: white;
+  cursor: pointer;
+}
+
+.laptop-retry-btn:active {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* ============================================
+   Control Strip - Status LEDs and controls
+   ============================================ */
+.laptop-control-strip {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 12px;
+  background: var(--control-bg, #3E3C3A);
+  border-top: 1px solid var(--housing-dark, #2A2826);
+  border-bottom: 1px solid var(--housing-dark, #2A2826);
+  gap: 8px;
+  width: 100%;
+}
+
+/* Status LED cluster */
+.laptop-status-cluster {
+  display: flex;
+  gap: 10px;
+}
+
+.laptop-status-led {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.laptop-status-led .led-glow {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--led-power-off, #4A4840);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5);
+  transition: all 0.05s ease;
+}
+
+.laptop-status-led .led-label {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-dim, #787674);
+  text-transform: uppercase;
+}
+
+/* Power LED */
+.laptop-status-led.power-led.on .led-glow {
+  background: var(--led-power-on, #22C55E);
+  box-shadow:
+    0 0 6px var(--led-power-glow, rgba(34, 197, 94, 0.5)),
+    0 0 12px var(--led-power-glow, rgba(34, 197, 94, 0.3)),
+    inset 0 -1px 2px rgba(0, 0, 0, 0.2);
+}
+
+/* HD LED - orange when active */
+.laptop-status-led.hd-led .led-glow {
+  background: #2A1A0A;
+}
+
+.laptop-status-led.hd-led.active .led-glow {
+  --glow-mult: calc(0.4 + var(--led-intensity, 0) * 0.6);
+  background: #E67E22;
+  box-shadow:
+    0 0 calc(4px * var(--glow-mult)) rgba(230, 126, 34, calc(0.5 * var(--glow-mult))),
+    0 0 calc(8px * var(--glow-mult)) rgba(230, 126, 34, calc(0.3 * var(--glow-mult))),
+    inset 0 -1px 2px rgba(0, 0, 0, 0.2);
+}
+
+/* TX LED - amber when active */
+.laptop-status-led.tx-led .led-glow {
+  background: #3D2A0A;
+}
+
+.laptop-status-led.tx-led.active .led-glow {
+  --glow-mult: calc(0.4 + var(--led-intensity, 0) * 0.6);
+  background: #F59E0B;
+  box-shadow:
+    0 0 calc(4px * var(--glow-mult)) rgba(245, 158, 11, calc(0.5 * var(--glow-mult))),
+    0 0 calc(8px * var(--glow-mult)) rgba(245, 158, 11, calc(0.3 * var(--glow-mult))),
+    inset 0 -1px 2px rgba(0, 0, 0, 0.2);
+}
+
+/* RX LED - green when active */
+.laptop-status-led.rx-led .led-glow {
+  background: #0A2A14;
+}
+
+.laptop-status-led.rx-led.active .led-glow {
+  --glow-mult: calc(0.4 + var(--led-intensity, 0) * 0.6);
+  background: #22C55E;
+  box-shadow:
+    0 0 calc(4px * var(--glow-mult)) rgba(34, 197, 94, calc(0.5 * var(--glow-mult))),
+    0 0 calc(8px * var(--glow-mult)) rgba(34, 197, 94, calc(0.3 * var(--glow-mult))),
+    inset 0 -1px 2px rgba(0, 0, 0, 0.2);
+}
+
+/* Audio controls */
+.laptop-audio-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Action buttons */
+.laptop-action-buttons {
+  display: flex;
+  gap: 6px;
+}
+
+.laptop-action-btn {
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 6px;
+  background: var(--housing-primary, #4A4846);
+  color: var(--text-secondary, #A8A6A4);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  transition: background 100ms ease, transform 80ms ease;
+}
+
+.laptop-action-btn:active {
+  background: var(--control-hover, #3E3C3A);
+  transform: scale(0.95);
+}
+
+.laptop-action-btn--active {
+  background: var(--accent-primary, #4A90D9);
+  color: white;
+  box-shadow:
+    0 0 6px rgba(74, 144, 217, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+
+.laptop-action-btn--active:active {
+  background: var(--accent-primary, #4A90D9);
+}
+
+.laptop-action-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* ============================================
+   Keyboard Area
+   ============================================ */
+.laptop-keyboard-area {
+  flex-shrink: 0;
+  padding: 0 8px;
+  background: var(--housing-primary, #4A4846);
+  /* No border-top - control strip already has border-bottom */
+}
+
+/* ============================================
+   Trackpad Area
+   ============================================ */
+.laptop-trackpad-area {
+  flex: 1; /* Take remaining space */
+  display: flex;
+  flex-direction: column;
+  min-height: 80px;
+  padding: 4px 12px;
+  padding-bottom: max(4px, env(safe-area-inset-bottom));
+  background: var(--housing-primary, #4A4846);
+  border-top: 1px solid var(--housing-dark, #2A2826);
+}
+
+/* ============================================
+   Responsive - Portrait
+   ============================================ */
+@media (orientation: portrait) {
+  /* Screen area sizes to content, trackpad takes remaining space */
+}
+
+/* Very small portrait screens */
+@media (max-height: 700px) and (orientation: portrait) {
+  .laptop-screen-area {
+    padding: 4px;
+  }
+
+  .laptop-screen-bezel {
+    padding: 4px;
+  }
+
+  .laptop-control-strip {
+    padding: 4px 8px;
+  }
+
+  .laptop-keyboard-area {
+    padding: 2px 6px;
+  }
+
+  .laptop-trackpad-area {
+    padding: 4px 8px;
+    padding-bottom: max(4px, env(safe-area-inset-bottom));
+  }
+
+  .laptop-status-cluster {
+    gap: 6px;
+  }
+
+  .laptop-status-led .led-label {
+    font-size: 7px;
+  }
+}
+
+/* ============================================
+   Responsive - Landscape
+   ============================================ */
+@media (orientation: landscape) {
+  .laptop-shell {
+    flex-direction: row;
+  }
+
+  .laptop-screen-area {
+    flex: 1;
+    padding: 8px;
+    max-height: 100dvh;
+  }
+
+  .laptop-screen-bezel {
+    max-width: calc(100% - 8px);
+    max-height: calc(100% - 8px);
+  }
+
+  /* In landscape, control strip at bottom spanning full width */
+  .laptop-control-strip {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    width: auto;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 6px 12px;
+    border-top: 1px solid var(--housing-dark, #2A2826);
+    border-left: none;
+    border-radius: 0;
+  }
+
+  .laptop-status-cluster {
+    justify-content: flex-start;
+  }
+
+  .laptop-audio-controls {
+    justify-content: center;
+  }
+
+  .laptop-action-buttons {
+    justify-content: flex-end;
+  }
+
+  .laptop-keyboard-area {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 280px;
+    height: calc(100% - 100px);
+    padding: 8px;
+    border-top: none;
+    border-left: 1px solid var(--housing-dark, #2A2826);
+    overflow-y: auto;
+  }
+
+  .laptop-trackpad-area {
+    display: none;
+  }
+
+  .laptop-trackpad-area .trackpad {
+    height: 100%;
+    max-width: none;
+  }
+}
+
+/* Very narrow landscape (short height) */
+@media (max-height: 500px) and (orientation: landscape) {
+  .laptop-control-strip {
+    padding: 4px 8px;
+  }
+
+  .laptop-keyboard-area {
+    width: 240px;
+    padding: 4px;
+  }
+}
+
+/* ============================================
+   TABLET BREAKPOINTS
+   iPad Mini, iPad 10th gen, iPad Air, iPad Pro
+   ============================================ */
+
+/* Tablets (768px+) - iPad Mini, standard iPads */
+@media (min-width: 768px) {
+  .laptop-screen-inner {
+    max-width: 720px;
+  }
+
+  .laptop-screen-area {
+    padding: 16px;
+    padding-bottom: 8px;
+  }
+
+  .laptop-screen-bezel {
+    padding: 10px;
+    border-radius: 10px;
+  }
+
+  .laptop-control-strip {
+    padding: 8px 20px;
+    gap: 12px;
+  }
+
+  .laptop-status-cluster {
+    gap: 14px;
+  }
+
+  .laptop-status-led .led-glow {
+    width: 8px;
+    height: 8px;
+  }
+
+  .laptop-status-led .led-label {
+    font-size: 9px;
+    margin-top: 4px;
+  }
+
+  .laptop-action-btn {
+    width: 40px;
+    height: 40px;
+    border-radius: 8px;
+  }
+
+  .laptop-action-btn svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  .laptop-action-buttons {
+    gap: 10px;
+  }
+
+  .laptop-keyboard-area {
+    padding: 4px 16px;
+  }
+
+  .laptop-trackpad-area {
+    min-height: 140px;
+    padding: 8px 20px;
+    padding-bottom: max(8px, env(safe-area-inset-bottom));
+  }
+}
+
+/* Large tablets (1024px+) - iPad Air, iPad Pro 11" */
+@media (min-width: 1024px) {
+  .laptop-screen-inner {
+    max-width: 800px;
+  }
+
+  .laptop-screen-area {
+    padding: 20px;
+    padding-bottom: 12px;
+  }
+
+  .laptop-screen-bezel {
+    padding: 12px;
+    border-radius: 12px;
+  }
+
+  .laptop-control-strip {
+    padding: 10px 24px;
+    gap: 16px;
+  }
+
+  .laptop-status-cluster {
+    gap: 18px;
+  }
+
+  .laptop-status-led .led-glow {
+    width: 10px;
+    height: 10px;
+  }
+
+  .laptop-status-led .led-label {
+    font-size: 10px;
+  }
+
+  .laptop-action-btn {
+    width: 44px;
+    height: 44px;
+  }
+
+  .laptop-action-btn svg {
+    width: 22px;
+    height: 22px;
+  }
+
+  .laptop-keyboard-area {
+    padding: 6px 24px;
+  }
+
+  .laptop-trackpad-area {
+    min-height: 160px;
+    padding: 12px 24px;
+    padding-bottom: max(12px, env(safe-area-inset-bottom));
+  }
+}
+
+/* Extra large tablets (1200px+) - iPad Pro 12.9" */
+@media (min-width: 1200px) {
+  .laptop-screen-inner {
+    max-width: 880px;
+  }
+
+  .laptop-control-strip {
+    padding: 12px 32px;
+  }
+
+  .laptop-trackpad-area {
+    min-height: 180px;
+    padding: 16px 32px;
+    padding-bottom: max(16px, env(safe-area-inset-bottom));
+  }
+}
+
+/* ============================================
+   TABLET LANDSCAPE LAYOUT
+   Side panel with keyboard + trackpad stacked
+   ============================================ */
+@media (min-width: 768px) and (orientation: landscape) {
+  .laptop-shell {
+    flex-direction: row;
+  }
+
+  .laptop-screen-area {
+    flex: 1;
+    padding: 16px;
+    max-height: 100dvh;
+  }
+
+  .laptop-screen-bezel {
+    max-width: calc(100% - 16px);
+    max-height: calc(100% - 16px);
+  }
+
+  /* Control strip at bottom spanning full width */
+  .laptop-control-strip {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    width: auto;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    border-top: 1px solid var(--housing-dark, #2A2826);
+    border-left: none;
+    border-radius: 0;
+  }
+
+  /* Right side panel containing keyboard + trackpad */
+  .laptop-keyboard-area {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 320px;
+    height: calc(100% - 60px); /* Leave room for control strip */
+    padding: 12px;
+    border-top: none;
+    border-left: 1px solid var(--housing-dark, #2A2826);
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Keep trackpad visible in tablet landscape - positioned inside keyboard area */
+  .laptop-trackpad-area {
+    display: flex;
+    position: absolute;
+    top: auto;
+    bottom: 60px; /* Above control strip */
+    right: 0;
+    width: 320px;
+    min-height: 100px;
+    max-height: 140px;
+    border-left: 1px solid var(--housing-dark, #2A2826);
+    border-top: 1px solid var(--housing-dark, #2A2826);
+    padding: 8px 12px;
+    padding-bottom: 8px;
+  }
+
+  .laptop-trackpad-area .trackpad {
+    height: 100%;
+    max-width: none;
+  }
+}
+
+/* Large tablet landscape (1024px+) */
+@media (min-width: 1024px) and (orientation: landscape) {
+  .laptop-keyboard-area {
+    width: 360px;
+    padding: 16px;
+    height: calc(100% - 70px);
+  }
+
+  .laptop-trackpad-area {
+    width: 360px;
+    min-height: 120px;
+    max-height: 160px;
+    bottom: 70px;
+    padding: 10px 16px;
+  }
+
+  .laptop-screen-bezel {
+    max-width: calc(100% - 24px);
+    max-height: calc(100% - 24px);
+  }
+
+  .laptop-control-strip {
+    padding: 12px 24px;
+  }
+}
+
+/* Extra large tablet landscape (1200px+) */
+@media (min-width: 1200px) and (orientation: landscape) {
+  .laptop-keyboard-area {
+    width: 400px;
+    padding: 20px;
+    height: calc(100% - 80px);
+  }
+
+  .laptop-trackpad-area {
+    width: 400px;
+    min-height: 140px;
+    max-height: 180px;
+    bottom: 80px;
+    padding: 12px 20px;
+  }
+
+  .laptop-control-strip {
+    padding: 14px 32px;
+  }
+}

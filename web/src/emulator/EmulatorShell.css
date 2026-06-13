@@ -1,0 +1,1087 @@
+/**
+ * EmulatorShell Styles
+ *
+ * Museum-quality recreation of a 1991 Quadra 700 workstation:
+ * a platinum tilt-swivel monitor with the mini-tower standing beside it.
+ * Uses CSS custom properties for theme switching.
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=EB+Garamond:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+/* ============================================
+   CSS Variables (defaults for fallback)
+   ============================================ */
+:root {
+  /* Shell */
+  --shell-bg: #E8E2D8;
+  --shell-bg-gradient: radial-gradient(ellipse at 50% 30%, #F0EBE3 0%, #E8E2D8 50%, #D8D2C8 100%);
+
+  /* Housing */
+  --housing-primary: #EDE8DF;
+  --housing-light: #F5F2EB;
+  --housing-lighter: #FAF8F4;
+  --housing-dark: #D4CFC4;
+  --housing-darker: #C4BFB4;
+
+  /* Screen */
+  --screen-bezel: #3A3832;
+  --screen-inner: #1A1918;
+  --screen-shadow: rgba(0, 0, 0, 0.6);
+  --screen-radius: 8px;
+
+  /* Control strip */
+  --control-bg: #E0DBD0;
+  --control-border: #C8C3B8;
+  --control-hover: #D4CFC4;
+
+  /* Text */
+  --text-primary: #2A2824;
+  --text-secondary: #5A5850;
+  --text-dim: #8A887E;
+  --text-on-dark: #E8E8E8;
+
+  /* Accents */
+  --accent-primary: #2B6CB0;
+  --accent-secondary: #38A169;
+  --accent-warning: #D69E2E;
+  --accent-error: #C53030;
+
+  /* Panels */
+  --panel-bg: #F5F2EB;
+  --panel-border: #D4CFC4;
+  --card-bg: #FFFFFF;
+
+  /* LEDs */
+  --led-power-off: #4A4840;
+  --led-power-on: #22C55E;
+  --led-power-glow: rgba(34, 197, 94, 0.5);
+
+  /* Textures */
+  --chamfer-size: 4px;
+  --noise-opacity: 0.025;
+  --vent-color: #2A2824;
+  --vent-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.7);
+
+  /* Fonts */
+  --font-badge: 'EB Garamond', Georgia, serif;
+  --font-ui: 'Geneva', 'Helvetica Neue', Helvetica, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Monaco', 'SF Mono', monospace;
+  --font-badge-size: 0.8rem;
+  --font-label-size: 0.625rem;
+
+  /* Timing */
+  --transition-fast: 120ms ease;
+  --transition-normal: 200ms ease;
+  --transition-smooth: 300ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ============================================
+   Base Shell
+   ============================================ */
+.emulator-shell {
+  display: flex;
+  flex-direction: column;
+  /* `safe` keeps the Mac centered while it fits, but falls back to the
+     start edge once it's larger than the viewport - so the top/left stay
+     reachable instead of being clipped by plain centering. */
+  align-items: safe center;
+  justify-content: safe center;
+  /* The global <body> is locked (overflow:hidden; position:fixed), so the
+     scroll for an oversized Mac has to happen here. Bound the height to the
+     viewport and let this element scroll. */
+  height: 100vh;
+  height: 100dvh; /* Dynamic viewport height for mobile browsers */
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  background: var(--shell-bg);
+  background-image: var(--shell-bg-gradient);
+  padding: 2rem;
+  font-family: var(--font-ui);
+  color: var(--text-primary);
+
+  /* Subtle noise texture for plastic appearance */
+  position: relative;
+}
+
+.emulator-shell::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: var(--noise-texture, url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.025'/%3E%3C/svg%3E"));
+  pointer-events: none;
+  opacity: var(--noise-opacity, 0.025);
+}
+
+/* ============================================
+   The full workstation: monitor + tower
+   ============================================ */
+.quadra-setup {
+  display: flex;
+  align-items: stretch;
+  gap: 1.75rem;
+}
+
+.monitor-column {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* ============================================
+   Monitor housing
+   ============================================ */
+.emulator-housing {
+  position: relative;
+  background: var(--housing-primary);
+  border-radius: 16px;
+  padding: 1rem;
+
+  /* 3D plastic chamfer effect */
+  box-shadow:
+    /* Top highlight */
+    inset 0 2px 0 var(--housing-lighter),
+    /* Bottom shadow */
+    inset 0 -2px 0 var(--housing-dark),
+    /* Left highlight */
+    inset 2px 0 0 var(--housing-light),
+    /* Right shadow */
+    inset -2px 0 0 var(--housing-dark),
+    /* External shadow */
+    0 4px 8px rgba(0, 0, 0, 0.15),
+    0 12px 32px rgba(0, 0, 0, 0.1);
+
+  /* Top highlight gradient for convex plastic look.
+     Fixed-size edge bands so the shading stays at the case edges
+     regardless of how large the monitor is scaled. */
+  background-image: linear-gradient(
+    180deg,
+    var(--housing-lighter) 0,
+    var(--housing-primary) 14px,
+    var(--housing-primary) calc(100% - 10px),
+    var(--housing-dark) 100%
+  );
+}
+
+/* Outer chamfer frame */
+.emulator-housing::before {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border-radius: 20px;
+  border: 4px solid transparent;
+  border-top-color: var(--housing-lighter);
+  border-left-color: var(--housing-light);
+  border-right-color: var(--housing-darker);
+  border-bottom-color: var(--housing-darker);
+  pointer-events: none;
+  opacity: 0.5;
+}
+
+/* The drop zone's own height:100% resolves circularly against the
+   auto-height housing and swallows the chin's space - size to content here. */
+.emulator-housing .file-transfer-drop-zone {
+  height: auto;
+}
+
+/* ============================================
+   Screen Bezel - platinum frame around recessed dark glass
+   ============================================ */
+.screen-bezel {
+  position: relative;
+  background: linear-gradient(
+    180deg,
+    var(--housing-dark) 0%,
+    var(--housing-primary) 12%,
+    var(--housing-primary) 88%,
+    var(--housing-light) 100%
+  );
+  border-radius: 12px;
+  padding: 22px;
+
+  /* Stepped recess into the case front */
+  box-shadow:
+    inset 0 2px 4px rgba(0, 0, 0, 0.18),
+    inset 0 -1px 0 var(--housing-lighter),
+    inset 2px 0 3px rgba(0, 0, 0, 0.08),
+    inset -2px 0 3px rgba(0, 0, 0, 0.08);
+}
+
+.bezel-inner {
+  position: relative;
+  background: var(--screen-bezel);
+  border-radius: calc(var(--screen-radius) + 2px);
+  padding: 18px;
+
+  /* Deep recessed CRT glass */
+  box-shadow:
+    inset 0 5px 14px var(--screen-shadow),
+    inset 0 0 36px rgba(0, 0, 0, 0.45),
+    0 1px 0 var(--housing-lighter);
+}
+
+/* Faint diagonal reflection on the CRT glass surround */
+.bezel-inner::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(
+    115deg,
+    rgba(255, 255, 255, 0.06) 0%,
+    transparent 30%
+  );
+  pointer-events: none;
+}
+
+.crt-frame {
+  position: relative;
+  width: calc(var(--screen-width, 800px) * var(--display-scale, 1));
+  height: calc(var(--screen-height, 600px) * var(--display-scale, 1));
+  border-radius: calc(var(--screen-radius) - 4px);
+  overflow: hidden;
+  background: #000;
+}
+
+.crt-frame canvas {
+  display: block;
+  cursor: none;
+  /* No max-width - display scale is always respected, page scrolls if needed */
+}
+
+/* Power off screen */
+.power-off-screen {
+  width: calc(var(--screen-width, 800px) * var(--display-scale, 1));
+  height: calc(var(--screen-height, 600px) * var(--display-scale, 1));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+/* Loading placeholder - for disk settings loading state */
+.loading-placeholder {
+  width: calc(var(--screen-width, 800px) * var(--display-scale, 1));
+  height: calc(var(--screen-height, 600px) * var(--display-scale, 1));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.loading-placeholder .retry-btn {
+  margin-top: 16px;
+  padding: 8px 16px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 4px;
+  color: white;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.loading-placeholder .retry-btn:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.loading-placeholder .retry-btn:active {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* CRT overlay effects */
+.crt-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(
+    ellipse at center,
+    transparent 0%,
+    transparent 70%,
+    rgba(0, 0, 0, 0.12) 100%
+  );
+}
+
+.crt-scanlines {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent 0px,
+    transparent 1px,
+    rgba(0, 0, 0, 0.08) 1px,
+    rgba(0, 0, 0, 0.08) 2px
+  );
+  opacity: 0.35;
+}
+
+/* ============================================
+   Monitor chin - wordmark and power light
+   ============================================ */
+.monitor-chin {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.8rem 1.25rem 0.7rem;
+}
+
+.chin-brand {
+  font-family: var(--font-badge);
+  font-size: 0.8rem;
+  font-weight: 500;
+  letter-spacing: 0.28em;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  text-shadow: 0 1px 0 var(--housing-lighter);
+}
+
+.monitor-power-led {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--led-power-off);
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.5);
+  transition: all var(--transition-normal);
+}
+
+.monitor-power-led.on {
+  background: var(--led-power-on);
+  box-shadow:
+    0 0 6px var(--led-power-glow),
+    0 0 12px var(--led-power-glow);
+}
+
+/* ============================================
+   Tilt-swivel stand
+   ============================================ */
+.monitor-stand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  /* drop-shadow follows the clip-path silhouette, box-shadow would not */
+  filter: drop-shadow(0 10px 10px rgba(0, 0, 0, 0.18));
+}
+
+.stand-neck {
+  width: 16%;
+  height: 20px;
+  clip-path: polygon(0 0, 100% 0, 86% 100%, 14% 100%);
+  background: linear-gradient(
+    180deg,
+    var(--housing-darker) 0%,
+    var(--housing-dark) 45%,
+    var(--housing-darker) 100%
+  );
+  box-shadow:
+    inset 6px 0 6px rgba(0, 0, 0, 0.15),
+    inset -6px 0 6px rgba(0, 0, 0, 0.15);
+}
+
+.stand-base {
+  width: 44%;
+  height: 30px;
+  clip-path: polygon(10% 0, 90% 0, 100% 100%, 0% 100%);
+  background: linear-gradient(
+    180deg,
+    var(--housing-dark) 0%,
+    var(--housing-primary) 22%,
+    var(--housing-primary) 60%,
+    var(--housing-dark) 85%,
+    var(--housing-darker) 100%
+  );
+}
+
+/* ============================================
+   Quadra 700 mini-tower
+   ============================================ */
+.tower-unit {
+  position: relative;
+  width: 228px;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  padding: 0.9rem 1rem 1.2rem;
+  background: var(--housing-primary);
+  border-radius: 14px;
+
+  /* Slightly stronger side shading than the monitor: a tall narrow box */
+  background-image: linear-gradient(
+    90deg,
+    var(--housing-light) 0%,
+    var(--housing-primary) 10%,
+    var(--housing-primary) 88%,
+    var(--housing-dark) 100%
+  );
+
+  box-shadow:
+    inset 0 2px 0 var(--housing-lighter),
+    inset 0 -2px 0 var(--housing-dark),
+    inset 2px 0 0 var(--housing-light),
+    inset -2px 0 0 var(--housing-dark),
+    0 4px 8px rgba(0, 0, 0, 0.15),
+    0 12px 32px rgba(0, 0, 0, 0.12);
+}
+
+/* Snow White groove lines (top and bottom of the front panel) */
+.tower-grooves {
+  height: 15px;
+  margin: 0 0.25rem 0.8rem;
+  flex: 0 0 auto;
+  background: repeating-linear-gradient(
+    180deg,
+    transparent 0,
+    transparent 3px,
+    var(--housing-dark) 3px,
+    var(--housing-dark) 4px,
+    var(--housing-lighter) 4px,
+    var(--housing-lighter) 5px
+  );
+}
+
+.tower-grooves.bottom {
+  margin: 0.8rem 0.25rem 0;
+}
+
+/* Header: rainbow logo, top-left like the original badge */
+.tower-header {
+  display: flex;
+  align-items: flex-start;
+  padding: 0 0.25rem;
+}
+
+.tower-logo {
+  width: 20px;
+  height: 24px;
+  display: flex;
+  flex-direction: column;
+  border-radius: 5px;
+  overflow: hidden;
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.25),
+    0 1px 0 var(--housing-lighter);
+}
+
+.tower-logo span {
+  flex: 1;
+}
+
+/* Six-color stripes, classic top-to-bottom order */
+.tower-logo span:nth-child(1) { background: #61BB46; }
+.tower-logo span:nth-child(2) { background: #FDB827; }
+.tower-logo span:nth-child(3) { background: #F5821F; }
+.tower-logo span:nth-child(4) { background: #E03A3E; }
+.tower-logo span:nth-child(5) { background: #963D97; }
+.tower-logo span:nth-child(6) { background: #009DDC; }
+
+/* Vertical SuperDrive slot along the right edge */
+.tower-drive-bay {
+  position: absolute;
+  top: 3.2rem;
+  right: 1.2rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.floppy-slot {
+  width: 7px;
+  height: 110px;
+  border-radius: 4px;
+  background: var(--vent-color);
+  box-shadow:
+    var(--vent-shadow),
+    0 1px 0 var(--housing-lighter),
+    -1px 0 0 rgba(0, 0, 0, 0.1);
+}
+
+.floppy-eject {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--vent-color);
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.8);
+}
+
+/* ============================================
+   Tower status LEDs
+   ============================================ */
+/* Panel internals are pixel-sized on purpose: the tower is a fixed-width
+   pixel design, so rem units here (which scale with the browser's base
+   font size) made the dot grid spill off the panel for users with larger
+   font settings. */
+.tower-leds {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 14px 34px 0 4px;
+  padding: 9px 10px;
+  background: var(--modem-panel-color, #1E1E1E);
+  border: 1px solid var(--modem-panel-border, #0E0E0E);
+  border-radius: 6px;
+  box-shadow:
+    inset 0 2px 5px rgba(0, 0, 0, 0.5),
+    0 1px 0 var(--housing-lighter);
+}
+
+.tower-leds .led-column {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.tower-leds .status-led {
+  gap: 8px;
+}
+
+.tower-leds .led-label,
+.tower-leds .cpu-graph-label {
+  font-size: 9px;
+}
+
+.tower-leds .cpu-graph {
+  padding-left: 10px;
+  border-left: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.status-led {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.status-led .led-glow {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--led-power-off);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5);
+  transition: all 0.05s ease;
+  flex: 0 0 auto;
+}
+
+.status-led.on .led-glow,
+.status-led.active .led-glow {
+  background: var(--led-power-on);
+  box-shadow:
+    0 0 8px var(--led-power-glow),
+    0 0 16px var(--led-power-glow),
+    inset 0 -1px 2px rgba(0, 0, 0, 0.2);
+}
+
+.status-led.connected .led-glow {
+  background: var(--led-network-connected, var(--led-power-on));
+  box-shadow:
+    0 0 4px var(--led-network-glow, var(--led-power-glow)),
+    0 0 8px var(--led-network-glow, var(--led-power-glow));
+}
+
+/* HD LED - dark amber when off, orange when active */
+.status-led.hd-led .led-glow {
+  background: #2A1A0A;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+.status-led.hd-led.active .led-glow {
+  --glow-mult: calc(0.4 + var(--led-intensity, 0) * 0.6);
+  background: #E67E22;
+  box-shadow:
+    0 0 calc(6px * var(--glow-mult)) rgba(230, 126, 34, calc(0.5 * var(--glow-mult))),
+    0 0 calc(12px * var(--glow-mult)) rgba(230, 126, 34, calc(0.3 * var(--glow-mult))),
+    inset 0 -1px 2px rgba(0, 0, 0, 0.2);
+}
+
+/* TX LED - dark amber when off, bright orange when active */
+.status-led.tx-led .led-glow {
+  background: #3D2A0A;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+.status-led.tx-led.active .led-glow {
+  --glow-mult: calc(0.4 + var(--led-intensity, 0) * 0.6);
+  background: #F59E0B;
+  box-shadow:
+    0 0 calc(6px * var(--glow-mult)) rgba(245, 158, 11, calc(0.5 * var(--glow-mult))),
+    0 0 calc(12px * var(--glow-mult)) rgba(245, 158, 11, calc(0.3 * var(--glow-mult))),
+    inset 0 -1px 2px rgba(0, 0, 0, 0.2);
+}
+
+/* RX LED - dark green when off, bright green when active */
+.status-led.rx-led .led-glow {
+  background: #0A2A14;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+.status-led.rx-led.active .led-glow {
+  --glow-mult: calc(0.4 + var(--led-intensity, 0) * 0.6);
+  background: #22C55E;
+  box-shadow:
+    0 0 calc(6px * var(--glow-mult)) rgba(34, 197, 94, calc(0.5 * var(--glow-mult))),
+    0 0 calc(12px * var(--glow-mult)) rgba(34, 197, 94, calc(0.3 * var(--glow-mult))),
+    inset 0 -1px 2px rgba(0, 0, 0, 0.2);
+}
+
+.status-led .led-label {
+  font-family: var(--font-mono);
+  font-size: var(--font-label-size);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  color: var(--modem-label-color, #707070);
+  text-transform: uppercase;
+}
+
+/* ============================================
+   Tower control panel
+   ============================================ */
+.tower-controls {
+  margin-top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  padding: 0.7rem 0.75rem;
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
+  border-radius: 8px;
+
+  /* Subtle inset look */
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.05),
+    0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+.tower-audio {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.tower-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.control-btn {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--housing-primary);
+  border: 1px solid var(--control-border);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+
+  /* Raised button look */
+  box-shadow:
+    inset 0 1px 0 var(--housing-lighter),
+    0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+.control-btn:hover {
+  background: var(--control-hover);
+  color: var(--text-primary);
+}
+
+.control-btn:active {
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.15);
+  transform: translateY(1px);
+}
+
+.control-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.power-btn:hover {
+  color: var(--accent-error);
+}
+
+.theme-btn:hover {
+  color: var(--accent-primary);
+}
+
+/* ============================================
+   Tower badge and feet
+   ============================================ */
+.tower-badge {
+  margin-top: auto;
+  padding: 1rem 0.25rem 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.badge-model {
+  font-family: var(--font-badge);
+  font-size: 1.05rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-secondary);
+  text-shadow: 0 1px 0 var(--housing-lighter);
+}
+
+.tower-feet {
+  position: absolute;
+  left: 1.4rem;
+  right: 1.4rem;
+  bottom: -7px;
+  display: flex;
+  justify-content: space-between;
+  pointer-events: none;
+}
+
+.tower-feet span {
+  width: 30px;
+  height: 7px;
+  background: var(--housing-darker);
+  border-radius: 0 0 4px 4px;
+  box-shadow: inset 0 -2px 3px rgba(0, 0, 0, 0.3);
+}
+
+/* ============================================
+   C89 Summer - synthwave office
+   ============================================ */
+
+/* Stickers on the tower's blank panel - hidden outside the C89 theme */
+.tower-stickers {
+  display: none;
+}
+
+.theme-c89 .tower-stickers {
+  display: block;
+  position: relative;
+  align-self: center;
+  margin-top: auto;
+  width: 138px;
+}
+
+/* Full-color logo on black vinyl with a white die-cut edge */
+.theme-c89 .sticker-c89 {
+  padding: 7px 9px;
+  background: #0B0A12;
+  border: 2px solid rgba(245, 242, 235, 0.92);
+  border-radius: 10px;
+  transform: rotate(-4deg);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+}
+
+.theme-c89 .sticker-c89 img {
+  display: block;
+  width: 100%;
+  image-rendering: pixelated;
+}
+
+/* Sun roundel overlapping the corner, like it was slapped on later */
+.theme-c89 .sticker-sun {
+  position: absolute;
+  right: -12px;
+  top: 92px;
+  width: 62px;
+  transform: rotate(8deg);
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.35));
+}
+
+/* The handle sticker links out - lifts slightly on hover */
+.theme-c89 .sticker-forested {
+  display: block;
+  width: 154px;
+  margin: 42px 0 0 -8px;
+  transform: rotate(2.5deg);
+  transition: transform 150ms ease;
+  filter: drop-shadow(0 2px 5px rgba(0, 0, 0, 0.35));
+}
+
+.theme-c89 .sticker-forested:hover {
+  transform: rotate(0deg) scale(1.05);
+}
+
+.theme-c89 .sticker-forested img {
+  display: block;
+  width: 100%;
+}
+
+/* DEF CON roundel on the monitor's bezel corner */
+.monitor-sticker-defcon {
+  display: none;
+}
+
+.theme-c89 .monitor-sticker-defcon {
+  display: block;
+  position: absolute;
+  right: 104px;
+  bottom: 8px;
+  width: 54px;
+  transform: rotate(-7deg);
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.3));
+  pointer-events: none;
+}
+
+/* The room: establish a stacking context so the light layers
+   (z-index -1) sit above the wall gradient but behind the machine */
+.theme-c89.emulator-shell {
+  z-index: 0;
+}
+
+/* Sunset raking through venetian blinds, plus the plastic noise */
+.theme-c89.emulator-shell::before {
+  z-index: -1;
+  opacity: 1; /* noise opacity is baked into the SVG texture */
+  background-image:
+    var(--noise-texture),
+    repeating-linear-gradient(
+      115deg,
+      transparent 0,
+      transparent 70px,
+      rgba(255, 122, 64, 0.045) 70px,
+      rgba(255, 122, 64, 0.045) 112px
+    ),
+    linear-gradient(
+      180deg,
+      transparent 52%,
+      rgba(255, 46, 151, 0.07) 74%,
+      rgba(255, 150, 90, 0.09) 79%,
+      transparent 86%
+    );
+}
+
+/* Grid floor fading up from the bottom of the room */
+.theme-c89.emulator-shell::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 26%;
+  z-index: -1;
+  pointer-events: none;
+  background-image:
+    repeating-linear-gradient(90deg, rgba(0, 212, 255, 0.07) 0, rgba(0, 212, 255, 0.07) 1px, transparent 1px, transparent 64px),
+    repeating-linear-gradient(0deg, rgba(0, 212, 255, 0.06) 0, rgba(0, 212, 255, 0.06) 1px, transparent 1px, transparent 42px);
+  -webkit-mask-image: linear-gradient(180deg, transparent 0, rgba(0, 0, 0, 0.85) 40%, #000 100%);
+  mask-image: linear-gradient(180deg, transparent 0, rgba(0, 0, 0, 0.85) 40%, #000 100%);
+}
+
+/* Neon rim light off the case: magenta from the window side, cyan ambient */
+.theme-c89 .emulator-housing,
+.theme-c89 .tower-unit {
+  box-shadow:
+    inset 0 2px 0 var(--housing-lighter),
+    inset 0 -2px 0 var(--housing-dark),
+    inset 2px 0 0 var(--housing-light),
+    inset -2px 0 0 var(--housing-dark),
+    0 4px 10px rgba(0, 0, 0, 0.4),
+    0 14px 44px rgba(0, 0, 0, 0.45),
+    -20px 10px 56px rgba(255, 46, 151, 0.10),
+    20px 10px 56px rgba(0, 212, 255, 0.09);
+}
+
+/* The CRT casts a faint glow into the dark room */
+.theme-c89 .bezel-inner {
+  box-shadow:
+    inset 0 5px 14px var(--screen-shadow),
+    inset 0 0 36px rgba(0, 0, 0, 0.45),
+    0 1px 0 var(--housing-lighter),
+    0 0 34px rgba(0, 212, 255, 0.07);
+}
+
+/* Slightly heavier scanlines fit the mood */
+.theme-c89 .crt-scanlines {
+  opacity: 0.45;
+}
+
+/* ============================================
+   Responsive Adjustments
+   ============================================ */
+/*
+ * Display scale is always respected - no auto-shrinking.
+ * If the emulator is larger than the viewport, the page scrolls.
+ * Only adjust padding/layout on smaller screens, not the display size.
+ */
+
+@media (max-width: 700px) {
+  .emulator-shell {
+    padding: 0.5rem;
+    padding-top: max(0.5rem, env(safe-area-inset-top));
+    padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+  }
+
+  .quadra-setup {
+    flex-direction: column;
+    align-items: center;
+    gap: 1.25rem;
+  }
+
+  .emulator-housing {
+    padding: 0.5rem;
+    border-radius: 12px;
+  }
+
+  .screen-bezel {
+    padding: 8px;
+  }
+
+  .bezel-inner {
+    padding: 5px;
+  }
+
+  .monitor-chin {
+    padding: 0.4rem 0.5rem 0.1rem;
+  }
+
+  .chin-brand {
+    font-size: 0.7rem;
+  }
+
+  .tower-unit {
+    min-height: 300px;
+  }
+}
+
+/* Very small screens (iPhone SE, etc) */
+@media (max-width: 400px) {
+  .emulator-shell {
+    padding: 0.25rem;
+  }
+
+  .emulator-housing {
+    padding: 0.25rem;
+    border-radius: 8px;
+  }
+
+  .screen-bezel {
+    padding: 4px;
+    border-radius: 6px;
+  }
+
+  .bezel-inner {
+    padding: 3px;
+  }
+}
+
+/* ============================================
+   Dark Theme Overrides
+   ============================================ */
+.theme-dark .emulator-housing,
+.theme-dark .tower-unit {
+  box-shadow:
+    0 2px 4px rgba(0, 0, 0, 0.3),
+    0 8px 24px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  background-image: none;
+}
+
+.theme-dark .emulator-housing::before {
+  display: none;
+}
+
+.theme-dark .screen-bezel {
+  background: var(--screen-bezel);
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.5);
+}
+
+.theme-dark .tower-controls {
+  box-shadow: none;
+  border: 1px solid var(--control-border);
+}
+
+.theme-dark .control-btn {
+  box-shadow: none;
+}
+
+.theme-dark .tower-grooves {
+  background: repeating-linear-gradient(
+    180deg,
+    transparent 0,
+    transparent 3px,
+    rgba(0, 0, 0, 0.5) 3px,
+    rgba(0, 0, 0, 0.5) 4px,
+    rgba(255, 255, 255, 0.04) 4px,
+    rgba(255, 255, 255, 0.04) 5px
+  );
+}
+
+/* ============================================
+   Fullscreen Mode
+   ============================================ */
+.fullscreen-btn {
+  position: relative;
+}
+
+.fullscreen-btn:hover {
+  color: var(--accent-primary);
+}
+
+/* Keyboard lock button (only visible in fullscreen) */
+.keyboard-lock-btn:hover {
+  color: var(--accent-primary);
+}
+
+.keyboard-lock-btn.locked {
+  color: var(--accent-secondary);
+  background: rgba(34, 197, 94, 0.1);
+  border-color: var(--accent-secondary);
+}
+
+/* Fullscreen mode styles - use theme background */
+.emulator-shell.fullscreen-mode {
+  /* Inherits theme background from .emulator-shell */
+  padding: 1rem;
+}
+
+.emulator-shell.fullscreen-mode .quadra-setup {
+  /* Center the whole workstation in the viewport */
+  margin: auto;
+}
+
+.emulator-shell.fullscreen-mode .emulator-housing,
+.emulator-shell.fullscreen-mode .tower-unit {
+  /* Enhanced shadow for floating effect */
+  box-shadow:
+    inset 0 2px 0 var(--housing-lighter),
+    inset 0 -2px 0 var(--housing-dark),
+    inset 2px 0 0 var(--housing-light),
+    inset -2px 0 0 var(--housing-dark),
+    0 8px 32px rgba(0, 0, 0, 0.3),
+    0 24px 64px rgba(0, 0, 0, 0.2),
+    0 0 120px rgba(0, 0, 0, 0.15);
+}
+
+/* Dark theme gets deeper shadows in fullscreen */
+.theme-dark.fullscreen-mode .emulator-housing,
+.theme-dark.fullscreen-mode .tower-unit {
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.5),
+    0 24px 64px rgba(0, 0, 0, 0.4),
+    0 0 120px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.02);
+}
+
+/* Tighter chrome when fullscreen on short viewports */
+@media (max-height: 700px) {
+  .emulator-shell.fullscreen-mode .monitor-chin {
+    padding: 0.3rem 0.5rem 0;
+  }
+
+  .emulator-shell.fullscreen-mode .chin-brand {
+    font-size: 0.7rem;
+  }
+}

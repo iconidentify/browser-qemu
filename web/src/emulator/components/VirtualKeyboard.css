@@ -1,0 +1,689 @@
+/**
+ * VirtualKeyboard styles
+ *
+ * Uses theme CSS variables for consistent appearance across all themes.
+ * Keys derive their colors from housing/control variables.
+ */
+
+.virtual-keyboard {
+  width: 100%;
+  padding: 2px 4px;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-user-drag: none;
+  /* Use touch-action: none to prevent iOS magnifying glass on long press */
+  touch-action: none;
+}
+
+/* Prevent iOS context menu on all keyboard elements */
+.virtual-keyboard * {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.virtual-keyboard--disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* Keyboard container */
+.vk-keyboard {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* Row of keys */
+.vk-row {
+  display: flex;
+  justify-content: center;
+  gap: 3px;
+}
+
+/* Individual key */
+.vk-key {
+  flex: 1;
+  min-width: 0;
+  height: 38px;
+  max-width: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 2px;
+
+  /* Appearance - use theme housing colors */
+  background: var(--housing-primary);
+  border: 1px solid var(--housing-dark);
+  border-radius: 4px;
+  color: var(--text-secondary);
+
+  /* Typography */
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+
+  /* 3D effect - raised key */
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.15),
+    0 2px 0 var(--housing-darker),
+    0 3px 2px rgba(0, 0, 0, 0.2);
+
+  /* Touch/click behavior */
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 40ms ease, box-shadow 40ms ease, background 40ms ease;
+}
+
+.vk-key:active,
+.vk-key--pressed {
+  transform: translateY(2px);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 0 0 var(--housing-darker);
+  background: var(--housing-dark);
+}
+
+/* Letter keys - default styling is fine */
+.vk-key--letter {
+  text-transform: uppercase;
+}
+
+/* Special keys (Backspace, Enter, Tab, Escape) */
+.vk-key--special {
+  background: var(--control-bg);
+  font-size: 9px;
+  letter-spacing: 0.05em;
+}
+
+/* Modifier keys (Shift, Cmd) */
+.vk-key--modifier {
+  background: var(--control-bg);
+  font-size: 9px;
+  letter-spacing: 0.05em;
+}
+
+.vk-key--modifier.vk-key--active {
+  background: var(--accent-primary);
+  color: var(--text-on-dark);
+  border-color: var(--accent-primary);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.2),
+    0 2px 0 rgba(74, 144, 217, 0.5),
+    0 0 8px rgba(74, 144, 217, 0.3);
+}
+
+/* Action keys (123, ABC, #+, ARROWS) */
+.vk-key--action {
+  background: var(--housing-dark);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+}
+
+/* Utility keys row (ESC, TAB, COPY, PASTE, etc.) */
+.vk-row--utility {
+  margin-bottom: 1px;
+  padding-bottom: 2px;
+  border-bottom: 1px solid var(--housing-dark);
+}
+
+.vk-key--utility {
+  background: var(--housing-light);
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  /* Increased from 22px to 32px for better touch targets (iOS min is 44px) */
+  height: 32px;
+}
+
+/* Space bar */
+.vk-key--space {
+  max-width: none;
+  min-width: 120px;
+}
+
+/* Arrow keys overlay */
+.vk-arrows-overlay {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px;
+  background: var(--housing-dark);
+  border-radius: 8px;
+  min-height: 140px;
+}
+
+.vk-arrows-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.vk-arrows-row {
+  display: flex;
+  justify-content: center;
+  gap: 4px;
+}
+
+.vk-arrow-spacer {
+  width: 48px;
+  height: 44px;
+}
+
+.vk-key--arrow {
+  width: 48px;
+  height: 44px;
+  max-width: none;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.vk-arrows-close {
+  margin-top: 8px;
+  padding: 6px 16px;
+  background: var(--housing-dark);
+  border: 1px solid var(--housing-darker);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.vk-arrows-close:active {
+  background: var(--housing-darker);
+}
+
+/* Responsive adjustments */
+
+/* Very small screens */
+@media (max-width: 360px) {
+  .vk-key {
+    height: 34px;
+    font-size: 10px;
+  }
+
+  .vk-key--special,
+  .vk-key--modifier,
+  .vk-key--action {
+    font-size: 8px;
+  }
+
+  .vk-row {
+    gap: 2px;
+  }
+
+  .vk-keyboard {
+    gap: 3px;
+  }
+}
+
+/* Larger phones */
+@media (min-width: 430px) {
+  .vk-key {
+    height: 42px;
+    max-width: 48px;
+    font-size: 12px;
+  }
+
+  .vk-key--special,
+  .vk-key--modifier,
+  .vk-key--action {
+    font-size: 10px;
+  }
+
+  .vk-row {
+    gap: 4px;
+  }
+
+  .vk-keyboard {
+    gap: 5px;
+  }
+}
+
+/* Landscape mode */
+@media (orientation: landscape) and (max-height: 500px) {
+  .vk-key {
+    height: 32px;
+    font-size: 10px;
+  }
+
+  .vk-key--special,
+  .vk-key--modifier,
+  .vk-key--action {
+    font-size: 8px;
+  }
+
+  .vk-keyboard {
+    gap: 2px;
+  }
+
+  .vk-row {
+    gap: 2px;
+  }
+}
+
+/* ============================================
+   LED BACKLIT KEYBOARD EFFECTS
+   Only the letters glow - like real backlit keyboards
+   Only active on dark themes with keyboard LED settings
+   ============================================ */
+
+/* Banner sweep animation - letters light up in sequence */
+@keyframes keyboard-letter-sweep {
+  0% {
+    color: var(--text-secondary);
+    text-shadow: none;
+  }
+  20% {
+    color: rgba(255, 255, 255, 1);
+    text-shadow:
+      0 0 4px rgba(255, 255, 255, 0.8),
+      0 0 8px rgba(255, 255, 255, 0.4),
+      0 0 12px rgba(255, 255, 255, 0.2);
+  }
+  100% {
+    color: rgba(255, 255, 255, 0.85);
+    text-shadow:
+      0 0 3px rgba(255, 255, 255, 0.5),
+      0 0 6px rgba(255, 255, 255, 0.2);
+  }
+}
+
+/* Green sweep for dark theme */
+@keyframes keyboard-letter-sweep-green {
+  0% {
+    color: var(--text-secondary);
+    text-shadow: none;
+  }
+  20% {
+    color: rgba(200, 255, 220, 1);
+    text-shadow:
+      0 0 4px rgba(0, 255, 136, 0.8),
+      0 0 8px rgba(0, 255, 136, 0.4),
+      0 0 12px rgba(0, 255, 136, 0.2);
+  }
+  100% {
+    color: rgba(200, 255, 220, 0.9);
+    text-shadow:
+      0 0 3px rgba(0, 255, 136, 0.4),
+      0 0 6px rgba(0, 255, 136, 0.15);
+  }
+}
+
+/* Ambient breathing - subtle letter glow pulse */
+@keyframes keyboard-letter-breathe {
+  0%, 100% {
+    text-shadow:
+      0 0 3px rgba(255, 255, 255, 0.5),
+      0 0 6px rgba(255, 255, 255, 0.2);
+  }
+  50% {
+    text-shadow:
+      0 0 2px rgba(255, 255, 255, 0.35),
+      0 0 4px rgba(255, 255, 255, 0.1);
+  }
+}
+
+@keyframes keyboard-letter-breathe-green {
+  0%, 100% {
+    text-shadow:
+      0 0 3px rgba(0, 255, 136, 0.4),
+      0 0 6px rgba(0, 255, 136, 0.15);
+  }
+  50% {
+    text-shadow:
+      0 0 2px rgba(0, 255, 136, 0.25),
+      0 0 4px rgba(0, 255, 136, 0.08);
+  }
+}
+
+/* Base backlit letters - PowerBook warm white */
+.theme-powerbook .vk-key[data-backlit="true"] {
+  color: rgba(255, 255, 255, 0.85);
+  text-shadow:
+    0 0 3px rgba(255, 255, 255, 0.5),
+    0 0 6px rgba(255, 255, 255, 0.2);
+}
+
+/* Dark theme - phosphor green letter glow */
+.theme-dark .vk-key[data-backlit="true"] {
+  color: rgba(200, 255, 220, 0.9);
+  text-shadow:
+    0 0 3px rgba(0, 255, 136, 0.4),
+    0 0 6px rgba(0, 255, 136, 0.15);
+}
+
+/* Loading state - banner sweep animation on letters */
+.theme-powerbook .vk-key[data-loading="true"] {
+  animation: keyboard-letter-sweep 600ms ease-out forwards;
+  animation-delay: var(--key-stagger, 0ms);
+  color: var(--text-secondary);
+  text-shadow: none;
+}
+
+.theme-dark .vk-key[data-loading="true"] {
+  animation: keyboard-letter-sweep-green 600ms ease-out forwards;
+  animation-delay: var(--key-stagger, 0ms);
+  color: var(--text-secondary);
+  text-shadow: none;
+}
+
+/* Ready state - subtle breathing on letters */
+.theme-powerbook .virtual-keyboard[data-system-state="ready"] .vk-key[data-backlit="true"] {
+  animation: keyboard-letter-breathe 4s ease-in-out infinite;
+}
+
+.theme-dark .virtual-keyboard[data-system-state="ready"] .vk-key[data-backlit="true"] {
+  animation: keyboard-letter-breathe-green 4s ease-in-out infinite;
+}
+
+/* Pressed key - letter dims momentarily */
+.theme-powerbook .vk-key[data-backlit="true"].vk-key--pressed,
+.theme-powerbook .vk-key[data-backlit="true"]:active {
+  color: rgba(255, 255, 255, 0.5);
+  text-shadow: 0 0 2px rgba(255, 255, 255, 0.2);
+}
+
+.theme-dark .vk-key[data-backlit="true"].vk-key--pressed,
+.theme-dark .vk-key[data-backlit="true"]:active {
+  color: rgba(200, 255, 220, 0.5);
+  text-shadow: 0 0 2px rgba(0, 255, 136, 0.15);
+}
+
+/* Active modifiers glow brighter */
+.theme-powerbook .vk-key[data-backlit="true"].vk-key--active {
+  color: rgba(255, 255, 255, 1);
+  text-shadow:
+    0 0 4px rgba(255, 255, 255, 0.7),
+    0 0 8px rgba(255, 255, 255, 0.3);
+}
+
+.theme-dark .vk-key[data-backlit="true"].vk-key--active {
+  color: rgba(200, 255, 220, 1);
+  text-shadow:
+    0 0 4px rgba(0, 255, 136, 0.6),
+    0 0 8px rgba(0, 255, 136, 0.25);
+}
+
+/* Accessibility: Respect reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+  .theme-powerbook .vk-key[data-loading="true"],
+  .theme-dark .vk-key[data-loading="true"] {
+    animation: none;
+  }
+
+  .theme-powerbook .virtual-keyboard[data-system-state="ready"] .vk-key[data-backlit="true"],
+  .theme-dark .virtual-keyboard[data-system-state="ready"] .vk-key[data-backlit="true"] {
+    animation: none;
+  }
+}
+
+/* ============================================
+   TABLET BREAKPOINTS
+   Scaled key sizes for iPad Mini through iPad Pro
+   ============================================ */
+
+/* Tablets (768px+) - iPad Mini, standard iPads */
+@media (min-width: 768px) {
+  .virtual-keyboard {
+    padding: 4px 8px;
+  }
+
+  .vk-keyboard {
+    gap: 6px;
+  }
+
+  .vk-row {
+    gap: 5px;
+  }
+
+  .vk-key {
+    height: 48px;
+    max-width: 56px;
+    font-size: 14px;
+    border-radius: 6px;
+  }
+
+  .vk-key--special,
+  .vk-key--modifier,
+  .vk-key--action {
+    font-size: 11px;
+  }
+
+  .vk-key--utility {
+    height: 38px;
+    font-size: 10px;
+  }
+
+  .vk-key--space {
+    min-width: 160px;
+  }
+
+  /* Arrow keys overlay */
+  .vk-arrows-overlay {
+    gap: 12px;
+    padding: 16px;
+    min-height: 180px;
+  }
+
+  .vk-arrows-grid {
+    gap: 6px;
+  }
+
+  .vk-arrows-row {
+    gap: 6px;
+  }
+
+  .vk-arrow-spacer {
+    width: 56px;
+    height: 52px;
+  }
+
+  .vk-key--arrow {
+    width: 56px;
+    height: 52px;
+    font-size: 12px;
+  }
+
+  .vk-arrows-close {
+    padding: 8px 20px;
+    font-size: 12px;
+  }
+}
+
+/* Large tablets (1024px+) - iPad Air, iPad Pro 11" */
+@media (min-width: 1024px) {
+  .virtual-keyboard {
+    padding: 6px 12px;
+  }
+
+  .vk-keyboard {
+    gap: 7px;
+  }
+
+  .vk-row {
+    gap: 6px;
+  }
+
+  .vk-key {
+    height: 52px;
+    max-width: 60px;
+    font-size: 15px;
+    border-radius: 7px;
+  }
+
+  .vk-key--special,
+  .vk-key--modifier,
+  .vk-key--action {
+    font-size: 12px;
+  }
+
+  .vk-key--utility {
+    height: 42px;
+    font-size: 11px;
+  }
+
+  .vk-key--space {
+    min-width: 180px;
+  }
+
+  .vk-arrow-spacer {
+    width: 60px;
+    height: 56px;
+  }
+
+  .vk-key--arrow {
+    width: 60px;
+    height: 56px;
+    font-size: 13px;
+  }
+}
+
+/* Extra large tablets (1200px+) - iPad Pro 12.9" */
+@media (min-width: 1200px) {
+  .vk-keyboard {
+    gap: 8px;
+  }
+
+  .vk-row {
+    gap: 7px;
+  }
+
+  .vk-key {
+    height: 56px;
+    max-width: 64px;
+    font-size: 16px;
+    border-radius: 8px;
+  }
+
+  .vk-key--special,
+  .vk-key--modifier,
+  .vk-key--action {
+    font-size: 13px;
+  }
+
+  .vk-key--utility {
+    height: 44px;
+    font-size: 12px;
+  }
+
+  .vk-key--space {
+    min-width: 200px;
+  }
+}
+
+/* Tablet landscape - keys in side panel */
+@media (min-width: 768px) and (orientation: landscape) {
+  .virtual-keyboard {
+    padding: 2px 4px;
+  }
+
+  .vk-keyboard {
+    gap: 4px;
+  }
+
+  .vk-row {
+    gap: 4px;
+  }
+
+  .vk-key {
+    height: 42px;
+    max-width: 48px;
+    font-size: 12px;
+  }
+
+  .vk-key--special,
+  .vk-key--modifier,
+  .vk-key--action {
+    font-size: 10px;
+  }
+
+  .vk-key--utility {
+    height: 34px;
+    font-size: 9px;
+  }
+
+  .vk-key--space {
+    min-width: 120px;
+  }
+}
+
+/* Large tablet landscape - wider side panel */
+@media (min-width: 1024px) and (orientation: landscape) {
+  .virtual-keyboard {
+    padding: 4px 6px;
+  }
+
+  .vk-keyboard {
+    gap: 5px;
+  }
+
+  .vk-row {
+    gap: 5px;
+  }
+
+  .vk-key {
+    height: 46px;
+    max-width: 52px;
+    font-size: 13px;
+  }
+
+  .vk-key--special,
+  .vk-key--modifier,
+  .vk-key--action {
+    font-size: 11px;
+  }
+
+  .vk-key--utility {
+    height: 36px;
+    font-size: 10px;
+  }
+
+  .vk-key--space {
+    min-width: 140px;
+  }
+}
+
+/* Extra large tablet landscape */
+@media (min-width: 1200px) and (orientation: landscape) {
+  .virtual-keyboard {
+    padding: 6px 8px;
+  }
+
+  .vk-keyboard {
+    gap: 6px;
+  }
+
+  .vk-row {
+    gap: 6px;
+  }
+
+  .vk-key {
+    height: 50px;
+    max-width: 56px;
+    font-size: 14px;
+  }
+
+  .vk-key--special,
+  .vk-key--modifier,
+  .vk-key--action {
+    font-size: 12px;
+  }
+
+  .vk-key--utility {
+    height: 40px;
+    font-size: 11px;
+  }
+
+  .vk-key--space {
+    min-width: 160px;
+  }
+}

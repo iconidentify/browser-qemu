@@ -1,0 +1,245 @@
+/**
+ * Trackpad styles - Creates a realistic trackpad surface
+ *
+ * Uses theme variables for consistent styling across themes.
+ * The trackpad has a recessed appearance with subtle depth.
+ */
+
+.trackpad {
+  /* Use theme variables with fallbacks */
+  --trackpad-bg: var(--housing-dark, #3A3836);
+  --trackpad-border: var(--housing-darker, #2A2826);
+  --trackpad-surface: var(--control-bg, #3E3C3A);
+
+  position: relative;
+  flex: 1; /* Fill container */
+  width: 100%;
+  max-width: 100%;
+  min-height: 60px;
+  margin: 0 auto;
+  padding: 8px;
+  border-radius: 12px;
+  background: var(--trackpad-bg);
+  box-shadow:
+    inset 0 2px 4px rgba(0, 0, 0, 0.2),
+    inset 0 0 0 1px rgba(0, 0, 0, 0.15),
+    0 1px 0 rgba(255, 255, 255, 0.05);
+
+  /* Prevent all browser touch behaviors - 'none' is more restrictive than 'manipulation'
+     and helps prevent iOS magnifying glass and Android gesture conflicts */
+  touch-action: none;
+  -webkit-touch-callout: none !important;
+  -webkit-user-select: none !important;
+  -webkit-user-drag: none;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-text-size-adjust: none;
+  user-select: none !important;
+
+  /* Prevent blue highlight/selection */
+  outline: none;
+  -webkit-focus-ring-color: transparent;
+
+  /* Smooth transitions for haptic feedback */
+  transition: transform 80ms ease-out, box-shadow 80ms ease-out;
+}
+
+/* Prevent iOS context menu and selection on all trackpad elements */
+.trackpad,
+.trackpad *,
+.trackpad *::before,
+.trackpad *::after {
+  -webkit-touch-callout: none !important;
+  -webkit-user-select: none !important;
+  -webkit-user-drag: none;
+  user-select: none !important;
+  outline: none;
+}
+
+.trackpad:focus {
+  /* No visible focus outline on trackpad */
+  outline: none;
+}
+
+.trackpad--disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.trackpad--touching {
+  /* Subtle indication of active touch */
+}
+
+/* Drag hold state - click maintained while repositioning finger */
+.trackpad--drag-held {
+  /* Subtle edge glow to indicate click is being held */
+  box-shadow:
+    inset 0 2px 4px rgba(0, 0, 0, 0.2),
+    inset 0 0 0 1px rgba(0, 0, 0, 0.15),
+    inset 0 0 12px rgba(255, 255, 255, 0.08),
+    0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.trackpad--drag-held .trackpad__surface {
+  /* Pulsing edge glow effect */
+  animation: trackpad-hold-pulse 800ms ease-in-out infinite;
+}
+
+@keyframes trackpad-hold-pulse {
+  0%, 100% {
+    box-shadow:
+      inset 0 1px 3px rgba(0, 0, 0, 0.15),
+      inset 0 0 0 1px rgba(0, 0, 0, 0.1),
+      inset 0 0 6px rgba(255, 255, 255, 0.06);
+  }
+  50% {
+    box-shadow:
+      inset 0 1px 3px rgba(0, 0, 0, 0.15),
+      inset 0 0 0 1px rgba(0, 0, 0, 0.1),
+      inset 0 0 10px rgba(255, 255, 255, 0.12);
+  }
+}
+
+/* Accessibility: Respect reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+  .trackpad--drag-held .trackpad__surface {
+    animation: none;
+    box-shadow:
+      inset 0 1px 3px rgba(0, 0, 0, 0.15),
+      inset 0 0 0 1px rgba(0, 0, 0, 0.1),
+      inset 0 0 8px rgba(255, 255, 255, 0.1);
+  }
+}
+
+.trackpad__surface {
+  position: absolute;
+  inset: 8px;
+  border-radius: 8px;
+  background: var(--trackpad-surface);
+  box-shadow:
+    inset 0 1px 3px rgba(0, 0, 0, 0.15),
+    inset 0 0 0 1px rgba(0, 0, 0, 0.1);
+
+  /* Subtle texture pattern */
+  background-image:
+    radial-gradient(
+      circle at center,
+      transparent 0%,
+      rgba(0, 0, 0, 0.02) 100%
+    );
+}
+
+/* Landscape orientation */
+@media (orientation: landscape) and (max-height: 500px) {
+  .trackpad {
+    padding: 6px;
+  }
+}
+
+/* Very small screens */
+@media (max-width: 360px) {
+  .trackpad {
+    padding: 6px;
+  }
+
+  .trackpad__surface {
+    inset: 6px;
+  }
+}
+
+/* Compact mode - trackpad fills its container, just adjust padding */
+.trackpad--compact {
+  /* Container controls height via flex: 1 */
+}
+
+@media (max-width: 360px) {
+  .trackpad--compact {
+    padding: 4px;
+  }
+
+  .trackpad--compact .trackpad__surface {
+    inset: 4px;
+  }
+}
+
+/* ============================================
+   TABLET BREAKPOINTS
+   Larger trackpad for iPads
+   ============================================ */
+
+/* Tablets (768px+) - iPad Mini, standard iPads */
+@media (min-width: 768px) {
+  .trackpad {
+    padding: 12px;
+    border-radius: 16px;
+  }
+
+  .trackpad__surface {
+    inset: 12px;
+    border-radius: 10px;
+  }
+}
+
+/* Large tablets (1024px+) - iPad Air, iPad Pro 11" */
+@media (min-width: 1024px) {
+  .trackpad {
+    padding: 14px;
+    border-radius: 18px;
+  }
+
+  .trackpad__surface {
+    inset: 14px;
+    border-radius: 12px;
+  }
+}
+
+/* Extra large tablets (1200px+) - iPad Pro 12.9" */
+@media (min-width: 1200px) {
+  .trackpad {
+    padding: 16px;
+    border-radius: 20px;
+  }
+
+  .trackpad__surface {
+    inset: 16px;
+    border-radius: 14px;
+  }
+}
+
+/* Tablet landscape - trackpad in side panel */
+@media (min-width: 768px) and (orientation: landscape) {
+  .trackpad {
+    padding: 10px;
+    border-radius: 14px;
+  }
+
+  .trackpad__surface {
+    inset: 10px;
+    border-radius: 8px;
+  }
+}
+
+/* Large tablet landscape */
+@media (min-width: 1024px) and (orientation: landscape) {
+  .trackpad {
+    padding: 12px;
+    border-radius: 16px;
+  }
+
+  .trackpad__surface {
+    inset: 12px;
+    border-radius: 10px;
+  }
+}
+
+/* Extra large tablet landscape */
+@media (min-width: 1200px) and (orientation: landscape) {
+  .trackpad {
+    padding: 14px;
+    border-radius: 18px;
+  }
+
+  .trackpad__surface {
+    inset: 14px;
+    border-radius: 12px;
+  }
+}

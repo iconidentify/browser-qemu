@@ -27,6 +27,7 @@
   const runRomProbeButton = document.getElementById("runRomProbe");
   const inputSelfTestButton = document.getElementById("inputSelfTest");
   const probeSnapshotButton = document.getElementById("probeSnapshot");
+  const guestTextInput = document.getElementById("guestText");
   const probeLog = document.getElementById("probeLog");
   const framebufferProbeCanvas = document.createElement("canvas");
   const framebufferProbeCtx = framebufferProbeCanvas.getContext("2d", { willReadFrequently: true });
@@ -96,10 +97,43 @@
   let qemuStartPaused = false;
   let qemuHeapMb = null;
   let qemuAutoPulseMs = 0;
+  let qemuAutoPulseMode = "sample";
   let qemuControlWorker = null;
   let qemuSharedInput = null;
+  let sharedInputBridge = null;
+  let sharedInputRetryTimer = 0;
+  let sharedInputRetryCount = 0;
   let qemuDiskWorker = null;
   let qemuDiskShared = null;
+  // Decoupled renderer: QEMU's SDL blit (patched in out.js) writes the current
+  // framebuffer {w,h,heap-ptr,generation} into this small shared control block
+  // instead of doing a synchronous main-thread putImageData. The page draws on
+  // its own paced timer (startScreenRenderer), reading pixels straight from the shared
+  // wasm heap -- the BasiliskII-style worker-writes / main-renders decoupling
+  // that keeps a throttled tab from wedging. Slots: [0]=MAGIC [1]=W [2]=H
+  // [3]=PTR(bytes) [4]=GENERATION. Mirror of patch-qemu-out-js-display.mjs.
+  const C89_SCREEN_MAGIC = 0x53435231; // "SCR1"
+  const FRAMEBUFFER_RELOCK_DELTA = 16;
+  let qemuScreenShared = null; // SharedArrayBuffer | null
+  let qemuScreenCtl = null;    // Int32Array over qemuScreenShared
+  let screenTimerId = 0;
+  let screenLastGen = -1;
+  let screenImage = null;      // ImageData (w x h), reused across frames
+  let screenImage32 = null;    // Int32Array over screenImage.data
+  let screenImage8 = null;     // Uint8Array over screenImage.data
+  let screenW = 0, screenH = 0;
+  let canvasDisplayW = canvas.width;
+  let canvasDisplayH = canvas.height;
+  let canvasDisplayLocked = false;
+  let canvasNativeFrameSeen = false;
+  let canvasDisplayMismatchLogged = false;
+  let canvasBackingMismatchLogged = false;
+  let hostCursorMode = "host";
+  let hostCursorCss = "";
+  const hostCursorCache = new Map();
+  let framesRendered = 0; // page-side frames drawn (decoupled renderer health)
+  let screenFpsLimit = 20;
+  let screenNextFrameAt = 0;
   let qemuDiskWriteRequested = false;
   let qemuDiskWriteMode = false;
   let qemuDiskReady = null;
@@ -114,10 +148,16 @@
   let lastHeartbeatAt = performance.now();
   let lastControlId = 0;
   let hmpMonitorActive = false;
+  let hmpInputMode = "shared";
   let mouseButtons = 0;
+  let guestMouseX = 0;
+  let guestMouseY = 0;
+  let guestMouseKnown = false;
   let pendingMouseDx = 0;
   let pendingMouseDy = 0;
   let mouseFlushTimer = 0;
+  let hmpKeyboardTextBuffer = "";
+  let hmpKeyboardTextTimer = 0;
   let inputSelfTestStayPaused = false;
   let runInputSelfTestAfterQemuReady = false;
   let diagnosticRunId = 0;
@@ -128,9 +168,22 @@
   let controlWorkerPollOkCount = 0;
   let controlWorkerPollLastError = "";
   let pulseRunActive = false;
+  let pulseRunMode = "sample";
   const serialLines = [];
+  let serialFrozen = false; // pause serial re-render while the user selects text
   const maxSerialLines = 1500;
   const maxSerialChars = 220000;
+  const serialRenderMinMs = 100;
+  let serialRenderTimer = 0;
+  let serialRenderDirty = false;
+  let lastSerialRenderAt = 0;
+  const probeStateMinMs = 250;
+  let probeStateTimer = 0;
+  let probeStateDirty = false;
+  const uiMetricMinMs = 80;
+  let eventMetricTimer = 0;
+  let mouseMetricTimer = 0;
+  let pendingMouseMetric = null;
   const browserLogMirror = {
     queue: [],
     scheduled: 0,
@@ -207,8 +260,33 @@
         break;
       }
     }
+    scheduleSerialRender();
+  }
+
+  // Re-render the serial log. Skipped while the user is selecting text in it
+  // (serialFrozen) so a fresh log line doesn't wipe the in-progress selection --
+  // the long-standing "near impossible to copy" annoyance.
+  function renderSerial() {
+    if (serialRenderTimer) {
+      window.clearTimeout(serialRenderTimer);
+      serialRenderTimer = 0;
+    }
+    serialRenderDirty = false;
+    lastSerialRenderAt = performance.now();
     serial.textContent = `${serialLines.join("\n")}\n`;
     serial.scrollTop = serial.scrollHeight;
+  }
+
+  function scheduleSerialRender() {
+    serialRenderDirty = true;
+    if (serialFrozen) return;
+    if (serialRenderTimer) return;
+    const elapsed = performance.now() - lastSerialRenderAt;
+    const delayMs = Math.max(0, serialRenderMinMs - elapsed);
+    serialRenderTimer = window.setTimeout(() => {
+      serialRenderTimer = 0;
+      if (serialRenderDirty && !serialFrozen) renderSerial();
+    }, delayMs);
   }
 
   function formatError(error) {
@@ -308,6 +386,175 @@
     return new Promise((resolve) => window.setTimeout(resolve, ms));
   }
 
+  function parseDisplayGeometry(value) {
+    const spec = String(value || "").toLowerCase().trim();
+    if (!spec) return null;
+    const match = /^(\d{3,4})x(\d{3,4})(?:x(\d+))?$/.exec(spec);
+    if (!match) return null;
+    const width = Number(match[1]);
+    const height = Number(match[2]);
+    const depth = Number(match[3] || 8);
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width < 320 || height < 240) {
+      return null;
+    }
+    return { width, height, depth };
+  }
+
+  function setCanvasDisplaySize(width, height, options = {}) {
+    const w = Math.max(1, Math.trunc(width));
+    const h = Math.max(1, Math.trunc(height));
+    canvasDisplayW = w;
+    canvasDisplayH = h;
+    if (options.lock) {
+      canvasDisplayLocked = true;
+    }
+    canvas.style.setProperty("--guest-width", `${w}px`);
+    canvas.style.setProperty("--guest-height", `${h}px`);
+    if (displayPanel) {
+      displayPanel.style.setProperty("--guest-width", `${w}px`);
+      displayPanel.style.setProperty("--guest-height", `${h}px`);
+    }
+    canvas.dataset.resolution = `${w}x${h}`;
+    if (options.resizeBacking) {
+      if (canvas.width !== w) canvas.width = w;
+      if (canvas.height !== h) canvas.height = h;
+    }
+    if (options.reason) {
+      log(`canvas display locked: ${w}x${h} (${options.reason})`);
+    }
+  }
+
+  function syncDisplayToCanvasBacking(reason) {
+    const w = canvas.width;
+    const h = canvas.height;
+    if (w <= 0 || h <= 0 || (w === canvasDisplayW && h === canvasDisplayH)) {
+      return false;
+    }
+    if (canvasDisplayLocked) {
+      if (!canvasBackingMismatchLogged) {
+        canvasBackingMismatchLogged = true;
+        log(`canvas backing ${w}x${h} differs from locked display ${canvasDisplayW}x${canvasDisplayH}; restoring locked native pixels (${reason})`);
+      }
+      canvas.width = canvasDisplayW;
+      canvas.height = canvasDisplayH;
+      screenLastGen = -1;
+      return true;
+    }
+    if (!canvasBackingMismatchLogged) {
+      canvasBackingMismatchLogged = true;
+      log(`canvas backing ${w}x${h} differs from display ${canvasDisplayW}x${canvasDisplayH}; snapping display to native pixels (${reason})`);
+    }
+    setCanvasDisplaySize(w, h);
+    return true;
+  }
+
+  function normalizeCursorMode(value) {
+    const mode = String(value || "").trim().toLowerCase();
+    if (mode === "none" || mode === "hidden" || mode === "off") return "none";
+    if (mode === "guest" || mode === "software" || mode === "framebuffer") return "guest";
+    return "host";
+  }
+
+  function clampCursorHotspot(value) {
+    const n = Math.trunc(Number(value) || 0);
+    return Math.max(0, Math.min(15, n));
+  }
+
+  function macCursorCacheKey(cursor) {
+    const bytes = cursor.bytes || [];
+    let key = `${cursor.hotspotX},${cursor.hotspotY}`;
+    for (let i = 0; i < bytes.length; i++) {
+      key += `,${bytes[i]}`;
+    }
+    return key;
+  }
+
+  function macCursorToCss(cursor) {
+    if (!cursor || !cursor.valid || !cursor.bytes || cursor.bytes.length !== 64) {
+      return "";
+    }
+    const hotspotX = clampCursorHotspot(cursor.hotspotX);
+    const hotspotY = clampCursorHotspot(cursor.hotspotY);
+    const cacheKey = macCursorCacheKey({ ...cursor, hotspotX, hotspotY });
+    const cached = hostCursorCache.get(cacheKey);
+    if (cached) return cached;
+
+    const cursorCanvas = document.createElement("canvas");
+    cursorCanvas.width = 16;
+    cursorCanvas.height = 16;
+    const cursorCtx = cursorCanvas.getContext("2d");
+    if (!cursorCtx) return "";
+
+    const image = cursorCtx.createImageData(16, 16);
+    let hasMask = false;
+    for (let i = 32; i < 64; i++) {
+      if (cursor.bytes[i]) {
+        hasMask = true;
+        break;
+      }
+    }
+
+    for (let y = 0; y < 16; y++) {
+      for (let x = 0; x < 16; x++) {
+        const byteIndex = y * 2 + Math.floor(x / 8);
+        const bitIndex = 7 - (x % 8);
+        const dataBit = (cursor.bytes[byteIndex] >> bitIndex) & 1;
+        const maskBit = (cursor.bytes[32 + byteIndex] >> bitIndex) & 1;
+        const pixelIndex = (y * 16 + x) * 4;
+        let alpha = 0;
+        let color = 0;
+
+        if (hasMask) {
+          if (maskBit) {
+            alpha = 255;
+            color = dataBit ? 0 : 255;
+          }
+        } else if (dataBit) {
+          alpha = 255;
+          color = 0;
+        }
+
+        image.data[pixelIndex + 0] = color;
+        image.data[pixelIndex + 1] = color;
+        image.data[pixelIndex + 2] = color;
+        image.data[pixelIndex + 3] = alpha;
+      }
+    }
+
+    cursorCtx.putImageData(image, 0, 0);
+    const result = `url("${cursorCanvas.toDataURL("image/png")}") ${hotspotX} ${hotspotY}, auto`;
+    if (hostCursorCache.size >= 32) {
+      const firstKey = hostCursorCache.keys().next().value;
+      if (firstKey) hostCursorCache.delete(firstKey);
+    }
+    hostCursorCache.set(cacheKey, result);
+    return result;
+  }
+
+  function pollSharedCursor() {
+    if (hostCursorMode !== "host" ||
+        !sharedInputBridge ||
+        typeof sharedInputBridge.readCursor !== "function") {
+      return;
+    }
+    const cursor = sharedInputBridge.readCursor();
+    if (!cursor) return;
+    hostCursorCss = macCursorToCss(cursor);
+    applyHostCursorMode();
+  }
+
+  function applyHostCursorMode() {
+    canvas.dataset.cursorMode = hostCursorMode;
+    if (hostCursorMode === "host") {
+      const cursor = hostCursorCss || getComputedStyle(document.documentElement)
+        .getPropertyValue("--mac-arrow-cursor")
+        .trim();
+      canvas.style.cursor = cursor || "default";
+    } else {
+      canvas.style.cursor = "none";
+    }
+  }
+
   function drawPlaceholder() {
     const w = canvas.width;
     const h = canvas.height;
@@ -330,6 +577,141 @@
     ctx.fillStyle = "#aeb7c2";
     ctx.fillText("SDL canvas display/input bridge ready", 54, 110);
     ctx.fillText("Canvas: 1152 x 870 x 8", 54, 134);
+  }
+
+  // Allocate the shared screen control block. Requires cross-origin isolation
+  // (SharedArrayBuffer). When unavailable we leave qemuScreenShared null and the
+  // patched blit falls through to the stock (synchronous) putImageData path.
+  function allocScreenShared() {
+    if (!window.crossOriginIsolated || typeof SharedArrayBuffer === "undefined") {
+      qemuScreenShared = null;
+      qemuScreenCtl = null;
+      log("decoupled renderer disabled: SharedArrayBuffer unavailable (stock blit)");
+      return;
+    }
+    qemuScreenShared = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 8);
+    qemuScreenCtl = new Int32Array(qemuScreenShared);
+    Atomics.store(qemuScreenCtl, 0, C89_SCREEN_MAGIC);
+    screenLastGen = -1;
+    log("decoupled renderer armed (worker writes framebuffer, page renders on paced timer)");
+  }
+
+  // Draw the latest published framebuffer to the canvas. Reads {w,h,ptr,gen}
+  // from the shared control block and copies pixels directly out of the shared
+  // wasm heap. Cheap and throttle-friendly: it runs on the page's own paced timer, so a
+  // backgrounded/throttled tab simply renders less often instead of blocking the
+  // QEMU worker (the stock synchronous-proxy blit was the core headed wedge).
+  function renderScreenFrame() {
+    if (!qemuScreenCtl || !qemuInstance) return false;
+    const gen = Atomics.load(qemuScreenCtl, 4);
+    if (gen === screenLastGen) return false;
+    const w = Atomics.load(qemuScreenCtl, 1);
+    const h = Atomics.load(qemuScreenCtl, 2);
+    const ptr = Atomics.load(qemuScreenCtl, 3);
+    if (w <= 0 || h <= 0 || !ptr) return false;
+
+    let heap32;
+    try {
+      heap32 = qemuInstance.HEAP32;
+    } catch (_e) {
+      return false;
+    }
+    if (!heap32 || !heap32.length) return false;
+    const src = ptr >>> 2;
+    const n = w * h;
+    if (src + n > heap32.length) return false; // stale ptr after a mode change
+
+    if (w !== screenW || h !== screenH || !screenImage) {
+      if (canvasDisplayLocked) {
+        const deltaW = Math.abs(w - canvasDisplayW);
+        const deltaH = Math.abs(h - canvasDisplayH);
+        if ((deltaW > FRAMEBUFFER_RELOCK_DELTA || deltaH > FRAMEBUFFER_RELOCK_DELTA) &&
+            (w !== canvasDisplayW || h !== canvasDisplayH)) {
+          setCanvasDisplaySize(w, h, {
+            lock: true,
+            resizeBacking: true,
+            reason: canvasNativeFrameSeen ? "framebuffer mode change" : "framebuffer native size",
+          });
+        }
+        canvasNativeFrameSeen = true;
+      }
+
+      const targetW = canvasDisplayLocked ? canvasDisplayW : w;
+      const targetH = canvasDisplayLocked ? canvasDisplayH : h;
+      if (canvas.width !== targetW) canvas.width = targetW;
+      if (canvas.height !== targetH) canvas.height = targetH;
+      if (!canvasDisplayLocked) {
+        setCanvasDisplaySize(w, h);
+      } else if (canvasNativeFrameSeen && (w !== canvasDisplayW || h !== canvasDisplayH)) {
+        if (!canvasDisplayMismatchLogged) {
+          canvasDisplayMismatchLogged = true;
+          log(`framebuffer ${w}x${h} differs from locked canvas ${canvasDisplayW}x${canvasDisplayH}; drawing clipped to locked native size`);
+        }
+      }
+      screenImage = ctx.createImageData(w, h);
+      screenImage32 = new Int32Array(screenImage.data.buffer);
+      screenImage8 = new Uint8Array(screenImage.data.buffer);
+      screenW = w;
+      screenH = h;
+    }
+
+    // Bulk-copy the 32-bit pixels, then force opaque alpha. QEMU's macfb blit
+    // packs R,G,B in the low three bytes; the 4th byte is undefined, so the
+    // stock path always overwrote alpha with 0xff -- we do the same.
+    screenImage32.set(heap32.subarray(src, src + n));
+    const d8 = screenImage8;
+    const end = n * 4;
+    for (let i = 3; i < end; i += 4) d8[i] = 0xff;
+    if (canvasDisplayLocked && (w !== canvas.width || h !== canvas.height)) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+    ctx.putImageData(screenImage, 0, 0);
+
+    screenLastGen = gen;
+    framesRendered++;
+    return true;
+  }
+
+  function screenRenderLoop(now) {
+    if (!screenTimerId) return;
+    const minFrameMs = screenFpsLimit > 0 ? 1000 / screenFpsLimit : 16;
+    const timestamp = Number.isFinite(now) ? now : performance.now();
+    if (timestamp >= screenNextFrameAt) {
+      window.requestAnimationFrame(() => {
+        if (!screenTimerId) return;
+        if (!renderScreenFrame()) {
+          syncDisplayToCanvasBacking("render loop");
+        }
+        pollSharedCursor();
+      });
+      screenNextFrameAt = timestamp + minFrameMs;
+    }
+    screenTimerId = window.setTimeout(screenRenderLoop, Math.max(8, minFrameMs * 0.85));
+  }
+
+  function startScreenRenderer() {
+    if (!qemuScreenCtl) return; // decoupled renderer not armed
+    if (screenTimerId) return;
+    screenLastGen = -1;
+    screenNextFrameAt = 0;
+    screenTimerId = window.setTimeout(screenRenderLoop, 0);
+    log(`page renderer started${screenFpsLimit > 0 ? ` (${screenFpsLimit} fps cap)` : " (uncapped)"}`);
+  }
+
+  function stopScreenRenderer() {
+    if (screenTimerId) {
+      window.clearTimeout(screenTimerId);
+      screenTimerId = 0;
+    }
+    screenImage = null;
+    screenImage32 = null;
+    screenImage8 = null;
+    screenW = 0;
+    screenH = 0;
+    qemuScreenShared = null;
+    qemuScreenCtl = null;
+    screenLastGen = -1;
+    screenNextFrameAt = 0;
   }
 
   function updateAssetMetrics() {
@@ -477,7 +859,7 @@
       transport = "dialtone";
     }
     const chunkKb = Number(params.get("diskChunkKb")) || 128;
-    const cacheMb = Number(params.get("diskCacheMb")) || 512;
+    const cacheMb = Number(params.get("diskCacheMb")) || 384;
     const token = params.get("diskToken") || "";
     const tabId = `c89-${Math.random().toString(36).slice(2, 10)}`;
     const control = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 16);
@@ -578,6 +960,76 @@
     qemuDiskWriteMode = false;
     qemuDiskReady = null;
     window.AuxQemuDiskWritable = false;
+  }
+
+  function startSharedInputBridge() {
+    if (hmpInputMode !== "shared" || !qemuInstance) return;
+    if (sharedInputBridge && sharedInputBridge.isReady()) return;
+    if (!window.createAuxSharedInputBridge) {
+      setStatus(qemuStatus, "Shared input missing", "error");
+      log("shared input bridge script missing; rebuild/runtime required");
+      updateCaptureState();
+      return;
+    }
+
+    try {
+      sharedInputBridge = window.createAuxSharedInputBridge({
+        module: qemuInstance,
+        canvas,
+        log,
+      });
+      sharedInputBridge.start();
+      if (sharedInputRetryTimer) {
+        window.clearTimeout(sharedInputRetryTimer);
+        sharedInputRetryTimer = 0;
+      }
+      sharedInputRetryCount = 0;
+      setStatus(qemuStatus, qemuStartPaused ? "QEMU paused" : "QEMU running", "ready");
+      log("input mode active: shared memory (68k_web-style)");
+    } catch (error) {
+      const message = formatError(error);
+      sharedInputBridge = null;
+      if (
+        qemuStarted &&
+        sharedInputRetryCount < 80 &&
+        (/backend not ready|magic mismatch/.test(message))
+      ) {
+        const attempt = sharedInputRetryCount;
+        const delay = Math.min(1000, 120 + sharedInputRetryCount * 60);
+        sharedInputRetryCount += 1;
+        setStatus(qemuStatus, "Shared input waiting", "warn");
+        if (attempt === 0) {
+          log(`shared input backend not ready yet; retrying (${message})`);
+        }
+        window.clearTimeout(sharedInputRetryTimer);
+        sharedInputRetryTimer = window.setTimeout(() => {
+          sharedInputRetryTimer = 0;
+          startSharedInputBridge();
+        }, delay);
+        updateCaptureState();
+        return;
+      }
+      setStatus(qemuStatus, "Shared input unavailable", "error");
+      log(`shared input unavailable: ${message} (no fallback)`);
+    }
+    updateCaptureState();
+  }
+
+  function stopSharedInputBridge() {
+    if (sharedInputRetryTimer) {
+      window.clearTimeout(sharedInputRetryTimer);
+      sharedInputRetryTimer = 0;
+    }
+    sharedInputRetryCount = 0;
+    if (sharedInputBridge) {
+      try {
+        sharedInputBridge.releaseAll();
+        sharedInputBridge.stop();
+      } catch {
+        // Best-effort cleanup during runtime teardown.
+      }
+      sharedInputBridge = null;
+    }
   }
 
   function createPtyShim(sharedInput) {
@@ -723,6 +1175,9 @@
 
     if (document.activeElement === canvas) pieces.push("focus");
     if (keyCapture) pieces.push("keys");
+    if (hmpInputMode === "hmp") pieces.push("hmp");
+    else if (hmpInputMode === "hybrid") pieces.push("hybrid");
+    else if (hmpInputMode === "shared") pieces.push(sharedInputBridge && sharedInputBridge.isReady() ? "shared" : "shared?");
     if (pointerLocked) pieces.push("pointer");
     if (fullscreen) pieces.push("fullscreen");
 
@@ -738,6 +1193,26 @@
 
   function updateEventMetric() {
     eventMetric.textContent = `${eventCounters.keydown + eventCounters.keyup} key / ${eventCounters.mousemove + eventCounters.mousedown + eventCounters.mouseup + eventCounters.wheel} mouse`;
+  }
+
+  function scheduleEventMetricUpdate() {
+    if (eventMetricTimer) return;
+    eventMetricTimer = window.setTimeout(() => {
+      eventMetricTimer = 0;
+      updateEventMetric();
+    }, uiMetricMinMs);
+  }
+
+  function setMouseMetric(x, y) {
+    pendingMouseMetric = `${x}, ${y}`;
+    if (mouseMetricTimer) return;
+    mouseMetricTimer = window.setTimeout(() => {
+      mouseMetricTimer = 0;
+      if (pendingMouseMetric !== null) {
+        mouseMetric.textContent = pendingMouseMetric;
+        pendingMouseMetric = null;
+      }
+    }, uiMetricMinMs);
   }
 
   function summarizeDiskIo(stats) {
@@ -901,7 +1376,7 @@
 
   function recordEvent(name) {
     eventCounters[name] += 1;
-    updateEventMetric();
+    scheduleEventMetricUpdate();
     updateProbeState();
   }
 
@@ -914,31 +1389,64 @@
       qemuStartPaused,
       qemuHeapMb,
       qemuAutoPulseMs,
+      qemuAutoPulseMode,
       lastControlId,
       hmpMonitorActive,
+      hmpInputMode,
+      sharedInput: sharedInputBridge ? sharedInputBridge.stats() : null,
       qemuStatus: qemuStatus.textContent,
       netStatus: netStatus.textContent,
       activeElement: document.activeElement ? document.activeElement.id || document.activeElement.tagName : "",
       capture: captureMetric.textContent,
       lastKey: lastKey.textContent,
       mouse: mouseMetric.textContent,
+      net: {
+        requested: netModeRequested,
+        zone: netZone,
+        status: netStatus.textContent,
+        bridgeRunning: Boolean(netBridge && netBridge.isRunning()),
+        bridgeStats: netBridge ? netBridge.stats() : null,
+      },
       ptyQueuedBytes: qemuPty ? qemuPty.queuedBytes() : 0,
       controlWorkerPollCount,
       controlWorkerPollAgeMs: controlWorkerPollAt ? Date.now() - controlWorkerPollAt : -1,
       controlWorkerPollOkCount,
       controlWorkerPollLastError,
+      pulseRun: {
+        active: pulseRunActive,
+        mode: pulseRunMode,
+      },
       ptyDroppedBytes: qemuPty ? qemuPty.droppedBytes() : 0,
       events: { ...eventCounters },
       canvas: {
         width: canvas.width,
         height: canvas.height,
+        displayWidth: canvasDisplayW,
+        displayHeight: canvasDisplayH,
+        displayLocked: canvasDisplayLocked,
         clientWidth: Math.round(canvas.getBoundingClientRect().width),
         clientHeight: Math.round(canvas.getBoundingClientRect().height),
       },
       framebuffer: framebufferProbe,
+      renderer: {
+        decoupled: Boolean(qemuScreenCtl),
+        active: Boolean(screenTimerId),
+        framesRendered,
+        fpsLimit: screenFpsLimit,
+        width: screenW,
+        height: screenH,
+        generation: qemuScreenCtl ? Atomics.load(qemuScreenCtl, 4) : -1,
+      },
+      memory: {
+        // Committed wasm linear memory (the big one), the disk worker's LRU
+        // cache, and the page JS heap -- summed, this is what can OOM a tab.
+        wasmMb: (qemuInstance && qemuInstance.HEAPU8) ? Math.round(qemuInstance.HEAPU8.length / 1048576) : 0,
+        diskCacheMb: (window.AuxDiskStats && window.AuxDiskStats.cacheBytes) ? Math.round(window.AuxDiskStats.cacheBytes / 1048576) : 0,
+        jsHeapMb: (performance && performance.memory) ? Math.round(performance.memory.usedJSHeapSize / 1048576) : -1,
+      },
       cpu: lastCpuRegister,
       diskIo: diskIoStats,
-      serialTail: serial.textContent.slice(-4000),
+      serialTail: serialLines.slice(-80).join("\n").slice(-4000),
     };
   }
 
@@ -967,6 +1475,8 @@
       capture: snapshot.capture,
       canvas: snapshot.canvas,
       framebuffer: snapshot.framebuffer,
+      renderer: snapshot.renderer,
+      memory: snapshot.memory,
       cpu: snapshot.cpu,
       diskIo,
       serialTail: snapshot.serialTail.split("\n").slice(-18).join("\n"),
@@ -980,6 +1490,25 @@
   }
 
   function updateProbeState() {
+    probeStateDirty = true;
+    if (probeStateTimer) return;
+    probeStateTimer = window.setTimeout(() => {
+      probeStateTimer = 0;
+      if (!probeStateDirty) return;
+      probeStateDirty = false;
+      probeState.textContent = JSON.stringify(readProbeSnapshot());
+      if (diagnosticLive) {
+        renderProbeLog("diagnostic running");
+      }
+    }, probeStateMinMs);
+  }
+
+  function updateProbeStateNow() {
+    if (probeStateTimer) {
+      window.clearTimeout(probeStateTimer);
+      probeStateTimer = 0;
+    }
+    probeStateDirty = false;
     probeState.textContent = JSON.stringify(readProbeSnapshot());
     if (diagnosticLive) {
       renderProbeLog("diagnostic running");
@@ -994,6 +1523,107 @@
     if (!target || target === canvas) return false;
     const tag = target.tagName;
     return target.isContentEditable || tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+  }
+
+  function stopNativeInputPropagation(event) {
+    event.stopPropagation();
+    if (typeof event.stopImmediatePropagation === "function") {
+      event.stopImmediatePropagation();
+    }
+  }
+
+  function useSharedInputBridge() {
+    return hmpInputMode === "shared" && sharedInputBridge && sharedInputBridge.isReady();
+  }
+
+  function shouldUseSharedKeyboardCapture(event) {
+    if (hmpInputMode !== "shared" || isEditableTarget(event.target)) return false;
+    return shouldCaptureEvent(event);
+  }
+
+  function handleSharedKeyboardCapture(event, down) {
+    if (!shouldUseSharedKeyboardCapture(event)) return false;
+    recordEvent(down ? "keydown" : "keyup");
+    lastKey.textContent = event.code || "";
+    event.preventDefault();
+    if (useSharedInputBridge()) {
+      sharedInputBridge.keyEvent(event, down);
+    }
+    stopNativeInputPropagation(event);
+    return true;
+  }
+
+  function shouldUseSharedPointerCapture(event) {
+    if (hmpInputMode !== "shared") return false;
+    return event.target === canvas || document.pointerLockElement === canvas;
+  }
+
+  function updateSharedPointerMetric(point) {
+    if (point) {
+      setMouseMetric(point.x, point.y);
+    }
+  }
+
+  function handleSharedPointerEvent(event) {
+    if (!shouldUseSharedPointerCapture(event)) return false;
+    const eventName = event.type === "pointermove"
+      ? "mousemove"
+      : event.type === "pointerup" || event.type === "pointercancel"
+        ? "mouseup"
+        : "mousedown";
+    recordEvent(eventName);
+
+    if (event.type === "pointerdown") {
+      focusCanvas();
+      if (canvas.setPointerCapture && event.pointerId != null) {
+        try {
+          canvas.setPointerCapture(event.pointerId);
+        } catch {
+          // Some synthetic/browser-driven pointer events are not capturable.
+        }
+      }
+    }
+
+    event.preventDefault();
+    if (event.type === "pointercancel") {
+      if (sharedInputBridge && typeof sharedInputBridge.releaseMouse === "function") {
+        sharedInputBridge.releaseMouse();
+      }
+    } else if (useSharedInputBridge()) {
+      updateSharedPointerMetric(sharedInputBridge.mouseEvent(event));
+    } else {
+      updateSharedPointerMetric(canvasGuestPoint(event));
+    }
+
+    if ((event.type === "pointerup" || event.type === "pointercancel") &&
+        canvas.releasePointerCapture && event.pointerId != null &&
+        canvas.hasPointerCapture && canvas.hasPointerCapture(event.pointerId)) {
+      try {
+        canvas.releasePointerCapture(event.pointerId);
+      } catch {
+        // Best-effort cleanup for browser automation events.
+      }
+    }
+
+    stopNativeInputPropagation(event);
+    return true;
+  }
+
+  function trapSharedMouseCompatibilityEvent(event) {
+    if (!shouldUseSharedPointerCapture(event)) return false;
+    event.preventDefault();
+    stopNativeInputPropagation(event);
+    return true;
+  }
+
+  function useHmpKeyboardFallback() {
+    if (hmpInputMode === "shared") return false;
+    return inputSelfTestStayPaused || !qemuInstance || hmpInputMode === "hmp";
+  }
+
+  function useHmpMouseFallback() {
+    if (hmpInputMode === "shared") return false;
+    return inputSelfTestStayPaused || !qemuInstance || hmpInputMode === "hmp" || hmpInputMode === "hybrid";
   }
 
   function queueInputHmp(command) {
@@ -1052,8 +1682,30 @@
     return "";
   }
 
+  function flushKeyboardTextBuffer() {
+    const text = hmpKeyboardTextBuffer;
+    hmpKeyboardTextBuffer = "";
+    hmpKeyboardTextTimer = 0;
+    if (!text) return;
+    sendGuestText(text, 35, { quiet: true });
+  }
+
+  function queueKeyboardText(text) {
+    hmpKeyboardTextBuffer += text;
+    if (!hmpKeyboardTextTimer) {
+      hmpKeyboardTextTimer = window.setTimeout(flushKeyboardTextBuffer, 25);
+    }
+  }
+
   function queueKeyboardEvent(event) {
     if (!shouldCaptureEvent(event) || event.repeat || event.type !== "keydown") return;
+
+    if (!event.metaKey && !event.ctrlKey && !event.altKey && event.key && event.key.length === 1) {
+      queueKeyboardText(event.key);
+      return;
+    }
+
+    flushKeyboardTextBuffer();
     const key = hmpKeyForEvent(event);
     if (!key) return;
     if (inputSelfTestStayPaused && queueInputHmp(`sendkey ${key}`)) {
@@ -1072,6 +1724,31 @@
     return mask;
   }
 
+  function canvasGuestPoint(event) {
+    const rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    const x = Math.max(0, Math.min(canvas.width - 1, Math.round((event.clientX - rect.left) * canvas.width / rect.width)));
+    const y = Math.max(0, Math.min(canvas.height - 1, Math.round((event.clientY - rect.top) * canvas.height / rect.height)));
+    return { x, y };
+  }
+
+  function queueMouseMoveToEvent(event, immediate = false) {
+    const point = canvasGuestPoint(event);
+    if (!point) return null;
+    if (!guestMouseKnown) {
+      guestMouseX = 0;
+      guestMouseY = 0;
+      guestMouseKnown = true;
+    }
+    const dx = point.x - guestMouseX;
+    const dy = point.y - guestMouseY;
+    guestMouseX = point.x;
+    guestMouseY = point.y;
+    queueMouseMove(dx, dy);
+    if (immediate) flushMouseMove();
+    return point;
+  }
+
   function flushMouseMove() {
     mouseFlushTimer = 0;
     const dx = pendingMouseDx;
@@ -1086,13 +1763,11 @@
     if (!qemuStarted || (!keyCapture && document.pointerLockElement !== canvas && document.activeElement !== canvas)) {
       return;
     }
-    // SDL delivers mouse input directly once the runtime is live; HMP
-    // mouse_move floods can wedge the monitor PTY during boot.
-    if (qemuInstance && !inputSelfTestStayPaused) return;
-    pendingMouseDx += Math.max(-512, Math.min(512, Math.trunc(dx || 0)));
-    pendingMouseDy += Math.max(-512, Math.min(512, Math.trunc(dy || 0)));
+    if (!useHmpMouseFallback()) return;
+    pendingMouseDx += Math.max(-2048, Math.min(2048, Math.trunc(dx || 0)));
+    pendingMouseDy += Math.max(-2048, Math.min(2048, Math.trunc(dy || 0)));
     if (!mouseFlushTimer) {
-      mouseFlushTimer = window.setTimeout(flushMouseMove, 80);
+      mouseFlushTimer = window.setTimeout(flushMouseMove, 120);
     }
   }
 
@@ -1100,7 +1775,7 @@
     if (!qemuStarted || (!keyCapture && document.pointerLockElement !== canvas && document.activeElement !== canvas)) {
       return;
     }
-    if (qemuInstance && !inputSelfTestStayPaused) return;
+    if (!useHmpMouseFallback()) return;
     const nextButtons = buttonMaskFromEvent(event);
     if (nextButtons === mouseButtons) return;
     mouseButtons = nextButtons;
@@ -1221,10 +1896,18 @@
     return Math.max(256, Math.min(2300, heapMb));
   }
 
-  function normalizePulseIntervalMs(value) {
+  function normalizePulseIntervalMs(value, minMs = 5000) {
     const intervalMs = Number.parseInt(value, 10);
     if (!Number.isFinite(intervalMs) || intervalMs <= 0) return 0;
-    return Math.max(5000, Math.min(60000, intervalMs));
+    return Math.max(minMs, Math.min(60000, intervalMs));
+  }
+
+  function normalizeFpsLimit(value) {
+    if (value === null || value === undefined || value === "") return 20;
+    const fps = Number.parseInt(value, 10);
+    if (!Number.isFinite(fps)) return 20;
+    if (fps <= 0) return 0;
+    return Math.max(5, Math.min(60, fps));
   }
 
   function selectedHeapMb() {
@@ -1277,12 +1960,12 @@
     const params = new URLSearchParams(window.location.search);
     const res = (params.get("res") || params.get("g") || "").toLowerCase().trim();
     if (!res) return args;
-    const m = /^(\d{3,4})x(\d{3,4})(?:x(\d+))?$/.exec(res);
-    if (!m) {
+    const geometry = parseDisplayGeometry(res);
+    if (!geometry) {
       log(`ignoring invalid ?res=${res} (use WxH, e.g. 800x600)`);
       return args;
     }
-    const geom = `${m[1]}x${m[2]}x${m[3] || "8"}`;
+    const geom = `${geometry.width}x${geometry.height}x${geometry.depth}`;
     const next = [...args];
     const gIndex = next.indexOf("-g");
     if (gIndex !== -1 && gIndex + 1 < next.length) {
@@ -1311,11 +1994,34 @@
     return next;
   }
 
+  function normalizeInputMode(value) {
+    const mode = String(value || "").trim().toLowerCase();
+    if (mode === "sdl") return "sdl";
+    if (mode === "hmp") return "hmp";
+    if (mode === "shared" || mode === "wasm" || mode === "sab" || mode === "68kweb") return "shared";
+    if (mode === "hybrid" || mode === "split" || mode === "hmp-mouse") return "hybrid";
+    return "shared";
+  }
+
   function initializeBootOptionsFromQuery() {
     const params = new URLSearchParams(window.location.search);
     if (ramSizeSelect && params.has("ram")) {
       ramSizeSelect.value = String(normalizeRamMb(params.get("ram")));
     }
+    const displayGeometry = parseDisplayGeometry(params.get("res") || params.get("g") || "");
+    if (displayGeometry) {
+      setCanvasDisplaySize(displayGeometry.width, displayGeometry.height, {
+        lock: true,
+        resizeBacking: true,
+        reason: "query resolution",
+      });
+    } else {
+      setCanvasDisplaySize(canvas.width, canvas.height);
+    }
+    hmpInputMode = normalizeInputMode(params.get("input") || params.get("inputMode") || "shared");
+    hostCursorMode = normalizeCursorMode(params.get("cursor") || params.get("cursorMode") || "host");
+    applyHostCursorMode();
+    screenFpsLimit = normalizeFpsLimit(params.get("fps"));
     if (paceCpuCheckbox) {
       const pace = (params.get("pace") || "").toLowerCase();
       if (pace === "0" || pace === "false" || pace === "off" || params.has("nopace")) {
@@ -1380,7 +2086,7 @@
       "-accel", "tcg,tb-size=500",
       "-L", "/pack/",
       "-bios", `/pack/${rom}`,
-      "-display", "sdl,gl=off,show-cursor=on",
+      "-display", "sdl,gl=off,show-cursor=off",
       "-g", "1152x870x8",
       "-audio", "none",
       "-drive", `file=/pack/${pram},format=raw,if=mtd,file.locking=off`,
@@ -1495,13 +2201,24 @@
     const resetButton = document.getElementById("resetQemu");
     qemuRuntimeDir = runtimeDir;
     qemuSharedInput = createSharedInputQueue();
+    allocScreenShared();
     qemuPty = createPtyShim(qemuSharedInput);
     qemuControlWorker = startControlWorker(qemuSharedInput);
     qemuDiskWorker = startDiskWorker(runtime, runtimeDir);
     qemuStartPaused = Boolean(options.startPaused);
     qemuHeapMb = selectedHeapMb();
-    qemuAutoPulseMs = normalizePulseIntervalMs(options.autoPulseMs);
+    qemuAutoPulseMode = options.autoPulseMode === "yield" ? "yield" : "sample";
+    qemuAutoPulseMs = normalizePulseIntervalMs(options.autoPulseMs, qemuAutoPulseMode === "yield" ? 1000 : 5000);
     hmpMonitorActive = false;
+    guestMouseX = 0;
+    guestMouseY = 0;
+    guestMouseKnown = false;
+    mouseButtons = 0;
+    hmpKeyboardTextBuffer = "";
+    if (hmpKeyboardTextTimer) {
+      window.clearTimeout(hmpKeyboardTextTimer);
+      hmpKeyboardTextTimer = 0;
+    }
     setStartButtonsDisabled(true);
     setHmpButtonsDisabled(false);
     resetButton.disabled = true;
@@ -1514,6 +2231,7 @@
       canvas,
       pty: qemuPty,
       c89Disk: qemuDiskShared || undefined,
+      c89Screen: qemuScreenShared || undefined,
       preRun: [createRuntimeDirs],
       // Pointer lock OFF: auto-requesting it on any canvas click engages real
       // pointer lock in a headed browser (no-op in headless), and the ensuing
@@ -1556,6 +2274,9 @@
         qemuStartPaused = false;
         qemuHeapMb = null;
         qemuAutoPulseMs = 0;
+        qemuAutoPulseMode = "sample";
+        stopSharedInputBridge();
+        stopScreenRenderer();
         stopControlWorker();
         stopDiskWorker();
         closeAuxAgent();
@@ -1605,16 +2326,18 @@
       ready.then((instance) => {
         qemuInstance = instance;
         window.AuxQemu = instance;
+        startScreenRenderer();
         setStatus(qemuStatus, qemuStartPaused ? "QEMU paused" : "QEMU running", "ready");
         displayPanel.classList.add("runtime-active");
         focusCanvas();
         log(qemuStartPaused ? "qemu runtime initialized with guest CPU paused" : "qemu runtime initialized");
+        startSharedInputBridge();
         if (runInputSelfTestAfterQemuReady) {
           runInputSelfTestAfterQemuReady = false;
           runInputSelfTest();
         }
         if (qemuAutoPulseMs) {
-          window.setTimeout(() => startPulseRun(qemuAutoPulseMs), 250);
+          window.setTimeout(() => startPulseRun(qemuAutoPulseMs, qemuAutoPulseMode), 250);
         }
         // With ?net=1, connect the relay bridge automatically once the runtime
         // (and the wasmbridge export) are live, so network access is one step.
@@ -1629,6 +2352,9 @@
         qemuStartPaused = false;
         qemuHeapMb = null;
         qemuAutoPulseMs = 0;
+        qemuAutoPulseMode = "sample";
+        stopSharedInputBridge();
+        stopScreenRenderer();
         stopControlWorker();
         stopDiskWorker();
         closeAuxAgent();
@@ -1647,6 +2373,9 @@
       qemuStartPaused = false;
       qemuHeapMb = null;
       qemuAutoPulseMs = 0;
+      qemuAutoPulseMode = "sample";
+      stopSharedInputBridge();
+      stopScreenRenderer();
       stopControlWorker();
       stopDiskWorker();
       closeAuxAgent();
@@ -1834,6 +2563,11 @@
     startPulseRun,
     stopPulseRun,
   };
+  window.AuxQemuInput = {
+    hmp: sendHmp,
+    key: sendHmpKey,
+    text: sendGuestText,
+  };
 
   function hmpShouldAppendCont(command, returnToGuest) {
     return returnToGuest && command.trim().toLowerCase() !== "cont";
@@ -1853,8 +2587,12 @@
       "runFor10s",
       "runFor30s",
       "runFor60s",
+      "pulseYield2s",
       "pulseRun30s",
       "pulseRunOff",
+      "sendGuestText",
+      "sendGuestTab",
+      "sendGuestReturn",
       "sendHmpCommand",
     ]) {
       document.getElementById(id).disabled = disabled;
@@ -1905,6 +2643,26 @@
     sendHmp(`sendkey ${key}`);
   }
 
+  function sendGuestText(text, delayMs = 45, options = {}) {
+    const value = String(text || "");
+    if (!value) return;
+    if (!qemuPty) {
+      log("guest text unavailable: QEMU is not running");
+      return;
+    }
+    if (!qemuControlWorker) {
+      log("guest text unavailable: control worker is not running");
+      return;
+    }
+
+    qemuControlWorker.postMessage({ type: "queue-text", text: value, delayMs });
+    hmpMonitorActive = false;
+    if (!options.quiet) {
+      log(`guest text queued: ${value.length} char${value.length === 1 ? "" : "s"}`);
+    }
+    updateProbeState();
+  }
+
   function runFor(durationMs) {
     const boundedMs = Math.max(250, Math.min(120000, Number(durationMs) || 2000));
 
@@ -1937,18 +2695,28 @@
     pulseRunActive = false;
   }
 
-  function setPulseRunState(active, intervalMs = 30000) {
+  function setPulseRunState(active, intervalMs = 30000, mode = pulseRunMode) {
     pulseRunActive = active;
+    pulseRunMode = mode === "yield" ? "yield" : "sample";
+    const yieldButton = document.getElementById("pulseYield2s");
     const startButton = document.getElementById("pulseRun30s");
     const stopButton = document.getElementById("pulseRunOff");
-    if (startButton) startButton.disabled = !qemuPty || active;
+    if (yieldButton) yieldButton.disabled = !qemuPty || (active && pulseRunMode === "yield");
+    if (startButton) startButton.disabled = !qemuPty || (active && pulseRunMode === "sample");
     if (stopButton) stopButton.disabled = !qemuPty || !active;
     if (active) {
-      setStatus(qemuStatus, `VM pulse ${(intervalMs / 1000).toFixed(0)}s`, "ready");
+      const label = pulseRunMode === "yield" ? "yield pulse" : "sample pulse";
+      setStatus(qemuStatus, `VM ${label} ${(intervalMs / 1000).toFixed(1)}s`, "ready");
     }
   }
 
-  function queuePulseSample() {
+  function queuePulseSample(mode = pulseRunMode) {
+    if (mode === "yield") {
+      sendHmp("stop", false);
+      sendHmp("cont", true);
+      return;
+    }
+
     sendHmp("stop", false);
     sendHmp("info status", false);
     sendHmp("info registers", false);
@@ -1956,8 +2724,11 @@
     sendHmp("cont", true);
   }
 
-  function startPulseRun(intervalMs = 30000) {
-    const boundedMs = Math.max(5000, Math.min(60000, Number(intervalMs) || 30000));
+  function startPulseRun(intervalMs = 30000, mode = "sample") {
+    const normalizedMode = mode === "yield" ? "yield" : "sample";
+    const minMs = normalizedMode === "yield" ? 1000 : 5000;
+    const fallbackMs = normalizedMode === "yield" ? 2000 : 30000;
+    const boundedMs = Math.max(minMs, Math.min(60000, Number(intervalMs) || fallbackMs));
 
     if (!qemuPty) {
       log("pulse run unavailable: QEMU is not running");
@@ -1967,15 +2738,15 @@
     clearPulseRunTimer();
 
     if (qemuControlWorker) {
-      qemuControlWorker.postMessage({ type: "start-pulse", intervalMs: boundedMs });
+      qemuControlWorker.postMessage({ type: "start-pulse", intervalMs: boundedMs, mode: normalizedMode });
     } else {
       sendHmp("cont", true);
-      pulseRunTimer = window.setInterval(queuePulseSample, boundedMs);
+      pulseRunTimer = window.setInterval(() => queuePulseSample(normalizedMode), boundedMs);
     }
 
     hmpMonitorActive = false;
-    setPulseRunState(true, boundedMs);
-    log(`pulse run started: ${(boundedMs / 1000).toFixed(0)}s cadence`);
+    setPulseRunState(true, boundedMs, normalizedMode);
+    log(`${normalizedMode} pulse run started: ${(boundedMs / 1000).toFixed(1)}s cadence`);
     updateProbeState();
   }
 
@@ -2077,8 +2848,11 @@
     const params = new URLSearchParams(window.location.search);
     const autostart = params.get("autostart");
     const shouldRunInputSelfTest = params.get("inputSelfTest") === "1";
+    const queryPulseMode = (params.get("pulseMode") || params.get("pulse_mode") || "").toLowerCase();
+    const normalizedQueryPulseMode = queryPulseMode === "yield" ? "yield" : "sample";
     const queryPulseMs = normalizePulseIntervalMs(
-      params.get("pulseMs") || params.get("pulse") || params.get("pulse_ms")
+      params.get("pulseMs") || params.get("pulse") || params.get("pulse_ms"),
+      normalizedQueryPulseMode === "yield" ? 1000 : 5000
     );
 
     if (!autostart && shouldRunInputSelfTest) {
@@ -2090,7 +2864,11 @@
 
     const autostartMap = {
       "lazy": ["qemu-lazy", {}],
-      "lazy-pulse": ["qemu-lazy", { startPaused: true, autoPulseMs: queryPulseMs || 30000 }],
+      "lazy-pulse": ["qemu-lazy", {
+        startPaused: true,
+        autoPulseMs: queryPulseMs || (normalizedQueryPulseMode === "yield" ? 2000 : 30000),
+        autoPulseMode: normalizedQueryPulseMode,
+      }],
       "lazy-paused": ["qemu-lazy", { startPaused: true }],
       "smoke": ["qemu-smoke", {}],
     };
@@ -2150,7 +2928,7 @@
         sendHmpKey(item.key);
       } else if (item.type === "pulse") {
         if (item.action === "start") {
-          startPulseRun(item.intervalMs);
+          startPulseRun(item.intervalMs, item.mode);
         } else if (item.action === "stop") {
           stopPulseRun();
         } else {
@@ -2192,6 +2970,8 @@
   agentCmd.addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); runAgentCommand(); } });
   document.getElementById("sendHmpA").addEventListener("click", () => sendHmpKey("a"));
   document.getElementById("sendHmpReturn").addEventListener("click", () => sendHmpKey("ret"));
+  document.getElementById("sendGuestTab").addEventListener("click", () => sendHmpKey("tab"));
+  document.getElementById("sendGuestReturn").addEventListener("click", () => sendHmpKey("ret"));
   document.getElementById("sendHmpHelp").addEventListener("click", () => sendHmp("help", false));
   document.getElementById("sendHmpStatus").addEventListener("click", () => sendHmp("info status", false));
   document.getElementById("sendHmpCont").addEventListener("click", () => sendHmp("cont", true));
@@ -2202,11 +2982,17 @@
   document.getElementById("runFor10s").addEventListener("click", () => runFor(10000));
   document.getElementById("runFor30s").addEventListener("click", () => runFor(30000));
   document.getElementById("runFor60s").addEventListener("click", () => runFor(60000));
-  document.getElementById("pulseRun30s").addEventListener("click", () => startPulseRun(30000));
+  document.getElementById("pulseYield2s").addEventListener("click", () => startPulseRun(2000, "yield"));
+  document.getElementById("pulseRun30s").addEventListener("click", () => startPulseRun(30000, "sample"));
   document.getElementById("pulseRunOff").addEventListener("click", stopPulseRun);
   inputSelfTestButton.addEventListener("click", runInputSelfTest);
   runRomProbeButton.addEventListener("click", runRomProbe);
   probeSnapshotButton.addEventListener("click", () => refreshProbe("manual snapshot"));
+  document.getElementById("guestTextForm").addEventListener("submit", (event) => {
+    event.preventDefault();
+    sendGuestText(guestTextInput.value);
+    guestTextInput.value = "";
+  });
   document.getElementById("hmpForm").addEventListener("submit", (event) => {
     event.preventDefault();
     sendHmp(
@@ -2217,6 +3003,37 @@
   document.getElementById("clearSerial").addEventListener("click", () => {
     serialLines.length = 0;
     serial.textContent = "";
+  });
+
+  // One-click copy of the whole serial log (no fighting the auto-scroll/refresh).
+  const copySerialButton = document.getElementById("copySerial");
+  if (copySerialButton) {
+    copySerialButton.addEventListener("click", async () => {
+      const text = serialLines.join("\n");
+      try {
+        await navigator.clipboard.writeText(text);
+        copySerialButton.textContent = "Copied";
+        window.setTimeout(() => { copySerialButton.textContent = "Copy log"; }, 1200);
+      } catch (e) {
+        // Fallback for non-secure contexts: select the log so the user can Cmd/Ctrl+C.
+        const range = document.createRange();
+        range.selectNodeContents(serial);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
+    });
+  }
+
+  // Don't wipe an in-progress selection in the serial log on the next log line.
+  serial.addEventListener("mousedown", () => { serialFrozen = true; });
+  document.addEventListener("mouseup", () => {
+    const sel = window.getSelection();
+    const selecting = sel && !sel.isCollapsed && serial.contains(sel.anchorNode);
+    if (!selecting && serialFrozen) {
+      serialFrozen = false;
+      renderSerial();
+    }
   });
 
   captureKeysButton.addEventListener("click", () => {
@@ -2251,10 +3068,19 @@
   canvas.addEventListener("blur", updateCaptureState);
   canvas.addEventListener("click", focusCanvas);
   canvas.addEventListener("contextmenu", (event) => {
-    if (qemuStarted || keyCapture) {
+    if (qemuStarted || keyCapture || hmpInputMode === "shared") {
       event.preventDefault();
+      stopNativeInputPropagation(event);
     }
   });
+
+  window.addEventListener("keydown", (event) => {
+    handleSharedKeyboardCapture(event, true);
+  }, { capture: true });
+
+  window.addEventListener("keyup", (event) => {
+    handleSharedKeyboardCapture(event, false);
+  }, { capture: true });
 
   canvas.addEventListener("keydown", (event) => {
     recordEvent("keydown");
@@ -2262,9 +3088,14 @@
     if (shouldCaptureEvent(event)) {
       event.preventDefault();
     }
-    // Once the runtime is live, SDL's own listeners deliver keys to the
-    // guest; injecting from the shell as well doubles every keystroke.
-    if (inputSelfTestStayPaused || !qemuInstance) {
+    if (hmpInputMode === "shared" && shouldCaptureEvent(event)) {
+      if (useSharedInputBridge()) {
+        sharedInputBridge.keyEvent(event, true);
+      }
+      stopNativeInputPropagation(event);
+      return;
+    }
+    if (useHmpKeyboardFallback()) {
       queueKeyboardEvent(event);
     }
   });
@@ -2275,30 +3106,75 @@
     if (shouldCaptureEvent(event)) {
       event.preventDefault();
     }
+    if (hmpInputMode === "shared" && shouldCaptureEvent(event)) {
+      if (useSharedInputBridge()) {
+        sharedInputBridge.keyEvent(event, false);
+      }
+      stopNativeInputPropagation(event);
+      return;
+    }
   });
 
   document.addEventListener("keydown", (event) => {
+    if (handleSharedKeyboardCapture(event, true)) return;
     if (event.target === canvas || isEditableTarget(event.target) || !keyCapture) return;
     recordEvent("keydown");
     lastKey.textContent = event.code;
     event.preventDefault();
-    if (inputSelfTestStayPaused || !qemuInstance) {
+    if (hmpInputMode === "shared") {
+      if (useSharedInputBridge()) {
+        sharedInputBridge.keyEvent(event, true);
+      }
+      stopNativeInputPropagation(event);
+      return;
+    }
+    if (useHmpKeyboardFallback()) {
       queueKeyboardEvent(event);
     }
   }, { capture: true });
 
   document.addEventListener("keyup", (event) => {
+    if (handleSharedKeyboardCapture(event, false)) return;
     if (event.target === canvas || isEditableTarget(event.target) || !keyCapture) return;
     recordEvent("keyup");
     lastKey.textContent = event.code;
     event.preventDefault();
+    if (hmpInputMode === "shared") {
+      if (useSharedInputBridge()) {
+        sharedInputBridge.keyEvent(event, false);
+      }
+      stopNativeInputPropagation(event);
+      return;
+    }
   }, { capture: true });
+
+  canvas.addEventListener("pointerdown", handleSharedPointerEvent, { capture: true });
+  canvas.addEventListener("pointermove", handleSharedPointerEvent, { capture: true });
+  canvas.addEventListener("pointerup", handleSharedPointerEvent, { capture: true });
+  canvas.addEventListener("pointercancel", handleSharedPointerEvent, { capture: true });
+
+  document.addEventListener("mousedown", trapSharedMouseCompatibilityEvent, { capture: true });
+  document.addEventListener("mouseup", trapSharedMouseCompatibilityEvent, { capture: true });
+  document.addEventListener("mousemove", trapSharedMouseCompatibilityEvent, { capture: true });
+  document.addEventListener("click", trapSharedMouseCompatibilityEvent, { capture: true });
+  document.addEventListener("dblclick", trapSharedMouseCompatibilityEvent, { capture: true });
+  document.addEventListener("contextmenu", trapSharedMouseCompatibilityEvent, { capture: true });
+  document.addEventListener("wheel", trapSharedMouseCompatibilityEvent, { capture: true, passive: false });
 
   canvas.addEventListener("mousedown", (event) => {
     recordEvent("mousedown");
     focusCanvas();
     if (qemuStarted || keyCapture) {
       event.preventDefault();
+    }
+    if (hmpInputMode === "shared") {
+      const point = useSharedInputBridge() ? sharedInputBridge.mouseEvent(event) : canvasGuestPoint(event);
+      if (point) setMouseMetric(point.x, point.y);
+      stopNativeInputPropagation(event);
+      return;
+    }
+    if (useHmpMouseFallback()) {
+      queueMouseMoveToEvent(event, true);
     }
     queueMouseButtons(event);
   });
@@ -2308,15 +3184,44 @@
     if (qemuStarted || keyCapture) {
       event.preventDefault();
     }
+    if (hmpInputMode === "shared") {
+      const point = useSharedInputBridge() ? sharedInputBridge.mouseEvent(event) : canvasGuestPoint(event);
+      if (point) setMouseMetric(point.x, point.y);
+      stopNativeInputPropagation(event);
+      return;
+    }
+    if (useHmpMouseFallback()) {
+      queueMouseMoveToEvent(event, true);
+    }
     queueMouseButtons(event);
   });
 
   canvas.addEventListener("mousemove", (event) => {
     recordEvent("mousemove");
+    const point = canvasGuestPoint(event);
+    if (point) {
+      setMouseMetric(point.x, point.y);
+    }
+    if (hmpInputMode === "shared") {
+      event.preventDefault();
+      if (useSharedInputBridge()) {
+        sharedInputBridge.mouseEvent(event);
+      }
+      stopNativeInputPropagation(event);
+      return;
+    }
+    if (useHmpMouseFallback()) {
+      // HMP input is a monitor command channel, not a high-rate event pipe.
+      // Only drag movement goes through continuously; ordinary hover movement
+      // is applied on the next click so boot/login cannot be flooded.
+      if (event.buttons) {
+        queueMouseMoveToEvent(event);
+      }
+      return;
+    }
     mouseX += event.movementX || 0;
     mouseY += event.movementY || 0;
-    mouseMetric.textContent = `${mouseX}, ${mouseY}`;
-    queueMouseMove(event.movementX || 0, event.movementY || 0);
+    setMouseMetric(mouseX, mouseY);
     if (window.AuxQemu && typeof window.AuxQemu.sendMouse === "function") {
       window.AuxQemu.sendMouse({
         dx: event.movementX || 0,
@@ -2331,6 +3236,9 @@
     if (qemuStarted || keyCapture) {
       event.preventDefault();
     }
+    if (hmpInputMode === "shared") {
+      stopNativeInputPropagation(event);
+    }
   }, { passive: false });
 
   document.addEventListener("pointerlockchange", () => {
@@ -2339,6 +3247,9 @@
   });
 
   document.addEventListener("fullscreenchange", updateCaptureState);
+  window.addEventListener("blur", () => {
+    if (sharedInputBridge) sharedInputBridge.releaseAll();
+  });
 
   initializeBootOptionsFromQuery();
   drawPlaceholder();
@@ -2360,6 +3271,9 @@
     heartbeat += 1;
     lastHeartbeatAt = performance.now();
     heartbeatMetric.textContent = String(heartbeat);
+    syncDisplayToCanvasBacking("heartbeat");
+    pollSharedCursor();
+    applyHostCursorMode();
     if (heartbeat % 2 === 0) sampleFramebuffer();
     if (heartbeat % 3 === 0) pollDiskIoStats();
     updateProbeState();

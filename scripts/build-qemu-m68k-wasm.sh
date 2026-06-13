@@ -59,6 +59,21 @@ if ! [[ "${QEMU_WASM_TOTAL_MEMORY_MB}" =~ ^[0-9]+$ ]]; then
   echo "QEMU_WASM_TOTAL_MEMORY_MB must be an integer megabyte value" >&2
   exit 2
 fi
+
+# Growable memory (browser-qemu OOM fix). The stock build links a FIXED
+# -sTOTAL_MEMORY, so every tab commits that much upfront (1280MB as shipped) and
+# the in-memory -snapshot overlay grows it further until a normal tab OOM-crashes.
+# With QEMU_WASM_GROW_MEMORY=1 we instead commit a small INITIAL_MEMORY and grow
+# on demand up to MAXIMUM_MEMORY, so a light session stays small. Opt-in; the
+# default keeps the fixed-memory behavior so existing build targets are unchanged.
+QEMU_WASM_GROW_MEMORY="${QEMU_WASM_GROW_MEMORY:-0}"
+QEMU_WASM_INITIAL_MEMORY_MB="${QEMU_WASM_INITIAL_MEMORY_MB:-384}"
+QEMU_WASM_MAXIMUM_MEMORY_MB="${QEMU_WASM_MAXIMUM_MEMORY_MB:-2048}"
+if [[ "${QEMU_WASM_GROW_MEMORY}" == "1" ]]; then
+  MEMORY_FLAGS="-sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=${QEMU_WASM_INITIAL_MEMORY_MB}MB -sMAXIMUM_MEMORY=${QEMU_WASM_MAXIMUM_MEMORY_MB}MB"
+else
+  MEMORY_FLAGS="-sTOTAL_MEMORY=${QEMU_WASM_TOTAL_MEMORY_MB}MB"
+fi
 if ! [[ "${QEMU_WASM_ESP_PDMA_FIFO_CAPACITY}" =~ ^[0-9]+$ ]] || [[ "${QEMU_WASM_ESP_PDMA_FIFO_CAPACITY}" -lt 16 ]]; then
   echo "QEMU_WASM_ESP_PDMA_FIFO_CAPACITY must be an integer >= 16" >&2
   exit 2
@@ -421,6 +436,40 @@ apply_qemu_wasm_source_patches() {
   if ! grep -q "wasmbridge.c" "${net_meson}"; then
     perl -0pi -e "s/(  'util\\.c',\\n)\\)\\)/\$1  'wasmbridge.c',\\n))/" "${net_meson}"
   fi
+
+  # browser-qemu input (Phase 1): a shared-memory input bridge inspired by
+  # 68k_web. JS writes pointer/key events into wasm memory; a QEMU main-loop
+  # timer injects directly into the q800 ADB devices, avoiding HMP monitor text
+  # commands for headed browser interaction.
+  local wasminput_src="${ROOT}/scripts/patches/qemu-wasm-wasminput.c"
+  local ui_meson="${QEMU_DIR}/ui/meson.build"
+  local adb_header="${QEMU_DIR}/include/hw/input/adb.h"
+  local adb_kbd="${QEMU_DIR}/hw/input/adb-kbd.c"
+  local adb_mouse="${QEMU_DIR}/hw/input/adb-mouse.c"
+  cp "${wasminput_src}" "${QEMU_DIR}/ui/wasminput.c"
+
+  if ! grep -q "wasminput.c" "${ui_meson}"; then
+    perl -0pi -e "s/(  'input\\.c',\\n)/\$1  'wasminput.c',\\n/" "${ui_meson}"
+  fi
+
+  if ! grep -q 'c89_adb_kbd_put_key' "${adb_header}"; then
+    perl -0pi -e 's/(#define TYPE_ADB_MOUSE "adb-mouse"\n)/$1\nvoid c89_adb_kbd_put_key(int adb_keycode, bool down);\nvoid c89_adb_mouse_event(int dx, int dy, int buttons_state);\n/' "${adb_header}"
+  fi
+  if ! grep -q 'c89_adb_mouse_set_event' "${adb_header}"; then
+    perl -0pi -e 's/(void c89_adb_mouse_event\(int dx, int dy, int buttons_state\);\n)/$1void c89_adb_mouse_set_event(int dx, int dy, int buttons_state);\n/' "${adb_header}"
+  fi
+
+  if ! grep -q 'c89_adb_keyboard' "${adb_kbd}"; then
+    perl -0pi -e 's/(struct ADBKeyboardClass \{\n    \/\*< private >\*\/\n    ADBDeviceClass parent_class;\n    \/\*< public >\*\/\n\n    DeviceRealize parent_realize;\n\};\n)/$1\nstatic KBDState *c89_adb_keyboard;\n/' "${adb_kbd}"
+    perl -0pi -e 's/(static int adb_kbd_poll\(ADBDevice \*d, uint8_t \*obuf\)\n)/void c89_adb_kbd_put_key(int adb_keycode, bool down)\n{\n    if (!c89_adb_keyboard || adb_keycode < 0 || adb_keycode > 0x7f) {\n        return;\n    }\n    adb_kbd_put_keycode(c89_adb_keyboard,\n                        down ? adb_keycode : (adb_keycode | 0x80));\n}\n\n$1/' "${adb_kbd}"
+    perl -0pi -e 's/(static void adb_kbd_realizefn\(DeviceState \*dev, Error \*\*errp\)\n\{\n    ADBKeyboardClass \*akc = ADB_KEYBOARD_GET_CLASS\(dev\);\n    akc->parent_realize\(dev, errp\);\n)/$1    c89_adb_keyboard = ADB_KEYBOARD(dev);\n/' "${adb_kbd}"
+  fi
+
+  if ! grep -q 'c89_adb_mouse' "${adb_mouse}"; then
+    perl -0pi -e 's/(struct ADBMouseClass \{\n    \/\*< public >\*\/\n    ADBDeviceClass parent_class;\n    \/\*< private >\*\/\n\n    DeviceRealize parent_realize;\n\};\n)/$1\nstatic MouseState *c89_adb_mouse;\n/' "${adb_mouse}"
+    perl -0pi -e 's/(static int adb_mouse_poll\(ADBDevice \*d, uint8_t \*obuf\)\n)/void c89_adb_mouse_event(int dx, int dy, int buttons_state)\n{\n    if (!c89_adb_mouse) {\n        return;\n    }\n    adb_mouse_event(c89_adb_mouse, dx, dy, 0, buttons_state);\n}\n\nvoid c89_adb_mouse_set_event(int dx, int dy, int buttons_state)\n{\n    if (!c89_adb_mouse) {\n        return;\n    }\n    c89_adb_mouse->dx = dx;\n    c89_adb_mouse->dy = dy;\n    c89_adb_mouse->dz = 0;\n    c89_adb_mouse->buttons_state = buttons_state;\n}\n\n$1/' "${adb_mouse}"
+    perl -0pi -e 's/(static void adb_mouse_realizefn\(DeviceState \*dev, Error \*\*errp\)\n\{\n    MouseState \*s = ADB_MOUSE\(dev\);\n    ADBMouseClass \*amc = ADB_MOUSE_GET_CLASS\(dev\);\n\n    amc->parent_realize\(dev, errp\);\n\n)/$1    c89_adb_mouse = s;\n/' "${adb_mouse}"
+  fi
 }
 
 apply_qemu_wasm_source_patches
@@ -556,7 +605,7 @@ if [[ "${QEMU_WASM_EMULATE_FUNCTION_POINTER_CASTS}" == "1" ]]; then
   QEMU_WASM_DYNAMIC_TB_START_ABI="fpcast"
 fi
 
-EXTRA_CFLAGS="-O3 -g -Wno-error=unused-command-line-argument -matomics -mbulk-memory -DNDEBUG -DG_DISABLE_ASSERT -D_GNU_SOURCE${ASC_READY_HACK_CFLAG}${ROM_RAMTEST_HACK_CFLAG}${ROM_DELAY_HACK_CFLAG}${VIA_TRACE_CFLAG}${ESP_TRACE_CFLAG}${ESP_PDMA_FIFO_CFLAG}${TCG_EXIT_PUMP_CFLAG}${TCI_CHAIN_PUMP_CFLAG}${TCI_ONLY_CFLAG}${SLEEP_PUMP_CFLAG}${MMIO_BACKOFF_CFLAG}${M68K_PC_TRACE_CFLAG}${M68K_EXC_TRACE_CFLAG}${M68K_TB_TRACE_CFLAG}${M68K_MOVEC_TLB_FLUSH_CFLAG}${M68K_MMU_WALK_TRACE_CFLAG}${WASM32_PGTABLE_TRACE_CFLAG}${ADB_AUTOPOLL_SUPPRESS_CFLAG}${VIA_T2_ONESHOT_HACK_CFLAG}${THREAD_YIELD_CFLAG} -sASYNCIFY=1 -pthread -sPROXY_TO_PTHREAD=1 -sFORCE_FILESYSTEM -sALLOW_TABLE_GROWTH -sTOTAL_MEMORY=${QEMU_WASM_TOTAL_MEMORY_MB}MB -sWASM_BIGINT -sMALLOC=mimalloc -sUSE_SDL=2${EMULATE_FUNCTION_POINTER_CASTS_CFLAG} --js-library=/build/node_modules/xterm-pty/emscripten-pty.js -sEXPORT_ES6=1 -sASYNCIFY_IMPORTS=ffi_call_js"
+EXTRA_CFLAGS="-O3 -g -Wno-error=unused-command-line-argument -matomics -mbulk-memory -DNDEBUG -DG_DISABLE_ASSERT -D_GNU_SOURCE${ASC_READY_HACK_CFLAG}${ROM_RAMTEST_HACK_CFLAG}${ROM_DELAY_HACK_CFLAG}${VIA_TRACE_CFLAG}${ESP_TRACE_CFLAG}${ESP_PDMA_FIFO_CFLAG}${TCG_EXIT_PUMP_CFLAG}${TCI_CHAIN_PUMP_CFLAG}${TCI_ONLY_CFLAG}${SLEEP_PUMP_CFLAG}${MMIO_BACKOFF_CFLAG}${M68K_PC_TRACE_CFLAG}${M68K_EXC_TRACE_CFLAG}${M68K_TB_TRACE_CFLAG}${M68K_MOVEC_TLB_FLUSH_CFLAG}${M68K_MMU_WALK_TRACE_CFLAG}${WASM32_PGTABLE_TRACE_CFLAG}${ADB_AUTOPOLL_SUPPRESS_CFLAG}${VIA_T2_ONESHOT_HACK_CFLAG}${THREAD_YIELD_CFLAG} -sASYNCIFY=1 -pthread -sPROXY_TO_PTHREAD=1 -sFORCE_FILESYSTEM -sALLOW_TABLE_GROWTH ${MEMORY_FLAGS} -sWASM_BIGINT -sMALLOC=mimalloc -sUSE_SDL=2${EMULATE_FUNCTION_POINTER_CASTS_CFLAG} --js-library=/build/node_modules/xterm-pty/emscripten-pty.js -sEXPORT_ES6=1 -sASYNCIFY_IMPORTS=ffi_call_js"
 EXTRA_LDFLAGS="-sUSE_SDL=2${EMULATE_FUNCTION_POINTER_CASTS_LDFLAG} -sEXPORTED_RUNTIME_METHODS=getTempRet0,setTempRet0,addFunction,removeFunction,TTY,FS"
 
 docker exec "${CONTAINER}" sh -lc "
@@ -601,6 +650,8 @@ done
 QEMU_WASM_DYNAMIC_TB_START_ABI="${QEMU_WASM_DYNAMIC_TB_START_ABI}" node "${ROOT}/scripts/patch-qemu-out-js-lazyfile.mjs" "${ROOT}/build/qemu/out.js"
 node "${ROOT}/scripts/patch-qemu-out-js-diskworker.mjs" "${ROOT}/build/qemu/out.js"
 node "${ROOT}/scripts/patch-qemu-out-js-net.mjs" "${ROOT}/build/qemu/out.js"
+node "${ROOT}/scripts/patch-qemu-out-js-input.mjs" "${ROOT}/build/qemu/out.js"
+node "${ROOT}/scripts/patch-qemu-out-js-display.mjs" "${ROOT}/build/qemu/out.js"
 if [[ -f "${ROOT}/build/qemu/qemu-system-m68k.worker.js" ]]; then
   node "${ROOT}/scripts/patch-qemu-worker-js.mjs" "${ROOT}/build/qemu/qemu-system-m68k.worker.js"
 fi

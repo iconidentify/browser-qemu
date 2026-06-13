@@ -44,6 +44,8 @@ cp "${QEMU_BUILD}/out.js" "${PUBLIC_QEMU}/out.js"
 cp "${QEMU_BUILD}/qemu-system-m68k.wasm" "${PUBLIC_QEMU}/qemu-system-m68k.wasm"
 cp "${QEMU_BUILD}/qemu-system-m68k.worker.js" "${PUBLIC_QEMU}/qemu-system-m68k.worker.js"
 
+node "${ROOT}/scripts/patch-qemu-out-js-input.mjs" "${PUBLIC_QEMU}/out.js"
+
 docker run --rm \
   -v "${PACK_DIR}:/pack:ro" \
   -v "${PUBLIC_QEMU}:/public-qemu" \
@@ -58,7 +60,7 @@ var args = [
   "-accel", "tcg,tb-size=500",
   "-L", "/pack/",
   "-bios", "/pack/Quadra800.rom",
-  "-display", "sdl,gl=off,show-cursor=on",
+  "-display", "sdl,gl=off,show-cursor=off",
   "-g", "1152x870x8",
   "-audio", "none",
 EOF

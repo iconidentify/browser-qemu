@@ -23,3 +23,19 @@ public/qemu-lazy/*
 !public/qemu-lazy/qemu-system-m68k.worker.js
 !public/qemu-lazy/qemu-system-m68k.wasm
 config-temp/
+
+# Imported 68k_web frontend build artifacts
+web/node_modules/
+web/dist/
+web/coverage/
+web/*.pem
+web/.DS_Store
+!web/vendor/
+web/vendor/*
+!web/vendor/emulator-bridge/
+!web/vendor/emulator-bridge/**
+
+# Local emulator assets; keep ROMs/disks/binary emulator drops out of git.
+web/public/disk/
+web/public/rom/
+web/public/emulator/

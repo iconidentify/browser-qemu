@@ -268,6 +268,8 @@ try {
       newLogLines: fresh.length,
       lastLogLine: fresh.length ? fresh[fresh.length - 1] : null,
       framebuffer: probeState && probeState.framebuffer ? probeState.framebuffer : null,
+      renderer: probeState && probeState.renderer ? probeState.renderer : null,
+      memory: probeState && probeState.memory ? probeState.memory : null,
       ranges: rangeStats && rangeStats.files ? rangeStats.files : rangeStats,
     }));
   }

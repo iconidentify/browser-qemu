@@ -1,0 +1,69 @@
+/**
+ * CpuLoadGraph Styles
+ *
+ * LED dot-matrix load history, designed to live on the tower's dark
+ * status panel. Palette matches the VU meter segments.
+ */
+
+.cpu-graph {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.cpu-graph-columns {
+  display: flex;
+  gap: 2px;
+  align-items: flex-end;
+}
+
+.cpu-col {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cpu-dot {
+  width: 3px;
+  height: 3px;
+  border-radius: 1px;
+  transition: opacity 0.15s ease;
+}
+
+/* Unlit dots - dark versions of their colors */
+.cpu-dot.green {
+  background: #0A2A14;
+}
+
+.cpu-dot.amber {
+  background: #2A2A0A;
+}
+
+.cpu-dot.red {
+  background: #2A0A0A;
+}
+
+/* Lit dots with subtle glow */
+.cpu-dot.green.lit {
+  background: #22C55E;
+  box-shadow: 0 0 3px rgba(34, 197, 94, 0.5);
+}
+
+.cpu-dot.amber.lit {
+  background: #EAB308;
+  box-shadow: 0 0 3px rgba(234, 179, 8, 0.5);
+}
+
+.cpu-dot.red.lit {
+  background: #EF4444;
+  box-shadow: 0 0 3px rgba(239, 68, 68, 0.6);
+}
+
+.cpu-graph-label {
+  font-family: var(--font-mono);
+  font-size: var(--font-label-size);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  color: var(--modem-label-color, #707070);
+  text-transform: uppercase;
+}

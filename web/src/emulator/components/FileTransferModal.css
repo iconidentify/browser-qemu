@@ -1,0 +1,300 @@
+/**
+ * FileTransferModal Styles
+ */
+
+.file-transfer-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(4px);
+  animation: modal-fade-in 150ms ease-out;
+}
+
+@keyframes modal-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.file-transfer-modal {
+  width: 380px;
+  max-width: 95vw;
+  background: var(--panel-bg, #1a1a1a);
+  border: 1px solid var(--panel-border, #333);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+  animation: modal-scale-in 150ms ease-out;
+}
+
+@keyframes modal-scale-in {
+  from {
+    transform: scale(0.95);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+/* Header */
+.file-transfer-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--panel-border, #333);
+}
+
+.file-transfer-modal-header h3 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary, #fff);
+}
+
+.file-transfer-close-btn {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--text-secondary, #888);
+  cursor: pointer;
+  transition: all 150ms ease;
+}
+
+.file-transfer-close-btn:hover {
+  background: var(--control-hover, rgba(255, 255, 255, 0.1));
+  color: var(--text-primary, #fff);
+}
+
+.file-transfer-close-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* Content */
+.file-transfer-modal-content {
+  padding: 1.25rem;
+}
+
+/* Progress */
+.file-transfer-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.file-transfer-progress-bar {
+  height: 8px;
+  background: var(--control-bg, #2a2a2a);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.file-transfer-progress-fill {
+  height: 100%;
+  background: var(--accent-primary, #4a9eff);
+  border-radius: 4px;
+  transition: width 200ms ease-out;
+}
+
+@keyframes progress-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+.file-transfer-progress-text {
+  font-size: 0.875rem;
+  color: var(--text-secondary, #888);
+  text-align: center;
+}
+
+/* Success */
+.file-transfer-success {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  text-align: center;
+}
+
+.file-transfer-success-icon {
+  width: 48px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(80, 200, 120, 0.15);
+  border-radius: 50%;
+  color: #50c878;
+}
+
+.file-transfer-success-icon svg {
+  width: 24px;
+  height: 24px;
+}
+
+.file-transfer-success-info {
+  width: 100%;
+}
+
+.file-transfer-disk-name {
+  margin: 0 0 0.25rem;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary, #fff);
+}
+
+.file-transfer-disk-size {
+  margin: 0 0 0.75rem;
+  font-size: 0.875rem;
+  color: var(--text-secondary, #888);
+}
+
+.file-transfer-file-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  background: var(--control-bg, #2a2a2a);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.file-transfer-file-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--panel-border, #333);
+  font-size: 0.8125rem;
+}
+
+.file-transfer-file-list li:last-child {
+  border-bottom: none;
+}
+
+.file-transfer-file-list .file-name {
+  color: var(--text-primary, #fff);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-transfer-file-list .file-type {
+  font-size: 0.6875rem;
+  color: var(--text-dim, #666);
+  font-family: monospace;
+  flex-shrink: 0;
+  margin-left: 0.5rem;
+}
+
+.file-transfer-file-list .file-list-more {
+  justify-content: center;
+  color: var(--text-dim, #666);
+  font-style: italic;
+}
+
+/* Error */
+.file-transfer-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  text-align: center;
+}
+
+.file-transfer-error-icon {
+  width: 48px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 100, 100, 0.15);
+  border-radius: 50%;
+  color: #ff6464;
+}
+
+.file-transfer-error-icon svg {
+  width: 24px;
+  height: 24px;
+}
+
+.file-transfer-error-message {
+  margin: 0;
+  font-size: 0.875rem;
+  color: #ff6464;
+}
+
+/* Footer */
+.file-transfer-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  padding: 1rem 1.25rem;
+  border-top: 1px solid var(--panel-border, #333);
+}
+
+.file-transfer-btn {
+  padding: 0.625rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 150ms ease;
+}
+
+.file-transfer-btn-primary {
+  background: var(--accent-primary, #4a9eff);
+  color: white;
+}
+
+.file-transfer-btn-primary:hover {
+  filter: brightness(1.1);
+}
+
+.file-transfer-btn-secondary {
+  background: var(--control-bg, #2a2a2a);
+  color: var(--text-secondary, #888);
+}
+
+.file-transfer-btn-secondary:hover {
+  background: var(--control-hover, rgba(255, 255, 255, 0.1));
+  color: var(--text-primary, #fff);
+}
+
+/* Mobile */
+@media (max-width: 560px) {
+  .file-transfer-modal {
+    width: 100%;
+    max-width: 100%;
+    border-radius: 16px 16px 0 0;
+    position: fixed;
+    bottom: 0;
+    animation: modal-slide-up 200ms ease-out;
+  }
+
+  @keyframes modal-slide-up {
+    from {
+      transform: translateY(100%);
+      opacity: 0;
+    }
+    to {
+      transform: translateY(0);
+      opacity: 1;
+    }
+  }
+
+  .file-transfer-modal-footer {
+    padding-bottom: max(1rem, env(safe-area-inset-bottom));
+  }
+}

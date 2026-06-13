@@ -205,7 +205,11 @@ function c89WrapQemuWasmStart(start) {
   }
  };
 }`;
-const instantiateWasmReplacement = `function c89ReadWasmU32(bytes, offset) {
+const instantiateWasmReplacement = `function c89QemuWasmHeapI8() {
+ return typeof GROWABLE_HEAP_I8 === "function" ? GROWABLE_HEAP_I8() : HEAP8;
+}
+
+function c89ReadWasmU32(bytes, offset) {
  var value = 0;
  var shift = 0;
  while (true) {
@@ -329,7 +333,8 @@ function c89WrapQemuWasmHelper(ptr, sig) {
 ${qemuWasmStartGlue}
 
 function instantiate_wasm() {
- const memory_v = new DataView(HEAP8.buffer);
+ const c89Heap8 = c89QemuWasmHeapI8();
+ const memory_v = new DataView(c89Heap8.buffer);
  const tb_ptr = memory_v.getInt32(Module.__wasm32_tb.tb_ptr_ptr, true);
  const export_vec_size = memory_v.getInt32(tb_ptr + 4, true);
  const export_vec_begin = tb_ptr + 4 + 4;
@@ -341,7 +346,7 @@ function instantiate_wasm() {
  const wasm_begin = tmp_body_begin + tmp_body_size + 4;
  const import_vec_size = memory_v.getInt32(wasm_begin + wasm_size, true);
  const import_vec_begin = wasm_begin + wasm_size + 4;
- const wasmBytes = new Uint8Array(HEAP8.slice(wasm_begin, wasm_begin + wasm_size));
+ const wasmBytes = new Uint8Array(c89Heap8.slice(wasm_begin, wasm_begin + wasm_size));
  const helperSigs = c89DecodeQemuWasmHelperSigs(wasmBytes);
  var helper = {};
  for (var i = 0; i < import_vec_size / 4; i++) {
@@ -354,6 +359,8 @@ function instantiate_wasm() {
  const fidx = addFunction(c89WrapQemuWasmStart(inst.exports.start), c89QemuWasmStartSig());
  return fidx;
 }`;
+const instantiateWasmFunctionPattern =
+  /function instantiate_wasm\(\) \{[\s\S]*?\n\}\n\nfunction remove_module_js\(\) \{/;
 
 let patched = false;
 
@@ -416,6 +423,31 @@ if (source.includes(ffiCallLine)) {
 }
 
 if (source.includes("function c89DecodeQemuWasmHelperSigs(bytes)")) {
+  if (!source.includes("function c89QemuWasmHeapI8()")) {
+    source = source.replace(
+      `function c89ReadWasmU32(bytes, offset) {`,
+      `function c89QemuWasmHeapI8() {
+ return typeof GROWABLE_HEAP_I8 === "function" ? GROWABLE_HEAP_I8() : HEAP8;
+}
+
+function c89ReadWasmU32(bytes, offset) {`
+    );
+    patched = true;
+  }
+  if (source.includes("const memory_v = new DataView(HEAP8.buffer);")) {
+    source = source.replace(
+      "const memory_v = new DataView(HEAP8.buffer);",
+      "const c89Heap8 = c89QemuWasmHeapI8();\n const memory_v = new DataView(c89Heap8.buffer);"
+    );
+    patched = true;
+  }
+  if (source.includes("const wasmBytes = new Uint8Array(HEAP8.slice(wasm_begin, wasm_begin + wasm_size));")) {
+    source = source.replace(
+      "const wasmBytes = new Uint8Array(HEAP8.slice(wasm_begin, wasm_begin + wasm_size));",
+      "const wasmBytes = new Uint8Array(c89Heap8.slice(wasm_begin, wasm_begin + wasm_size));"
+    );
+    patched = true;
+  }
   const staleMemoryLimitParser = `    } else if (kind === 2) {
      offset += 1;
      var minResult = c89ReadWasmU32(bytes, offset);
@@ -502,6 +534,11 @@ function instantiate_wasm() {`);
 } else if (instantiateWasmPattern.test(source)) {
   source = source.replace(instantiateWasmPattern, instantiateWasmReplacement);
   patched = true;
+} else if (instantiateWasmFunctionPattern.test(source)) {
+  source = source.replace(instantiateWasmFunctionPattern, `${instantiateWasmReplacement}
+
+function remove_module_js() {`);
+  patched = true;
 } else {
   console.error(`${file}: instantiate_wasm marker not found`);
   process.exit(1);
@@ -536,17 +573,23 @@ if (source.includes(ptyWaitLine)) {
 // by PTY_askToWaitAgain just before the wait, so use it to bound the sleep
 // and synthesize the regular timeout result when it expires.
 const ptyBoundedWaitPattern =
-  /(HEAP32\[PTY_atomicIndex\] = -1;\s*\n\s*PTY_waitForReadableWithAtomicImpl\(PTY_atomicIndex\);\s*\n)(\s*)Atomics\.wait\(HEAP32, PTY_atomicIndex, -1\);/;
+  /((HEAP32|GROWABLE_HEAP_I32\(\))\[PTY_atomicIndex\] = -1;\s*\n\s*PTY_waitForReadableWithAtomicImpl\(PTY_atomicIndex\);\s*\n)(\s*)Atomics\.wait\((HEAP32|GROWABLE_HEAP_I32\(\)), PTY_atomicIndex, -1\);/;
 
 if (!source.includes("c89 pty bounded wait")) {
   if (ptyBoundedWaitPattern.test(source)) {
     source = source.replace(
       ptyBoundedWaitPattern,
-      `$1$2/* c89 pty bounded wait; min 8ms so page-side proxy churn stays low */
-$2Atomics.wait(HEAP32, PTY_atomicIndex, -1,
-$2             PTY_pollTimeout >= 0 ? Math.max(PTY_pollTimeout, 8) : Infinity);
-$2/* If the page-side wake never arrived, report a plain poll timeout. */
-$2Atomics.compareExchange(HEAP32, PTY_atomicIndex, -1, 2);`
+      (match, prefix, heapStore, indent, heapWait) =>
+        `${prefix}${indent}/* c89 pty bounded wait. NEVER Infinity: when the monitor idle-waits
+${indent}   for stdin (PTY_pollTimeout < 0) an unbounded wait parks the QEMU main-loop
+${indent}   thread forever -- guest input does not wake this index and a throttled tab
+${indent}   can't deliver the page-side wake, so the whole VM freezes. Cap idle waits at
+${indent}   32ms so the loop always ticks (CPU + timers run, pending input is serviced);
+${indent}   the timed-out path below already handles "no data". min 8ms keeps churn low. */
+${indent}Atomics.wait(${heapWait}, PTY_atomicIndex, -1,
+${indent}             PTY_pollTimeout >= 0 ? Math.max(PTY_pollTimeout, 8) : 32);
+${indent}/* If the page-side wake never arrived, report a plain poll timeout. */
+${indent}Atomics.compareExchange(${heapWait}, PTY_atomicIndex, -1, 2);`
     );
     patched = true;
   } else {

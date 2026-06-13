@@ -41,7 +41,7 @@ for (let i = 0; i < args.length; i += 1) {
 options.zone = options.zone || "";
 options.relayWs = options.relayWs || "ws://127.0.0.1:8080/ethernet";
 if (!options.url) {
-  options.url = `${options.server}/?build=net-smoke&ram=128&heap=1280&pace=0&autostart=lazy&net=1` +
+  options.url = `${options.server}/?build=net-smoke&ram=128&heap=384&pace=0&autostart=lazy&net=1` +
     (options.zone ? `&netZone=${encodeURIComponent(options.zone)}` : "");
 }
 

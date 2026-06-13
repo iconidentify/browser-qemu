@@ -13,7 +13,7 @@ PULSE_MS ?= 30000
 ICOUNT ?= shift=10,sleep=off
 MAX_ICOUNT_SHIFT ?= 15
 
-.PHONY: help fetch build-qemu build-qemu-responsive build-qemu-lean build-qemu-balanced build-qemu-balanced-esp-pdma-fifo512 build-qemu-balanced-esp-pdma-fifo512-adb-suppress build-qemu-balanced-esp-pdma-fifo512-exitpump build-qemu-balanced-esp-pdma-fifo512-exitpump-esp-pc-trace build-qemu-balanced-esp-pdma-fifo512-chainpump build-qemu-balanced-esp-pdma-fifo512-chainpump-esp-pc-trace build-qemu-balanced-esp-pdma-fifo512-mmio-backoff-esp-pc-trace build-qemu-balanced-esp-pdma-fifo512-icount-shift build-qemu-balanced-esp-pdma-fifo512-esp-pc-trace build-qemu-balanced-t2-pc-trace build-qemu-balanced-t2-esp-trace build-qemu-balanced-t2-esp-pc-trace build-qemu-balanced-pgtable-trace build-qemu-balanced-dyn-tb build-qemu-balanced-dyn-tb-pc-trace build-qemu-balanced-dyn-tb-exc-trace build-qemu-balanced-dyn-tb-full-trace build-qemu-balanced-dyn-tb-mmu-walk-trace build-qemu-balanced-dyn-tb-pgtable-trace build-qemu-balanced-dyn-tb-movec-flush-trace build-qemu-balanced-dyn-tb-no-fpcast build-qemu-balanced-no-via-t2-hack build-qemu-balanced-pc-trace build-qemu-balanced-via-trace build-qemu-balanced-adb-suppress build-qemu-balanced-t2-adb-suppress build-native-qemu-wasm sync-runtime package package-local package-smoke package-lazy refresh-stable-runtime serve disk-relay disk-promote browser browser-log browser-log-clear hmp hmp-help hmp-status hmp-cont hmp-stop hmp-run-for hmp-pulse-start hmp-pulse-stop hmp-step hmp-rom-probe hmp-info-block hmp-info-registers hmp-info-qtree hmp-info-via hmp-key hmp-clear probe-rom-progress summarize-probes smoke-headless-browser watch-browser-boot smoke-headless-lazy-pulse smoke-headless-scsi smoke-headless-scsi-series smoke-headless-scsi-continuous smoke-headless-via-series smoke-headless-via-scsi-series smoke-headless-via-scsi-icount-series smoke-headless-via-scsi-built-icount-series smoke-headless-via-scsi-pc-trace-long smoke-headless-via-scsi-fifo512-pc-trace-long smoke-headless-via-scsi-exitpump-pc-trace-long smoke-headless-scsi-exitpump-continuous-long smoke-headless-via-scsi-chainpump-pc-trace-long smoke-headless-scsi-chainpump-continuous-long smoke-headless-scsi-mmio-backoff-continuous-long smoke-headless-scsi-esp-trace-long smoke-headless-scsi-pc-trace-long probe-native-qemu probe-native-qemu-wasm clean
+.PHONY: help fetch build-qemu build-qemu-responsive build-qemu-lean build-qemu-balanced build-qemu-grow build-qemu-balanced-esp-pdma-fifo512 build-qemu-balanced-esp-pdma-fifo512-adb-suppress build-qemu-balanced-esp-pdma-fifo512-exitpump build-qemu-balanced-esp-pdma-fifo512-exitpump-esp-pc-trace build-qemu-balanced-esp-pdma-fifo512-chainpump build-qemu-balanced-esp-pdma-fifo512-chainpump-esp-pc-trace build-qemu-balanced-esp-pdma-fifo512-mmio-backoff-esp-pc-trace build-qemu-balanced-esp-pdma-fifo512-icount-shift build-qemu-balanced-esp-pdma-fifo512-esp-pc-trace build-qemu-balanced-t2-pc-trace build-qemu-balanced-t2-esp-trace build-qemu-balanced-t2-esp-pc-trace build-qemu-balanced-pgtable-trace build-qemu-balanced-dyn-tb build-qemu-balanced-dyn-tb-pc-trace build-qemu-balanced-dyn-tb-exc-trace build-qemu-balanced-dyn-tb-full-trace build-qemu-balanced-dyn-tb-mmu-walk-trace build-qemu-balanced-dyn-tb-pgtable-trace build-qemu-balanced-dyn-tb-movec-flush-trace build-qemu-balanced-dyn-tb-no-fpcast build-qemu-balanced-no-via-t2-hack build-qemu-balanced-pc-trace build-qemu-balanced-via-trace build-qemu-balanced-adb-suppress build-qemu-balanced-t2-adb-suppress build-native-qemu-wasm sync-runtime package package-local package-smoke package-lazy refresh-stable-runtime serve disk-relay disk-promote browser browser-interactive browser-shared-input browser-stop browser-log browser-log-clear hmp hmp-help hmp-status hmp-cont hmp-stop hmp-run-for hmp-pulse-start hmp-yield-pulse-start hmp-sample-pulse-start hmp-pulse-stop hmp-step hmp-rom-probe hmp-info-block hmp-info-registers hmp-info-qtree hmp-info-via hmp-key hmp-text hmp-clear probe-rom-progress summarize-probes smoke-headless-browser watch-browser-boot smoke-headless-lazy-pulse smoke-headless-scsi smoke-headless-scsi-series smoke-headless-scsi-continuous smoke-headless-via-series smoke-headless-via-scsi-series smoke-headless-via-scsi-icount-series smoke-headless-via-scsi-built-icount-series smoke-headless-via-scsi-pc-trace-long smoke-headless-via-scsi-fifo512-pc-trace-long smoke-headless-via-scsi-exitpump-pc-trace-long smoke-headless-scsi-exitpump-continuous-long smoke-headless-via-scsi-chainpump-pc-trace-long smoke-headless-scsi-chainpump-continuous-long smoke-headless-scsi-mmio-backoff-continuous-long smoke-headless-scsi-esp-trace-long smoke-headless-scsi-pc-trace-long probe-native-qemu probe-native-qemu-wasm build-ui serve-ui clean
 
 help:
 	@printf '%s\n' \
@@ -56,8 +56,13 @@ help:
 		'  make package-lazy Package ROM/PRAM plus range-served lazy disk images into public/qemu-lazy/' \
 		'  make refresh-stable-runtime Rebuild balanced runtime and refresh qemu-smoke/qemu-lazy packages' \
 		'  make serve       Serve public/ with COOP/COEP headers for Emscripten pthreads' \
+		'  make build-ui    Build the common-layer React frontend (web/) and link the QEMU runtime' \
+		'  make serve-ui    Serve the React frontend on :8090 (open /?core=qemu for A/UX)' \
 		'  make disk-relay [BROWSER=1] Start the dialtone relay on a writable disk copy and print the admin write URL' \
 		'  make disk-promote [FORCE=1] Publish your disk edits to assets/AUX3.img (then make package-lazy)' \
+		'  make browser-interactive Launch responsive headed Chrome with pulse boot cadence, shared ADB input, 8 fps cap' \
+		'  make browser-shared-input Launch responsive headed Chrome with 68k_web-style shared input and pulse boot cadence' \
+		'  make browser-stop Stop temp-profile Chrome instances launched by browser-qemu' \
 		'  make browser-log Read mirrored browser serial/debug log from local dev server' \
 		'  make browser-log-clear Clear mirrored browser serial/debug log on local dev server' \
 		'  make hmp-help    Queue HMP help through public/control.local.json' \
@@ -66,7 +71,9 @@ help:
 		'  make hmp-cont    Queue HMP cont and return to guest mode' \
 		'  make hmp-stop    Queue HMP stop and stay in monitor mode' \
 		'  make hmp-run-for DURATION=5 Experimental short run, then stop/status' \
-		'  make hmp-pulse-start INTERVAL=30 Start browser-worker 30s stop/sample/cont cadence' \
+		'  make hmp-yield-pulse-start INTERVAL=2 Start lightweight stop/cont cadence for interaction' \
+		'  make hmp-sample-pulse-start INTERVAL=30 Start diagnostic stop/status/register/block/cont cadence' \
+		'  make hmp-pulse-start INTERVAL=2 Alias for lightweight yield pulse' \
 		'  make hmp-pulse-stop Stop browser-worker pulse cadence without stopping the VM' \
 		'  make hmp-step DURATION=5 Experimental short run, then stop/status/registers' \
 		'  make hmp-rom-probe DURATION=5 Queue status/block, run, stop, registers/block' \
@@ -75,6 +82,7 @@ help:
 		'  make hmp-info-qtree Queue HMP info qtree' \
 		'  make hmp-info-via Queue HMP info via' \
 		'  make hmp-key KEY=a Queue an HMP sendkey command through public/control.local.json' \
+		'  make hmp-text TEXT=root Queue guest text through public/control.local.json' \
 		'  make hmp-clear   Clear queued browser control commands' \
 		'  make probe-rom-progress DURATION=5 Summarize a timed browser ROM/HMP probe' \
 		'  make summarize-probes PROBES="build/probes/*.json" Summarize saved browser/native probe JSON' \
@@ -114,6 +122,12 @@ build-qemu-lean:
 
 build-qemu-balanced:
 	QEMU_WASM_TOTAL_MEMORY_MB=1280 WASM32_QUEUE_PUMP_INTERVAL=32 QEMU_WASM_THREAD_YIELD=1 ./scripts/build-qemu-m68k-wasm.sh
+
+# Growable-memory build: the OOM fix. Commits ~384MB upfront and grows on demand
+# instead of the fixed 1280MB, so a normal tab stops crashing on long sessions.
+# Long (~20-40 min, Docker, CPU-heavy). After it finishes: make package-lazy.
+build-qemu-grow:
+	QEMU_WASM_GROW_MEMORY=1 QEMU_WASM_INITIAL_MEMORY_MB=384 QEMU_WASM_MAXIMUM_MEMORY_MB=2048 WASM32_QUEUE_PUMP_INTERVAL=32 QEMU_WASM_THREAD_YIELD=1 ./scripts/build-qemu-m68k-wasm.sh
 
 build-qemu-balanced-esp-pdma-fifo512:
 	QEMU_WASM_TOTAL_MEMORY_MB=1280 QEMU_WASM_ESP_PDMA_FIFO_CAPACITY=512 WASM32_QUEUE_PUMP_INTERVAL=32 QEMU_WASM_THREAD_YIELD=1 ./scripts/build-qemu-m68k-wasm.sh
@@ -216,8 +230,38 @@ refresh-stable-runtime: build-qemu-balanced package-smoke package-lazy
 serve:
 	python3 ./scripts/serve_with_headers.py ./public 8088
 
+# Common-layer React frontend (web/): the 68k_web shell driving QEMU A/UX or
+# Basilisk through one CoreAdapter interface. Needs node >= 18 (use the nvm 23
+# toolchain if the shell default is older). build-ui produces web/dist and links
+# the QEMU runtime in; serve-ui hosts it with range + COOP/COEP on :8090.
+# Open http://127.0.0.1:8090/?core=qemu  (A/UX)  or  /?core=basilisk (default).
+build-ui:
+	cd web && npm install && npm run build
+	ln -sfn ../../public/qemu-lazy web/dist/qemu-lazy
+
+serve-ui:
+	@[ -e web/dist/index.html ] || { echo "run 'make build-ui' first"; exit 1; }
+	@[ -L web/dist/qemu-lazy ] || ln -sfn ../../public/qemu-lazy web/dist/qemu-lazy
+	python3 ./scripts/serve_with_headers.py ./web/dist 8090
+
 browser:
 	./scripts/launch-aux-chrome.sh
+
+browser-interactive:
+	RES=800x600 INPUT=shared FPS=8 PACE=1 AUTOSTART=lazy-pulse PULSE_MS=2000 PULSE_MODE=yield ./scripts/launch-aux-chrome.sh
+
+browser-shared-input:
+	RES=800x600 INPUT=shared FPS=8 PACE=1 AUTOSTART=lazy-pulse PULSE_MS=2000 PULSE_MODE=yield ./scripts/launch-aux-chrome.sh
+
+browser-stop:
+	@pids="$$(pgrep -f 'c89-aux-chrome' || true)"; \
+	  if [[ -z "$${pids}" ]]; then \
+	    echo 'no browser-qemu temp-profile Chrome processes found'; \
+	  else \
+	    echo "$${pids}" | xargs kill; \
+	    echo 'stopped browser-qemu Chrome process(es):'; \
+	    printf '%s\n' "$${pids}"; \
+	  fi
 
 disk-relay:
 	./scripts/disk-relay.sh
@@ -259,11 +303,21 @@ hmp-run-for:
 	  node ./scripts/send-browser-control.mjs hmp 'info status' --stay-monitor
 
 hmp-pulse-start:
+	@$(MAKE) --no-print-directory hmp-yield-pulse-start
+
+hmp-yield-pulse-start:
+	@interval="$${INTERVAL:-2}"; \
+	  if ! [[ "$${interval}" =~ ^[0-9]+$$ ]]; then echo 'INTERVAL must be integer seconds, 1..60' >&2; exit 2; fi; \
+	  if (( interval < 1 )); then interval=1; fi; \
+	  if (( interval > 60 )); then interval=60; fi; \
+	  node ./scripts/send-browser-control.mjs pulse start --mode yield --interval-ms "$$(( interval * 1000 ))"
+
+hmp-sample-pulse-start:
 	@interval="$${INTERVAL:-30}"; \
 	  if ! [[ "$${interval}" =~ ^[0-9]+$$ ]]; then echo 'INTERVAL must be integer seconds, 5..60' >&2; exit 2; fi; \
 	  if (( interval < 5 )); then interval=5; fi; \
 	  if (( interval > 60 )); then interval=60; fi; \
-	  node ./scripts/send-browser-control.mjs pulse start --interval-ms "$$(( interval * 1000 ))"
+	  node ./scripts/send-browser-control.mjs pulse start --mode sample --interval-ms "$$(( interval * 1000 ))"
 
 hmp-pulse-stop:
 	node ./scripts/send-browser-control.mjs pulse stop
@@ -302,6 +356,10 @@ hmp-info-via:
 hmp-key:
 	@if [[ -z "$${KEY:-}" ]]; then echo 'Usage: make hmp-key KEY=a' >&2; exit 2; fi
 	node ./scripts/send-browser-control.mjs key "$${KEY}"
+
+hmp-text:
+	@if [[ -z "$${TEXT:-}" ]]; then echo 'Usage: make hmp-text TEXT=root' >&2; exit 2; fi
+	node ./scripts/send-browser-control.mjs text "$${TEXT}"
 
 hmp-clear:
 	rm -f ./public/control.local.json ./public/control.local.seq

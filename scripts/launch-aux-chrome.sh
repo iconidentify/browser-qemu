@@ -1,33 +1,45 @@
 #!/usr/bin/env bash
 # Launch Chrome configured for reliable A/UX wasm boots.
 #
-# The lazy-disk path services every guest disk read with a synchronous XHR on
-# the page's main thread while the QEMU worker spin-waits on the result. Stock
-# Chrome deprioritizes renderers for unfocused or occluded windows, and that
-# priority drop can permanently lose a wakeup in this handshake, wedging the
-# boot (5 of 6 interactive boots on June 12, 2026). The flags below pin the
-# renderer at full priority; with them the boot succeeded 4 of 4 times.
-# Remove this workaround once disk I/O moves off the main thread.
+# Headed runs need to keep the page responsive while qemu-wasm's pthread build
+# still performs a lot of synchronous proxy work on Chrome's renderer thread.
+# The default URL therefore uses QEMU's paced CPU path plus the worker-backed
+# pulse cadence. Keep pace=0 for headless/instrumented progress probes, not for
+# casual headed sessions, because it can monopolize Chrome before the pulse stop
+# timer gets a chance to fire.
 set -euo pipefail
 
 CHROME="${CHROME:-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome}"
 PORT="${PORT:-8088}"
 RAM="${RAM:-128}"
-HEAP="${HEAP:-1280}"
-AUTOSTART="${AUTOSTART:-lazy}"
+HEAP="${HEAP:-384}"
+PACE="${PACE:-1}"
+ICOUNT="${ICOUNT:-}"
+AUTOSTART="${AUTOSTART:-lazy-pulse}"
+PULSE_MS="${PULSE_MS:-2000}"
+PULSE_MODE="${PULSE_MODE:-yield}"
 BUILD="${BUILD:-local-$$}"
 DEBUG_PORT="${DEBUG_PORT:-9444}"
+INPUT="${INPUT:-shared}" # shared = 68k_web-style browser buffer into QEMU ADB.
+FPS="${FPS:-20}"       # Page-side framebuffer cap; FPS=0 disables the cap.
 RES="${RES:-}"          # e.g. RES=800x600 to shrink the framebuffer
 NET="${NET:-}"          # NET=1 to enable the wasmbridge NIC + relay bridge
 PROFILE="$(mktemp -d "${TMPDIR:-/tmp}/c89-aux-chrome-XXXXXX")"
 
 if [ "${AUTOSTART}" = "none" ]; then
-  URL="http://127.0.0.1:${PORT}/?ram=${RAM}&heap=${HEAP}&pace=0&build=${BUILD}"
+  URL="http://127.0.0.1:${PORT}/?ram=${RAM}&heap=${HEAP}&pace=${PACE}&input=${INPUT}&fps=${FPS}&build=${BUILD}"
 else
-  URL="http://127.0.0.1:${PORT}/?ram=${RAM}&heap=${HEAP}&pace=0&autostart=${AUTOSTART}&build=${BUILD}"
+  URL="http://127.0.0.1:${PORT}/?ram=${RAM}&heap=${HEAP}&pace=${PACE}&input=${INPUT}&fps=${FPS}&autostart=${AUTOSTART}&build=${BUILD}"
 fi
 [ -n "${RES}" ] && URL="${URL}&res=${RES}"
 [ -n "${NET}" ] && URL="${URL}&net=${NET}"
+[ -n "${ICOUNT}" ] && URL="${URL}&icount=${ICOUNT}"
+if [ "${AUTOSTART}" = "lazy-pulse" ] && [ -n "${PULSE_MS}" ]; then
+  URL="${URL}&pulseMs=${PULSE_MS}"
+fi
+if [ "${AUTOSTART}" = "lazy-pulse" ] && [ -n "${PULSE_MODE}" ]; then
+  URL="${URL}&pulseMode=${PULSE_MODE}"
+fi
 
 echo "profile: ${PROFILE}"
 echo "url:     ${URL}"
