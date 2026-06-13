@@ -64,7 +64,6 @@
     var slots = 0, stride = 0, maxFrame = 0;
     var heap = null, ctrl = null;
     var txReadLocal = 0;
-    var backstopTimer = 0;
     var stats = { tx: 0, txBytes: 0, rx: 0, rxBytes: 0, txDrops: 0, rxDrops: 0 };
 
     function locate() {
@@ -98,8 +97,20 @@
       return heap.slice(off + 4, off + 4 + len);
     }
 
-    function pumpTx() {
-      if (!running) return;
+    // Single self-yielding pump chain. CRITICAL: re-arm via setTimeout (a
+    // macrotask that yields to the event loop), NOT Promise microtasks -- a
+    // microtask re-arm starves the renderer main thread ("page unresponsive")
+    // whenever waitAsync returns not-async. waitAsync's own timeout is the
+    // backstop, so there is no separate interval spawning parallel chains.
+    var pumping = false;
+    var hasWaitAsync = typeof Atomics.waitAsync === "function";
+    function startPump() {
+      if (pumping) return;
+      pumping = true;
+      pumpStep();
+    }
+    function pumpStep() {
+      if (!running) { pumping = false; return; }
       var wIdx = ctrlBase + C_TX_WRITE;
       var w = Atomics.load(ctrl, wIdx);
       while (txReadLocal !== w) {
@@ -108,12 +119,12 @@
         txReadLocal = (txReadLocal + 1) | 0;
         Atomics.store(ctrl, ctrlBase + C_TX_READ, txReadLocal);
       }
-      var res = Atomics.waitAsync(ctrl, wIdx, w);
-      if (res.async) {
-        res.value.then(pumpTx);
+      if (hasWaitAsync) {
+        var res = Atomics.waitAsync(ctrl, wIdx, w, 1000); // 1s built-in backstop
+        if (res.async) res.value.then(function () { root.setTimeout(pumpStep, 0); });
+        else root.setTimeout(pumpStep, 0); // value already changed; yield, re-drain
       } else {
-        // value changed between load and wait; re-drain on next microtask.
-        Promise.resolve().then(pumpTx);
+        root.setTimeout(pumpStep, 20); // no waitAsync: gentle poll
       }
     }
 
@@ -181,8 +192,7 @@
           ws.send(JSON.stringify(init));
           running = true;
           log("net bridge connected: " + wsUrl + " mac=" + mac + (zone ? " zone=" + zone : ""));
-          pumpTx();
-          backstopTimer = root.setInterval(pumpTx, 250); // missed-wake backstop
+          startPump();
           if (options.onOpen) options.onOpen();
         };
         ws.onmessage = onMessage;
@@ -192,14 +202,14 @@
         };
         ws.onclose = function () {
           running = false;
-          if (backstopTimer) { root.clearInterval(backstopTimer); backstopTimer = 0; }
+          pumping = false;
           log("net bridge websocket closed");
           if (options.onClose) options.onClose();
         };
       },
       stop: function () {
         running = false;
-        if (backstopTimer) { root.clearInterval(backstopTimer); backstopTimer = 0; }
+        pumping = false;
         if (ws) { try { ws.close(); } catch (e) {} ws = null; }
       },
       isRunning: function () { return running; },
