@@ -45,8 +45,11 @@ Known issues:
 - Post-write SCSI manager stall, RAM-size dependent, suspected upstream ESP
   FIFO behavior. Worked around well enough to reach login; still the top
   emulation-correctness risk.
-- Guest writes go to an in-memory snapshot overlay and are lost on reload.
-  The dialtone write path (MsgWriteRequest) is not wired up yet.
+- Guest writes default to an in-memory snapshot overlay (lost on reload).
+  `?disk=rw` + a dialtone admin token now persists writes through the
+  relay (Phase 1 item 4, done 2026-06-13), but writes hit the shared base
+  image directly, so rw is single-session until per-session copy-on-write
+  lands (item below / Phase 1 item 6).
 - Cold-relay dialtone prefetch is over-eager: it pushed ~300 MB of predicted
   chunks on a first boot (total wire ~500 MB vs 284 MB for plain http).
   Needs relay-side tuning or a client hint to throttle pushes until the
@@ -150,14 +153,19 @@ lethal.
    reload, and main-thread isolation (the reliability fix). Keep per-user
    copy-on-write snapshots server-side; the base A/UX image stays immutable
    and shared.
-   STATUS 2026-06-13: read path DONE for both transports (see "Where we
-   are"). The implementation intercepts `_fd_pread` in the pthread realm
-   (patch-qemu-out-js-diskworker.mjs) rather than the lazyfile getter, so
-   the Emscripten FS proxy to the main thread is bypassed entirely; the
-   legacy lazyfile path remains as an automatic fallback. Remaining:
-   write-through via MsgWriteRequest plus dropping `-snapshot` so guest
-   writes persist, server-side copy-on-write per session, and prefetch
-   throttling on cold relays.
+   STATUS 2026-06-13: DONE for both transports. Reads intercept
+   `_fd_pread` in the pthread realm (patch-qemu-out-js-diskworker.mjs)
+   rather than the lazyfile getter, so the Emscripten FS proxy to the main
+   thread is bypassed entirely; the legacy lazyfile path remains as an
+   automatic fallback. Write-through DONE via the dialtone transport:
+   `?disk=rw` plus a dialtone admin token drops `-snapshot`/`snapshot=on`
+   and routes guest `_fd_pwrite` through the worker (MsgWriteRequest),
+   gated on a verified admin JWT and the relay's multi-tab disk lock
+   (5 s heartbeat). Verified: writes persist across reboots (three
+   distinct disk md5s pristine->boot1->boot2, each booting cleanly).
+   Remaining: server-side per-session copy-on-write (today writes go
+   straight to the shared base image, so rw is single-session only),
+   and prefetch throttling on cold relays.
 5. Ethernet: emit guest NIC frames (the dp8393x SONIC device is already in
    the machine, currently peerless) through `AuxQemuNet.sendFrame` to the
    dialtone `/ethernet` endpoint; slirp gives outbound TCP (telnet, ftp,
