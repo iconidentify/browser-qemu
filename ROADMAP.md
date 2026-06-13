@@ -56,8 +56,10 @@ Known issues:
   pattern model is warm.
 - Networking works bidirectionally as of 2026-06-13 (opt-in `?net=1`): the
   wasmbridge net backend bridges guest NIC frames to the dialtone /ethernet
-  relay. Outbound internet still needs the guest reconfigured onto the
-  relay's 10.68.0.x subnet (it ships on 10.1.1.x). See Phase 1 item 5.
+  relay, and the A/UX stack is verified live over it -- it answers pings and
+  accepts TCP connections on its telnet/ftp/finger/rsh/exec/uucp services.
+  Outbound internet still needs the guest (idle at login, on 10.1.1.20)
+  pointed at the relay gateway 10.68.0.1 from a shell. See Phase 1 item 5.
 
 ## Measured baseline (what a visitor's browser pays today)
 
@@ -187,11 +189,20 @@ lethal.
    verified read-only boot is unperturbed); `?netZone=` joins a shared
    AppleTalk/broadcast zone. Verified: a real A/UX boot-time ARP reached
    the relay (TX), and a broadcast injected from a second relay client
-   reached the guest RX ring and was drained into the NIC (RX). Remaining:
-   reconfigure the A/UX guest to IP 10.68.0.2 / gateway 10.68.0.1 so its
-   traffic uses the relay's slirp for outbound TCP (telnet/ftp/early web) --
-   the guest ships configured for a 10.1.1.x net, so this is guest-side
-   config, not a plumbing gap.
+   reached the guest RX ring and was drained into the NIC (RX). The guest's
+   real A/UX TCP/IP stack is verified working through the bridge: it is
+   statically configured at 10.1.1.20 (gratuitous ARP at interface-up), and
+   when probed from a peer in its relay zone it returns ICMP echo replies AND
+   completes TCP handshakes (SYN-ACK) on telnet(23), ftp(21), finger(79),
+   exec(512), shell(514), uucp(540) -- i.e. its inetd services are reachable
+   over the wasm bridge. Tools: scripts/probe-guest-net.mjs (relay-side ARP/
+   ICMP/TCP prober) and scripts/smoke-net-bridge.mjs (--sniff/--inject).
+   Remaining = OUTBOUND (guest-initiated) internet via slirp: the guest ships
+   on 10.1.1.20 with no default route to the relay gateway 10.68.0.1, and it
+   is idle at the login screen, so this needs intervention inside the guest
+   (set a default route / reconfigure to 10.68.0.2 gw 10.68.0.1). That needs
+   shell access -- either a minimal telnet-in TCP client over the zone (A/UX
+   runs telnetd) or GUI/HMP login + a terminal. Not a plumbing gap.
 6. Auth and sessions: reuse the dialtone JWT model. DEPRIORITIZED for the
    disk side -- the v1 model is one shared read-only base for visitors plus
    single-tab admin writes (done, see item 4); per-session disk overlays

@@ -34,6 +34,7 @@ for (let i = 0; i < args.length; i += 1) {
   else if (a === "--ready-timeout") options.readyTimeout = Number.parseInt(args[++i], 10);
   else if (a === "--zone") options.zone = args[++i];
   else if (a === "--inject") options.inject = true;
+  else if (a === "--sniff") options.sniff = true;
   else if (a === "--relay-ws") options.relayWs = args[++i];
 }
 options.zone = options.zone || "";
@@ -59,6 +60,64 @@ function craftBroadcastArp(srcMac) {
   // target MAC zero, target IP 10.1.1.20
   f.set([10, 1, 1, 20], 38);
   return f;
+}
+
+function ipStr(b, o) { return `${b[o]}.${b[o + 1]}.${b[o + 2]}.${b[o + 3]}`; }
+function macStr2(b, o) {
+  const p = [];
+  for (let i = 0; i < 6; i++) p.push((b[o + i] | 0x100).toString(16).slice(1));
+  return p.join(":");
+}
+
+// Decode a captured ethernet frame enough to learn the guest's config.
+function decodeFrame(f) {
+  if (f.length < 14) return { kind: "short", len: f.length };
+  const dst = macStr2(f, 0), src = macStr2(f, 6);
+  const et = (f[12] << 8) | f[13];
+  if (et === 0x0806 && f.length >= 28) {
+    const a = f.subarray(14);
+    const op = (a[6] << 8) | a[7];
+    return { kind: "arp", op: op === 1 ? "request" : op === 2 ? "reply" : op,
+      senderMac: macStr2(a, 8), senderIp: ipStr(a, 14), targetMac: macStr2(a, 18), targetIp: ipStr(a, 24), src };
+  }
+  if (et === 0x0800 && f.length >= 34) {
+    const ihl = (f[14] & 0x0f) * 4;
+    const proto = f[23];
+    const sip = ipStr(f, 26), dip = ipStr(f, 30);
+    const protoName = { 1: "icmp", 6: "tcp", 17: "udp" }[proto] || proto;
+    let ports = "";
+    if ((proto === 6 || proto === 17) && f.length >= 14 + ihl + 4) {
+      const sp = (f[14 + ihl] << 8) | f[14 + ihl + 1];
+      const dp = (f[14 + ihl + 2] << 8) | f[14 + ihl + 3];
+      ports = `${sp}->${dp}`;
+    }
+    return { kind: "ipv4", proto: protoName, src: sip, dst: dip, ports };
+  }
+  if (et === 0x809b) return { kind: "appletalk-ddp", src };
+  if (et === 0x80f3) return { kind: "appletalk-aarp", src };
+  return { kind: "eth", etherType: "0x" + et.toString(16), src, dst };
+}
+
+// Passive sniffer: a relay client in the guest's zone that logs decoded
+// frames the guest broadcasts (forwarded to all zone members).
+async function runSniffer(zone) {
+  const ws = new WebSocket(options.relayWs);
+  await new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error("sniffer ws timeout")), 8000);
+    ws.addEventListener("open", () => { clearTimeout(t); resolve(); }, { once: true });
+    ws.addEventListener("error", () => { clearTimeout(t); reject(new Error("sniffer ws error")); }, { once: true });
+  });
+  ws.send(JSON.stringify({ type: "init", macAddress: "02:00:00:00:00:02", zone }));
+  ws.addEventListener("message", (event) => {
+    let msg;
+    try { msg = JSON.parse(typeof event.data === "string" ? event.data : ""); } catch { return; }
+    if (msg && msg.type === "receive" && typeof msg.packetArray === "string") {
+      const bytes = Buffer.from(msg.packetArray, "base64");
+      stamp({ event: "sniff", frame: decodeFrame(new Uint8Array(bytes)), bytes: bytes.length });
+    }
+  });
+  stamp({ event: "sniffer-ready", zone });
+  return ws;
 }
 
 async function runInjector(zone) {
@@ -176,6 +235,10 @@ try {
       catch (e) { return 'connect-error: ' + (e && e.message ? e.message : e); }
     })()`);
     stamp({ event: "connect", result: connectRes });
+    if (options.sniff) {
+      try { await runSniffer(options.zone); }
+      catch (e) { stamp({ event: "sniff-error", message: String(e && e.message ? e.message : e) }); }
+    }
     if (options.inject) {
       await delay(2000);
       try { await runInjector(options.zone); }
