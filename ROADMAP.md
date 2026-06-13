@@ -1,6 +1,6 @@
 # browser-qemu: Status and Roadmap
 
-Snapshot date: 2026-06-12. Numbers below were measured against the live dev
+Snapshot date: 2026-06-13. Numbers below were measured against the live dev
 server (`make serve` on 127.0.0.1:8088) and the current `public/qemu-lazy/`
 artifacts.
 
@@ -12,10 +12,12 @@ as static files plus HTTP range requests.
 
 What works today:
 
-- Full boot to the A/UX login screen in roughly 94 seconds
-  (`make watch-browser-boot`, ram=128, pace=0, lazy-pulse 30s cadence).
-- Lazy disk: the 2.0 GB A/UX disk image is never downloaded up front; the
-  Emscripten lazyfile patch fetches it through HTTP range requests on demand.
+- Full boot to the A/UX login screen in roughly 94-96 seconds
+  (`make watch-browser-boot`; ram=128, pace=0, autostart=lazy, no pulse
+  cadence needed since the bounded PTY wait landed).
+- Lazy disk: the 2.0 GB A/UX disk image is never downloaded up front; reads
+  are fetched on demand in 128 KB chunks by the dedicated disk worker (the
+  Emscripten lazyfile sync-XHR path remains only as a fallback).
 - Display, mouse, and keyboard bridges (SDL canvas plus an HMP fallback path).
   The double-keystroke bug (dual injection via both the direct runtime
   `AuxQemu.sendKey` path and the HMP `sendkey` path) was fixed 2026-06-12.
@@ -23,6 +25,16 @@ What works today:
   SCSI tracing builds, screenshot watchers, a dev server that mirrors browser
   logs and tracks range-request traffic (`/__range-stats.json`).
 - Disk byte-corruption bug (charCodeAt recovery) fixed 2026-06-12.
+- Dedicated disk-I/O worker landed 2026-06-13 (Phase 1 item 4, first half):
+  guest disk preads are served inside the QEMU pthread from SharedArrayBuffers
+  filled by `public/disk-worker.js` (128 KB chunks, LRU cache, default 512 MB).
+  Two transports, selected by `?diskTransport=`: `http` (range GETs, default)
+  and `dialtone` (the 68k_web relay binary block protocol over WebSocket,
+  including server prefetch pushes). Both verified booting headless to the
+  A/UX login screen at the usual ~96 s with zero read errors. The page main
+  thread is out of the disk path entirely; `?disk=legacy` restores the old
+  main-thread sync-XHR path. Wire transfer for a cold boot-to-login dropped
+  from ~840 MB (1 MB chunks) to ~284 MB total/207 MB-to-login (http).
 
 Known issues:
 
@@ -30,9 +42,13 @@ Known issues:
   FIFO behavior. Worked around well enough to reach login; still the top
   emulation-correctness risk.
 - Guest writes go to an in-memory snapshot overlay and are lost on reload.
+  The dialtone write path (MsgWriteRequest) is not wired up yet.
+- Cold-relay dialtone prefetch is over-eager: it pushed ~300 MB of predicted
+  chunks on a first boot (total wire ~500 MB vs 284 MB for plain http).
+  Needs relay-side tuning or a client hint to throttle pushes until the
+  pattern model is warm.
 - Networking UI exists in the shell but has no backend and the wasm side does
   not emit frames yet.
-- The repository has no commits. All of this work is untracked on disk only.
 
 ## Measured baseline (what a visitor's browser pays today)
 
@@ -56,7 +72,7 @@ Known issues:
 ## Target architecture: pair with dialtone (the 68k_web Go relay)
 
 Dialtone, the Go relay from the 68k_web project
-(`~/Documents/source/68k_mac`, apps/relay), already runs a
+(`~/Documents/source/68k_web`, apps/relay), already runs a
 production-shaped backend built for exactly the two things this project
 lacks:
 
@@ -78,13 +94,15 @@ WebSocket frames and add or negotiate a binary mode on `/ethernet`.
 
 ## Roadmap
 
-### Phase 0: Stop the bleeding (now)
+### Phase 0: Stop the bleeding (DONE 2026-06-13)
 
-1. `git init` discipline: commit the tree (vendor split into its own branch
-   or submodule), push to a remote. Everything is currently unversioned.
-2. Verify the double-type fix at the login prompt; log in as root.
-3. Capture a clean single-boot range-stats baseline (reset, boot, snapshot
-   the JSON) so later disk work has a before/after number.
+1. DONE. Repo committed and pushed to
+   https://github.com/iconidentify/browser-qemu (vendor tree, ROMs, and disk
+   images excluded by policy; VENDOR.md records recreation steps).
+2. DONE. Logged in as root to the X11/fvwm desktop (June 13, 00:47 UTC).
+3. DONE. Baseline captured: ~840 MB over the wire per cold boot-to-login at
+   1 MB chunks. Superseded the same day by the disk worker (~284 MB at
+   128 KB chunks).
 
 ### Phase 0.5: Findings from the June 12 night session (input and boot reliability)
 
@@ -110,6 +128,7 @@ Diagnosed during live debugging; these reorder Phase 1 priorities.
   fully reliable and is how the first successful login was performed.
 - Consequence: moving disk I/O off the main thread is the single highest
   reliability item and is the same work as the relay block protocol below.
+  DELIVERED 2026-06-13: see Phase 1 item 4 status.
 
 ### Phase 1: Persistence, networking, and reliability via dialtone
 
@@ -127,6 +146,14 @@ lethal.
    reload, and main-thread isolation (the reliability fix). Keep per-user
    copy-on-write snapshots server-side; the base A/UX image stays immutable
    and shared.
+   STATUS 2026-06-13: read path DONE for both transports (see "Where we
+   are"). The implementation intercepts `_fd_pread` in the pthread realm
+   (patch-qemu-out-js-diskworker.mjs) rather than the lazyfile getter, so
+   the Emscripten FS proxy to the main thread is bypassed entirely; the
+   legacy lazyfile path remains as an automatic fallback. Remaining:
+   write-through via MsgWriteRequest plus dropping `-snapshot` so guest
+   writes persist, server-side copy-on-write per session, and prefetch
+   throttling on cold relays.
 5. Ethernet: emit guest NIC frames (the dp8393x SONIC device is already in
    the machine, currently peerless) through `AuxQemuNet.sendFrame` to the
    dialtone `/ethernet` endpoint; slirp gives outbound TCP (telnet, ftp,
@@ -153,7 +180,7 @@ lethal.
 ### Phase 3: Public web property
 
 11. Hosting: static assets (wasm, shell) on CDN; relay behind nginx with
-    COOP/COEP (config exists in 68k_mac); Helm chart already provisions
+    COOP/COEP (config exists in 68k_web); Helm chart already provisions
     PVCs for disk overlays.
 12. Front door: landing page, machine picker (A/UX now, room for System 7
     via the BasiliskII path later), session list, snapshot save/restore UI.
@@ -175,8 +202,13 @@ lethal.
 
 ## Open questions
 
-- Per-boot disk transfer number (cumulative stats only, needs a clean run).
+- ANSWERED 2026-06-13: per-boot disk transfer is ~284 MB total (207 MB to
+  the login screen) over 2,262 range GETs with the 128 KB disk worker;
+  it was ~840 MB at the old 1 MB granularity.
 - Whether the relay ethernet endpoint should grow a binary frame mode or the
-  QEMU shell should adapt to its JSON framing.
+  QEMU shell should adapt to its JSON framing (the relay's ethernet socket
+  is JSON-only today; protocol map confirmed 2026-06-13).
 - Whether UDP/ICMP support in slirp is needed for the A/UX experience
   (NTP, ping) or TCP-only is acceptable for v1.
+- How to throttle dialtone prefetch pushes on a cold pattern model (client
+  hint vs relay-side cap); see Known issues.

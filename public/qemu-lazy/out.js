@@ -3947,6 +3947,11 @@ function ffi_prep_closure_loc_js(closure,cif,fun,user_data,codeloc) { var abi = 
           ,
           'wasmMemory': wasmMemory,
           'wasmModule': wasmModule,
+          'c89Disk': Module['c89Disk'] ? {
+            control: Module['c89Disk'].control,
+            data: Module['c89Disk'].data,
+            guestPath: Module['c89Disk'].guestPath
+          } : null,
         });
       }),
   loadWasmModuleToAllWorkers(onMaybeReady) {
@@ -5790,7 +5795,7 @@ Module["invokeEntryPoint"] = invokeEntryPoint;
   
   function ___syscall_openat(dirfd, path, flags, varargs) {
   if (ENVIRONMENT_IS_PTHREAD)
-    return proxyToMainThread(22, 1, dirfd, path, flags, varargs);
+    return c89DiskTrackOpen(proxyToMainThread(22, 1, dirfd, path, flags, varargs), path);
   
   SYSCALLS.varargs = varargs;
   try {
@@ -12208,6 +12213,7 @@ Module["invokeEntryPoint"] = invokeEntryPoint;
   
   
   function _fd_close(fd) {
+  c89DiskTrackClose(fd);
   if (ENVIRONMENT_IS_PTHREAD)
     return proxyToMainThread(95, 1, fd);
   
@@ -12278,9 +12284,112 @@ Module["invokeEntryPoint"] = invokeEntryPoint;
   
   
   
+  /* c89 disk worker bridge (browser-qemu Phase 1): serve guest disk preads
+   from a dedicated disk worker through SharedArrayBuffers so the page main
+   thread is never on the disk path. Slot layout matches disk-worker.js. */
+var C89D_LOCK = 0, C89D_STATE = 1, C89D_OFF_LO = 2, C89D_OFF_HI = 3,
+    C89D_REQ_LEN = 4, C89D_RES_LEN = 5, C89D_ERR = 6, C89D_DISK_FD = 7,
+    C89D_SIZE_LO = 8, C89D_SIZE_HI = 9, C89D_READY = 10;
+
+function c89DiskCtrl() {
+ var disk = Module["c89Disk"];
+ if (!disk || !disk.control) return null;
+ if (!disk.ctrlView) disk.ctrlView = new Int32Array(disk.control);
+ return disk.ctrlView;
+}
+
+function c89DiskDataView() {
+ var disk = Module["c89Disk"];
+ if (!disk.dataView) disk.dataView = new Uint8Array(disk.data);
+ return disk.dataView;
+}
+
+function c89DiskTrackOpen(fd, pathPtr) {
+ try {
+  var c = c89DiskCtrl();
+  if (c && fd >= 0 && UTF8ToString(pathPtr) === Module["c89Disk"].guestPath) {
+   Atomics.store(c, C89D_DISK_FD, fd);
+   err("c89disk: tracking guest disk fd " + fd);
+  }
+ } catch (e) {}
+ return fd;
+}
+
+function c89DiskTrackClose(fd) {
+ var c = c89DiskCtrl();
+ if (c && Atomics.load(c, C89D_DISK_FD) === fd) {
+  Atomics.store(c, C89D_DISK_FD, -1);
+  err("c89disk: guest disk fd " + fd + " closed");
+ }
+}
+
+function c89DiskTryPread(fd, iov, iovcnt, offset, pnum) {
+ var c = c89DiskCtrl();
+ if (!c || Atomics.load(c, C89D_READY) !== 1) return null;
+ if (Atomics.load(c, C89D_DISK_FD) !== fd) return null;
+ var pos = bigintToI53Checked(offset);
+ if (isNaN(pos)) return 61;
+ var size = (Atomics.load(c, C89D_SIZE_HI) >>> 0) * 4294967296 + (Atomics.load(c, C89D_SIZE_LO) >>> 0);
+ var dataBuf = c89DiskDataView();
+ var total = 0;
+ var hitEof = false;
+ while (Atomics.compareExchange(c, C89D_LOCK, 0, 1) !== 0) Atomics.wait(c, C89D_LOCK, 1);
+ try {
+  for (var i = 0; i < iovcnt && !hitEof; i++) {
+   var ptr = HEAPU32[(iov + i * 8) >> 2];
+   var len = HEAPU32[(iov + i * 8 + 4) >> 2];
+   var done = 0;
+   while (done < len) {
+    var at = pos + total + done;
+    if (at >= size) { hitEof = true; break; }
+    var want = Math.min(len - done, dataBuf.length, size - at);
+    Atomics.store(c, C89D_OFF_LO, at % 4294967296 | 0);
+    Atomics.store(c, C89D_OFF_HI, Math.floor(at / 4294967296));
+    Atomics.store(c, C89D_REQ_LEN, want);
+    Atomics.store(c, C89D_ERR, 0);
+    Atomics.store(c, C89D_STATE, 1);
+    Atomics.notify(c, C89D_STATE);
+    var waits = 0;
+    while (Atomics.load(c, C89D_STATE) === 1) {
+     if (Atomics.wait(c, C89D_STATE, 1, 60000) === "timed-out" && Atomics.load(c, C89D_STATE) === 1) {
+      waits++;
+      err("c89disk: disk worker still busy after " + waits + " min (offset=" + at + " len=" + want + ")");
+      if (waits >= 5) {
+       Atomics.store(c, C89D_STATE, 0);
+       throw new Error("disk worker unresponsive");
+      }
+     }
+    }
+    var state = Atomics.load(c, C89D_STATE);
+    var got = Atomics.load(c, C89D_RES_LEN);
+    Atomics.store(c, C89D_STATE, 0);
+    if (state !== 2) throw new Error("disk worker error " + Atomics.load(c, C89D_ERR));
+    if (got > 0) {
+     HEAPU8.set(dataBuf.subarray(0, got), ptr + done);
+     done += got;
+    }
+    if (got < want) { hitEof = true; break; }
+   }
+   total += done;
+  }
+ } catch (e) {
+  err("c89disk: worker pread failed, falling back to proxied read: " + (e && e.message ? e.message : e));
+  Atomics.store(c, C89D_LOCK, 0);
+  Atomics.notify(c, C89D_LOCK, 1);
+  return null;
+ }
+ Atomics.store(c, C89D_LOCK, 0);
+ Atomics.notify(c, C89D_LOCK, 1);
+ HEAPU32[pnum >> 2] = total;
+ return 0;
+}
+
   function _fd_pread(fd, iov, iovcnt, offset, pnum) {
-  if (ENVIRONMENT_IS_PTHREAD)
+  if (ENVIRONMENT_IS_PTHREAD) {
+    var c89r = c89DiskTryPread(fd, iov, iovcnt, offset, pnum);
+    if (c89r !== null) return c89r;
     return proxyToMainThread(97, 1, fd, iov, iovcnt, offset, pnum);
+  }
   
     offset = bigintToI53Checked(offset);;
   

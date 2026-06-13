@@ -111,6 +111,9 @@ function handleMessage(e) {
 
       Module['wasmMemory'] = e.data.wasmMemory;
 
+      // c89 disk worker bridge: SharedArrayBuffers for in-pthread disk preads.
+      Module['c89Disk'] = e.data.c89Disk || null;
+
       Module['buffer'] = Module['wasmMemory'].buffer;
 
       Module['ENVIRONMENT_IS_PTHREAD'] = true;
@@ -162,6 +165,16 @@ function handleMessage(e) {
       err(e.data);
     }
   } catch(ex) {
+    try {
+      var detail = ex && (ex.stack || ex.message || String(ex));
+      err('worker exception detail: ' + detail);
+      postMessage({ cmd: 'callHandler', handler: 'printErr', args: [ 'worker exception detail: ' + detail ] });
+    } catch (_) {}
+    try {
+      var detail = ex && (ex.stack || ex.message || String(ex));
+      err('worker exception detail: ' + detail);
+      postMessage({ cmd: 'callHandler', handler: 'printErr', args: [ 'worker exception detail: ' + detail ] });
+    } catch (_) {}
     try {
       var detail = ex && (ex.stack || ex.message || String(ex));
       err('worker exception detail: ' + detail);

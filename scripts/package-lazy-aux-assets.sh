@@ -89,6 +89,12 @@ for artifact in qemu-system-m68k.wasm qemu-system-m68k.worker.js; do
   cp "${QEMU_BUILD}/${artifact}" "${PUBLIC_QEMU}/${artifact}"
 done
 
+# The patch scripts are idempotent; re-applying here covers build trees that
+# predate a given patch (the lazyfile patch already ran at build time).
+node "${ROOT}/scripts/patch-qemu-out-js-lazyfile.mjs" "${PUBLIC_QEMU}/out.js"
+node "${ROOT}/scripts/patch-qemu-out-js-diskworker.mjs" "${PUBLIC_QEMU}/out.js"
+node "${ROOT}/scripts/patch-qemu-worker-js.mjs" "${PUBLIC_QEMU}/qemu-system-m68k.worker.js"
+
 stage_public_asset "${AUX_DISK}" "${PUBLIC_QEMU}/aux-3.1.1-disk.img"
 SECOND_DISK_PRESENT=0
 if [[ -n "${AUX_JAG_DISK}" && -f "${AUX_JAG_DISK}" ]]; then

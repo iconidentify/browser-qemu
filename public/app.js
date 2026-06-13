@@ -57,6 +57,10 @@
         "module.js",
         "aux-3.1.1-disk.img",
       ],
+      lazyDisk: {
+        file: "aux-3.1.1-disk.img",
+        guestPath: "/pack/aux-3.1.1-disk.img",
+      },
     },
     qemu: {
       label: "full preload",
@@ -92,6 +96,8 @@
   let qemuAutoPulseMs = 0;
   let qemuControlWorker = null;
   let qemuSharedInput = null;
+  let qemuDiskWorker = null;
+  let qemuDiskShared = null;
   let heartbeat = 0;
   let lastHeartbeatAt = performance.now();
   let lastControlId = 0;
@@ -433,6 +439,78 @@
       qemuControlWorker = null;
     }
     qemuSharedInput = null;
+  }
+
+  // Dedicated disk-I/O worker (ROADMAP Phase 1): guest disk preads are served
+  // in the QEMU pthread from SharedArrayBuffers this worker fills, so the
+  // page main thread is never on the disk path. disk=legacy restores the old
+  // main-thread sync-XHR lazy path.
+  function startDiskWorker(runtime, runtimeDir) {
+    if (!runtime.lazyDisk) return null;
+    if (!window.crossOriginIsolated || typeof SharedArrayBuffer === "undefined") {
+      log("disk worker disabled: SharedArrayBuffer unavailable");
+      return null;
+    }
+
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("disk") === "legacy") {
+      log("disk worker disabled by disk=legacy; using main-thread lazy reads");
+      return null;
+    }
+
+    const transport = params.get("diskTransport") === "dialtone" ? "dialtone" : "http";
+    const chunkKb = Number(params.get("diskChunkKb")) || 128;
+    const cacheMb = Number(params.get("diskCacheMb")) || 512;
+    const control = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 16);
+    const data = new SharedArrayBuffer(8 * 1024 * 1024);
+    const ctrlView = new Int32Array(control);
+    ctrlView[7] = -1; // DISK_FD: nothing tracked yet
+
+    const worker = new Worker("./disk-worker.js");
+    worker.onmessage = (event) => {
+      const message = event.data || {};
+      if (message.type === "ready") {
+        log(`disk worker ready: ${message.transport} transport, ${message.diskSize} bytes, ${message.chunkBytes >> 10} KB chunks`);
+      } else if (message.type === "init-error") {
+        log(`disk worker init failed (falling back to main-thread lazy reads): ${message.error}`);
+      } else if (message.type === "stats" && message.stats) {
+        window.AuxDiskStats = message.stats;
+        const s = message.stats;
+        log(`disk worker stats: ${s.requests} reqs ${(s.servedBytes / 1048576).toFixed(1)}MB served, ` +
+          `${s.fetches} fetches ${(s.fetchedBytes / 1048576).toFixed(1)}MB wire, ` +
+          `${s.cacheHitRequests} cache-hit reqs, cache ${(s.cacheBytes / 1048576).toFixed(1)}MB/${s.cacheChunks} chunks, ` +
+          `${s.errors} errors`);
+      }
+    };
+    worker.onerror = (event) => {
+      log(`disk worker error: ${event.message || "unknown error"}`);
+    };
+
+    const wsDefault = `ws://${window.location.hostname}:8080/disk`;
+    worker.postMessage({
+      type: "init",
+      control,
+      data,
+      transport,
+      url: qemuAsset(runtimeDir, runtime.lazyDisk.file),
+      wsUrl: params.get("diskWs") || wsDefault,
+      httpBase: `http://${window.location.hostname}:8080`,
+      diskName: params.get("diskName") || runtime.lazyDisk.file,
+      chunkBytes: chunkKb * 1024,
+      cacheMb,
+    });
+
+    log(`disk worker started: transport=${transport} chunk=${chunkKb}KB cache=${cacheMb}MB`);
+    qemuDiskShared = { control, data, guestPath: runtime.lazyDisk.guestPath };
+    return worker;
+  }
+
+  function stopDiskWorker() {
+    if (qemuDiskWorker) {
+      qemuDiskWorker.terminate();
+      qemuDiskWorker = null;
+    }
+    qemuDiskShared = null;
   }
 
   function createPtyShim(sharedInput) {
@@ -1304,6 +1382,7 @@
     qemuSharedInput = createSharedInputQueue();
     qemuPty = createPtyShim(qemuSharedInput);
     qemuControlWorker = startControlWorker(qemuSharedInput);
+    qemuDiskWorker = startDiskWorker(runtime, runtimeDir);
     qemuStartPaused = Boolean(options.startPaused);
     qemuHeapMb = selectedHeapMb();
     qemuAutoPulseMs = normalizePulseIntervalMs(options.autoPulseMs);
@@ -1319,6 +1398,7 @@
     window.Module = {
       canvas,
       pty: qemuPty,
+      c89Disk: qemuDiskShared || undefined,
       preRun: [createRuntimeDirs],
       elementPointerLock: true,
       thisProgram: "qemu-system-m68k",
@@ -1356,6 +1436,7 @@
         qemuHeapMb = null;
         qemuAutoPulseMs = 0;
         stopControlWorker();
+        stopDiskWorker();
         hmpMonitorActive = false;
         setStartButtonsDisabled(false);
         setHmpButtonsDisabled(true);
@@ -1421,6 +1502,7 @@
         qemuHeapMb = null;
         qemuAutoPulseMs = 0;
         stopControlWorker();
+        stopDiskWorker();
         hmpMonitorActive = false;
         setStatus(qemuStatus, "QEMU start failed", "error");
         displayPanel.classList.remove("runtime-active");
@@ -1437,6 +1519,7 @@
       qemuHeapMb = null;
       qemuAutoPulseMs = 0;
       stopControlWorker();
+      stopDiskWorker();
       hmpMonitorActive = false;
       setStatus(qemuStatus, "QEMU start failed", "error");
       displayPanel.classList.remove("runtime-active");

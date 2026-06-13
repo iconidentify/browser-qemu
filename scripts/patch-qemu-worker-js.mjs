@@ -44,6 +44,22 @@ if (source.includes(catchBlock)) {
   process.exit(1);
 }
 
+const wasmMemoryLine = `      Module['wasmMemory'] = e.data.wasmMemory;`;
+const wasmMemoryReplacement = `      Module['wasmMemory'] = e.data.wasmMemory;
+
+      // c89 disk worker bridge: SharedArrayBuffers for in-pthread disk preads.
+      Module['c89Disk'] = e.data.c89Disk || null;`;
+
+if (source.includes("Module['c89Disk']")) {
+  // Already patched.
+} else if (source.includes(wasmMemoryLine)) {
+  source = source.replace(wasmMemoryLine, wasmMemoryReplacement);
+  patched = true;
+} else {
+  console.error(`${file}: wasmMemory load marker not found`);
+  process.exit(1);
+}
+
 if (patched) {
   fs.writeFileSync(file, source);
   console.log(`patched pthread worker glue in ${file}`);

@@ -565,6 +565,7 @@ for artifact in qemu-system-m68k.wasm qemu-system-m68k.worker.js; do
 done
 
 QEMU_WASM_DYNAMIC_TB_START_ABI="${QEMU_WASM_DYNAMIC_TB_START_ABI}" node "${ROOT}/scripts/patch-qemu-out-js-lazyfile.mjs" "${ROOT}/build/qemu/out.js"
+node "${ROOT}/scripts/patch-qemu-out-js-diskworker.mjs" "${ROOT}/build/qemu/out.js"
 if [[ -f "${ROOT}/build/qemu/qemu-system-m68k.worker.js" ]]; then
   node "${ROOT}/scripts/patch-qemu-worker-js.mjs" "${ROOT}/build/qemu/qemu-system-m68k.worker.js"
 fi
