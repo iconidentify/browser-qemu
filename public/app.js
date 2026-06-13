@@ -1586,6 +1586,11 @@
         if (qemuAutoPulseMs) {
           window.setTimeout(() => startPulseRun(qemuAutoPulseMs), 250);
         }
+        // With ?net=1, connect the relay bridge automatically once the runtime
+        // (and the wasmbridge export) are live, so network access is one step.
+        if (netModeRequested && typeof window.AuxQemu.c89NetSharedPtr === "function") {
+          window.setTimeout(() => { if (!netBridge || !netBridge.isRunning()) connectNetwork(); }, 500);
+        }
       }).catch((error) => {
         qemuStarted = false;
         qemuInstance = null;
