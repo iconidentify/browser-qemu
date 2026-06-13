@@ -36,10 +36,15 @@ if (source.includes(threadInitCall)) {
   process.exit(1);
 }
 
-if (source.includes(catchBlock)) {
+// catchReplacement contains catchBlock as a trailing substring, so check for
+// the replacement FIRST: otherwise source.includes(catchBlock) stays true
+// after patching and a re-run prepends a second try/catch (double-apply bug).
+if (source.includes(catchReplacement)) {
+  // Already patched.
+} else if (source.includes(catchBlock)) {
   source = source.replace(catchBlock, catchReplacement);
   patched = true;
-} else if (!source.includes(catchReplacement)) {
+} else {
   console.error(`${file}: worker catch marker not found`);
   process.exit(1);
 }

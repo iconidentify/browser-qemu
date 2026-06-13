@@ -154,7 +154,9 @@ function lazyUrl(name) {
 
 function mountLazyDisks(Module) {
   Module.FS_createPath("/", "pack", true, true);
-  Module.FS_createLazyFile("/pack", "aux-3.1.1-disk.img", lazyUrl("aux-3.1.1-disk.img"), true, false);
+  /* Writable only when the shell confirmed disk write mode (disk=rw with
+     verified relay auth); guest writes then flow through the disk worker. */
+  Module.FS_createLazyFile("/pack", "aux-3.1.1-disk.img", lazyUrl("aux-3.1.1-disk.img"), true, root.AuxQemuDiskWritable === true);
 EOF
 
 if [[ "${SECOND_DISK_PRESENT}" == "1" ]]; then

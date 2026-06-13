@@ -12285,11 +12285,12 @@ Module["invokeEntryPoint"] = invokeEntryPoint;
   
   
   /* c89 disk worker bridge (browser-qemu Phase 1): serve guest disk preads
-   from a dedicated disk worker through SharedArrayBuffers so the page main
-   thread is never on the disk path. Slot layout matches disk-worker.js. */
+   and pwrites from a dedicated disk worker through SharedArrayBuffers so the
+   page main thread is never on the disk path. Slots match disk-worker.js. */
 var C89D_LOCK = 0, C89D_STATE = 1, C89D_OFF_LO = 2, C89D_OFF_HI = 3,
     C89D_REQ_LEN = 4, C89D_RES_LEN = 5, C89D_ERR = 6, C89D_DISK_FD = 7,
-    C89D_SIZE_LO = 8, C89D_SIZE_HI = 9, C89D_READY = 10;
+    C89D_SIZE_LO = 8, C89D_SIZE_HI = 9, C89D_READY = 10, C89D_OP = 11,
+    C89D_WRITABLE = 12;
 
 function c89DiskCtrl() {
  var disk = Module["c89Disk"];
@@ -12343,27 +12344,7 @@ function c89DiskTryPread(fd, iov, iovcnt, offset, pnum) {
     var at = pos + total + done;
     if (at >= size) { hitEof = true; break; }
     var want = Math.min(len - done, dataBuf.length, size - at);
-    Atomics.store(c, C89D_OFF_LO, at % 4294967296 | 0);
-    Atomics.store(c, C89D_OFF_HI, Math.floor(at / 4294967296));
-    Atomics.store(c, C89D_REQ_LEN, want);
-    Atomics.store(c, C89D_ERR, 0);
-    Atomics.store(c, C89D_STATE, 1);
-    Atomics.notify(c, C89D_STATE);
-    var waits = 0;
-    while (Atomics.load(c, C89D_STATE) === 1) {
-     if (Atomics.wait(c, C89D_STATE, 1, 60000) === "timed-out" && Atomics.load(c, C89D_STATE) === 1) {
-      waits++;
-      err("c89disk: disk worker still busy after " + waits + " min (offset=" + at + " len=" + want + ")");
-      if (waits >= 5) {
-       Atomics.store(c, C89D_STATE, 0);
-       throw new Error("disk worker unresponsive");
-      }
-     }
-    }
-    var state = Atomics.load(c, C89D_STATE);
-    var got = Atomics.load(c, C89D_RES_LEN);
-    Atomics.store(c, C89D_STATE, 0);
-    if (state !== 2) throw new Error("disk worker error " + Atomics.load(c, C89D_ERR));
+    var got = c89DiskRoundTrip(c, 0, at, want);
     if (got > 0) {
      HEAPU8.set(dataBuf.subarray(0, got), ptr + done);
      done += got;
@@ -12377,6 +12358,77 @@ function c89DiskTryPread(fd, iov, iovcnt, offset, pnum) {
   Atomics.store(c, C89D_LOCK, 0);
   Atomics.notify(c, C89D_LOCK, 1);
   return null;
+ }
+ Atomics.store(c, C89D_LOCK, 0);
+ Atomics.notify(c, C89D_LOCK, 1);
+ HEAPU32[pnum >> 2] = total;
+ return 0;
+}
+
+/* Post one request to the disk worker and block until it completes.
+   Caller must hold C89D_LOCK. Returns the worker's RES_LEN. */
+function c89DiskRoundTrip(c, op, at, want) {
+ Atomics.store(c, C89D_OFF_LO, at % 4294967296 | 0);
+ Atomics.store(c, C89D_OFF_HI, Math.floor(at / 4294967296));
+ Atomics.store(c, C89D_REQ_LEN, want);
+ Atomics.store(c, C89D_ERR, 0);
+ Atomics.store(c, C89D_OP, op);
+ Atomics.store(c, C89D_STATE, 1);
+ Atomics.notify(c, C89D_STATE);
+ var waits = 0;
+ while (Atomics.load(c, C89D_STATE) === 1) {
+  if (Atomics.wait(c, C89D_STATE, 1, 60000) === "timed-out" && Atomics.load(c, C89D_STATE) === 1) {
+   waits++;
+   err("c89disk: disk worker still busy after " + waits + " min (op=" + op + " offset=" + at + " len=" + want + ")");
+   if (waits >= 5) {
+    Atomics.store(c, C89D_STATE, 0);
+    throw new Error("disk worker unresponsive");
+   }
+  }
+ }
+ var state = Atomics.load(c, C89D_STATE);
+ var got = Atomics.load(c, C89D_RES_LEN);
+ Atomics.store(c, C89D_STATE, 0);
+ if (state !== 2) throw new Error("disk worker error " + Atomics.load(c, C89D_ERR));
+ return got;
+}
+
+/* Guest pwrites on the disk fd. Only active when the worker verified write
+   auth and holds the relay's disk lock (C89D_WRITABLE). Never falls back to
+   the proxied path once writable: the legacy lazyfile node cannot accept
+   writes, so worker failures surface to the guest as EIO instead. */
+function c89DiskTryPwrite(fd, iov, iovcnt, offset, pnum) {
+ var c = c89DiskCtrl();
+ if (!c || Atomics.load(c, C89D_READY) !== 1) return null;
+ if (Atomics.load(c, C89D_DISK_FD) !== fd) return null;
+ if (Atomics.load(c, C89D_WRITABLE) !== 1) return null;
+ var pos = bigintToI53Checked(offset);
+ if (isNaN(pos)) return 61;
+ var size = (Atomics.load(c, C89D_SIZE_HI) >>> 0) * 4294967296 + (Atomics.load(c, C89D_SIZE_LO) >>> 0);
+ var dataBuf = c89DiskDataView();
+ var total = 0;
+ while (Atomics.compareExchange(c, C89D_LOCK, 0, 1) !== 0) Atomics.wait(c, C89D_LOCK, 1);
+ try {
+  for (var i = 0; i < iovcnt; i++) {
+   var ptr = HEAPU32[(iov + i * 8) >> 2];
+   var len = HEAPU32[(iov + i * 8 + 4) >> 2];
+   var done = 0;
+   while (done < len) {
+    var at = pos + total + done;
+    if (at >= size) throw new Error("write past end of disk at " + at);
+    var want = Math.min(len - done, dataBuf.length, size - at);
+    dataBuf.set(HEAPU8.subarray(ptr + done, ptr + done + want), 0);
+    var got = c89DiskRoundTrip(c, 1, at, want);
+    if (got !== want) throw new Error("short write (" + got + " of " + want + ")");
+    done += got;
+   }
+   total += done;
+  }
+ } catch (e) {
+  err("c89disk: worker pwrite FAILED (guest sees EIO): " + (e && e.message ? e.message : e));
+  Atomics.store(c, C89D_LOCK, 0);
+  Atomics.notify(c, C89D_LOCK, 1);
+  return 29;
  }
  Atomics.store(c, C89D_LOCK, 0);
  Atomics.notify(c, C89D_LOCK, 1);
@@ -12431,8 +12483,11 @@ function c89DiskTryPread(fd, iov, iovcnt, offset, pnum) {
   
   
   function _fd_pwrite(fd, iov, iovcnt, offset, pnum) {
-  if (ENVIRONMENT_IS_PTHREAD)
+  if (ENVIRONMENT_IS_PTHREAD) {
+    var c89w = c89DiskTryPwrite(fd, iov, iovcnt, offset, pnum);
+    if (c89w !== null) return c89w;
     return proxyToMainThread(98, 1, fd, iov, iovcnt, offset, pnum);
+  }
   
     offset = bigintToI53Checked(offset);;
   

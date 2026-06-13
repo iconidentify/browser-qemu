@@ -98,6 +98,9 @@
   let qemuSharedInput = null;
   let qemuDiskWorker = null;
   let qemuDiskShared = null;
+  let qemuDiskWriteRequested = false;
+  let qemuDiskWriteMode = false;
+  let qemuDiskReady = null;
   let heartbeat = 0;
   let lastHeartbeatAt = performance.now();
   let lastControlId = 0;
@@ -458,27 +461,44 @@
       return null;
     }
 
-    const transport = params.get("diskTransport") === "dialtone" ? "dialtone" : "http";
+    qemuDiskWriteRequested = params.get("disk") === "rw";
+    let transport = params.get("diskTransport") === "dialtone" ? "dialtone" : "http";
+    if (qemuDiskWriteRequested && transport !== "dialtone") {
+      log("disk=rw requires the dialtone transport; enabling it");
+      transport = "dialtone";
+    }
     const chunkKb = Number(params.get("diskChunkKb")) || 128;
     const cacheMb = Number(params.get("diskCacheMb")) || 512;
+    const token = params.get("diskToken") || "";
+    const tabId = `c89-${Math.random().toString(36).slice(2, 10)}`;
     const control = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 16);
     const data = new SharedArrayBuffer(8 * 1024 * 1024);
     const ctrlView = new Int32Array(control);
     ctrlView[7] = -1; // DISK_FD: nothing tracked yet
 
+    let readyResolve;
+    qemuDiskReady = new Promise((resolve) => {
+      readyResolve = resolve;
+    });
+
     const worker = new Worker("./disk-worker.js");
     worker.onmessage = (event) => {
       const message = event.data || {};
       if (message.type === "ready") {
-        log(`disk worker ready: ${message.transport} transport, ${message.diskSize} bytes, ${message.chunkBytes >> 10} KB chunks`);
+        log(`disk worker ready: ${message.transport} transport, ${message.diskSize} bytes, ${message.chunkBytes >> 10} KB chunks, ${message.writable ? "writable" : "read-only"}`);
+        if (readyResolve) readyResolve({ writable: Boolean(message.writable) });
       } else if (message.type === "init-error") {
         log(`disk worker init failed (falling back to main-thread lazy reads): ${message.error}`);
+        if (readyResolve) readyResolve({ writable: false, error: message.error });
+      } else if (message.type === "write-disabled") {
+        log(`disk worker write mode unavailable: ${message.reason}`);
       } else if (message.type === "stats" && message.stats) {
         window.AuxDiskStats = message.stats;
         const s = message.stats;
         log(`disk worker stats: ${s.requests} reqs ${(s.servedBytes / 1048576).toFixed(1)}MB served, ` +
           `${s.fetches} fetches ${(s.fetchedBytes / 1048576).toFixed(1)}MB wire, ` +
           `${s.cacheHitRequests} cache-hit reqs, cache ${(s.cacheBytes / 1048576).toFixed(1)}MB/${s.cacheChunks} chunks, ` +
+          `${s.writes} writes ${(s.writtenBytes / 1048576).toFixed(1)}MB, ` +
           `${s.errors} errors`);
       }
     };
@@ -487,22 +507,56 @@
     };
 
     const wsDefault = `ws://${window.location.hostname}:8080/disk`;
+    let wsUrl = params.get("diskWs") || wsDefault;
+    if (token) {
+      // The relay authorizes WebSocket writes at upgrade time via ?token=.
+      wsUrl += (wsUrl.includes("?") ? "&" : "?") + `token=${encodeURIComponent(token)}`;
+    }
     worker.postMessage({
       type: "init",
       control,
       data,
       transport,
       url: qemuAsset(runtimeDir, runtime.lazyDisk.file),
-      wsUrl: params.get("diskWs") || wsDefault,
+      wsUrl,
       httpBase: `http://${window.location.hostname}:8080`,
       diskName: params.get("diskName") || runtime.lazyDisk.file,
       chunkBytes: chunkKb * 1024,
       cacheMb,
+      write: qemuDiskWriteRequested,
+      token,
+      tabId,
     });
 
-    log(`disk worker started: transport=${transport} chunk=${chunkKb}KB cache=${cacheMb}MB`);
+    log(`disk worker started: transport=${transport} chunk=${chunkKb}KB cache=${cacheMb}MB${qemuDiskWriteRequested ? " write-mode-requested" : ""}`);
     qemuDiskShared = { control, data, guestPath: runtime.lazyDisk.guestPath };
     return worker;
+  }
+
+  // disk=rw drops -snapshot only after the worker confirms write auth and
+  // the relay disk lock, so a failed setup degrades to the read-only
+  // overlay behavior instead of a guest that cannot write at all.
+  async function confirmDiskWriteMode() {
+    qemuDiskWriteMode = false;
+    window.AuxQemuDiskWritable = false;
+    if (!qemuDiskWriteRequested || !qemuDiskWorker || !qemuDiskReady) return;
+    const timeout = new Promise((resolve) =>
+      window.setTimeout(() => resolve({ writable: false, error: "disk worker ready timeout" }), 20000));
+    const ready = await Promise.race([qemuDiskReady, timeout]);
+    qemuDiskWriteMode = Boolean(ready.writable);
+    window.AuxQemuDiskWritable = qemuDiskWriteMode;
+    if (qemuDiskWriteMode) {
+      log("disk write mode ACTIVE: guest writes persist through the relay");
+    } else {
+      log(`disk write mode disabled (${ready.error || "see disk worker log"}); continuing read-only with -snapshot`);
+    }
+  }
+
+  function applyDiskWriteMode(args) {
+    if (!qemuDiskWriteMode) return args;
+    return args
+      .filter((arg) => arg !== "-snapshot")
+      .map((arg) => (typeof arg === "string" ? arg.replace("snapshot=on", "snapshot=off") : arg));
   }
 
   function stopDiskWorker() {
@@ -511,6 +565,10 @@
       qemuDiskWorker = null;
     }
     qemuDiskShared = null;
+    qemuDiskWriteRequested = false;
+    qemuDiskWriteMode = false;
+    qemuDiskReady = null;
+    window.AuxQemuDiskWritable = false;
   }
 
   function createPtyShim(sharedInput) {
@@ -1447,6 +1505,7 @@
     };
 
     try {
+      await confirmDiskWriteMode();
       await loadScript(`./${runtimeDir}/module.js`);
       if (qemuStartPaused) {
         const args = window.AuxQemuModuleArguments || window.Module.arguments || [];
@@ -1454,11 +1513,11 @@
           window.AuxQemuModuleArguments = ["-S", ...args];
         }
       }
-      window.Module.arguments = applyDisplayMode(
+      window.Module.arguments = applyDiskWriteMode(applyDisplayMode(
         applyTraceOptions(
           applyCpuPacing(applyRamSize(window.AuxQemuModuleArguments || window.Module.arguments || []))
         )
-      );
+      ));
       log(`RAM configured: ${selectedRamMb()} MB`);
       if (qemuHeapMb) {
         window.Module.INITIAL_MEMORY = qemuHeapMb * 1024 * 1024;

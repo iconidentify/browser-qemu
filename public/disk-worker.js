@@ -26,6 +26,8 @@ const CTRL = {
   SIZE_LO: 8,
   SIZE_HI: 9,
   READY: 10,
+  OP: 11, // 0 read, 1 write
+  WRITABLE: 12, // worker sets 1 only after write auth and disk lock are verified
 };
 
 const DIALTONE = {
@@ -58,6 +60,8 @@ const stats = {
   prefetchPushes: 0,
   prefetchBytes: 0,
   evictedChunks: 0,
+  writes: 0,
+  writtenBytes: 0,
   errors: 0,
 };
 
@@ -89,13 +93,78 @@ async function init(msg) {
     throw new Error(`bad disk size ${diskSize}`);
   }
 
+  let writable = false;
+  if (msg.write) {
+    writable = await enableWrites(msg);
+  }
+
   Atomics.store(ctrl, CTRL.SIZE_LO, diskSize % 4294967296 | 0);
   Atomics.store(ctrl, CTRL.SIZE_HI, Math.floor(diskSize / 4294967296));
+  Atomics.store(ctrl, CTRL.WRITABLE, writable ? 1 : 0);
   Atomics.store(ctrl, CTRL.READY, 1);
-  postMessage({ type: "ready", diskSize, transport: msg.transport || "http", chunkBytes: chunkSize });
+  postMessage({ type: "ready", diskSize, transport: msg.transport || "http", chunkBytes: chunkSize, writable });
 
   setInterval(() => postMessage({ type: "stats", stats: snapshotStats() }), msg.statsMs || 30000);
   pump();
+}
+
+// Write mode preconditions, both verified up front because the relay
+// fail-safes unauthorized WebSocket writes as silent no-op acks:
+// 1. the admin JWT must actually pass auth (probed via POST /disk/write
+//    with no offset: 400 means auth passed, 401 means rejected), and
+// 2. the relay's multi-tab disk lock must be held, with a 5 s heartbeat.
+async function enableWrites(msg) {
+  if (msg.transport !== "dialtone") {
+    postMessage({ type: "write-disabled", reason: "writes require the dialtone transport" });
+    return false;
+  }
+  if (!msg.token) {
+    postMessage({ type: "write-disabled", reason: "no diskToken provided" });
+    return false;
+  }
+
+  const probe = await fetch(
+    `${msg.httpBase}/disk/write?name=${encodeURIComponent(msg.diskName)}&token=${encodeURIComponent(msg.token)}`,
+    { method: "POST" }
+  );
+  if (probe.status === 401) {
+    postMessage({ type: "write-disabled", reason: "relay rejected the admin token (401)" });
+    return false;
+  }
+  if (probe.status !== 400) {
+    postMessage({ type: "write-disabled", reason: `unexpected auth probe status ${probe.status}` });
+    return false;
+  }
+
+  const tabId = msg.tabId || `tab-${Math.random().toString(36).slice(2)}`;
+  const lockUrl = (endpoint) =>
+    `${msg.httpBase}/disk/${endpoint}?name=${encodeURIComponent(msg.diskName)}&tabId=${encodeURIComponent(tabId)}&sessionId=${encodeURIComponent(tabId)}&token=${encodeURIComponent(msg.token)}`;
+  const lock = await fetch(lockUrl("lock"), { method: "POST" });
+  if (lock.status === 409) {
+    postMessage({ type: "write-disabled", reason: "disk is locked by another tab (409)" });
+    return false;
+  }
+  if (!lock.ok) {
+    postMessage({ type: "write-disabled", reason: `disk lock failed (${lock.status})` });
+    return false;
+  }
+
+  setInterval(async () => {
+    try {
+      const beat = await fetch(lockUrl("heartbeat"), { method: "POST" });
+      if (!beat.ok) {
+        if (Atomics.load(ctrl, CTRL.WRITABLE) === 1) {
+          Atomics.store(ctrl, CTRL.WRITABLE, 0);
+          stats.errors += 1;
+          postMessage({ type: "write-disabled", reason: `disk lock lost (heartbeat ${beat.status}); now read-only` });
+        }
+      }
+    } catch (error) {
+      // Transient network failure; the relay only expires the lock after 15 s.
+    }
+  }, 5000);
+
+  return true;
 }
 
 async function pump() {
@@ -116,17 +185,28 @@ async function handleRequest() {
   const offset = hi * 4294967296 + lo;
   const requested = Atomics.load(ctrl, CTRL.REQ_LEN) >>> 0;
   const length = Math.min(requested, data.length, Math.max(0, diskSize - offset));
+  const op = Atomics.load(ctrl, CTRL.OP);
   let nextState = 2;
 
   try {
-    const bytes = await read(offset, length);
-    data.set(bytes, 0);
-    Atomics.store(ctrl, CTRL.RES_LEN, bytes.length);
-    stats.requests += 1;
-    stats.servedBytes += bytes.length;
+    if (op === 1) {
+      if (Atomics.load(ctrl, CTRL.WRITABLE) !== 1) throw new Error("disk is not writable");
+      const bytes = data.slice(0, length);
+      await transport.write(offset, bytes);
+      patchCache(offset, bytes);
+      Atomics.store(ctrl, CTRL.RES_LEN, bytes.length);
+      stats.writes += 1;
+      stats.writtenBytes += bytes.length;
+    } else {
+      const bytes = await read(offset, length);
+      data.set(bytes, 0);
+      Atomics.store(ctrl, CTRL.RES_LEN, bytes.length);
+      stats.requests += 1;
+      stats.servedBytes += bytes.length;
+    }
   } catch (error) {
     stats.errors += 1;
-    console.error("disk-worker: read failed", offset, length, error);
+    console.error("disk-worker:", op === 1 ? "write" : "read", "failed", offset, length, error);
     Atomics.store(ctrl, CTRL.ERR, 1);
     Atomics.store(ctrl, CTRL.RES_LEN, 0);
     nextState = 3;
@@ -134,6 +214,23 @@ async function handleRequest() {
 
   Atomics.store(ctrl, CTRL.STATE, nextState);
   Atomics.notify(ctrl, CTRL.STATE);
+}
+
+// Keep cached chunks coherent with guest writes. Uncached chunks are left
+// alone: the relay is the source of truth and a later read fetches them.
+function patchCache(offset, bytes) {
+  const firstChunk = Math.floor(offset / chunkSize);
+  const lastChunk = Math.floor((offset + bytes.length - 1) / chunkSize);
+  for (let id = firstChunk; id <= lastChunk; id += 1) {
+    const chunk = cache.get(id);
+    if (!chunk) continue;
+    const chunkStart = id * chunkSize;
+    const copyFrom = Math.max(offset, chunkStart);
+    const copyTo = Math.min(offset + bytes.length, chunkStart + chunk.length);
+    if (copyTo > copyFrom) {
+      chunk.set(bytes.subarray(copyFrom - offset, copyTo - offset), copyFrom - chunkStart);
+    }
+  }
 }
 
 async function read(offset, length) {
@@ -225,6 +322,9 @@ function makeHttpTransport(msg) {
       stats.fetches += 1;
       stats.fetchedBytes += bytes.length;
     },
+    async write() {
+      throw new Error("the http transport is read-only; use diskTransport=dialtone for writes");
+    },
   };
 }
 
@@ -283,6 +383,12 @@ function makeDialtoneTransport(msg) {
           if (waiter) {
             pending.delete(requestId);
             waiter.resolve(payload.slice());
+          }
+        } else if (type === DIALTONE.MsgWriteAck) {
+          const waiter = pending.get(requestId);
+          if (waiter) {
+            pending.delete(requestId);
+            waiter.resolve(null);
           }
         } else if (type === DIALTONE.MsgPrefetchPush) {
           const chunkId = (payload[0] << 24 >>> 0) + (payload[1] << 16) + (payload[2] << 8) + payload[3];
@@ -352,6 +458,26 @@ function makeDialtoneTransport(msg) {
         );
       }
       await Promise.all(reads);
+    },
+    async write(offset, bytes) {
+      const ws = socket || (await connect());
+      const requestId = takeRequestId();
+      const payload = new Uint8Array(8 + bytes.length);
+      const view = new DataView(payload.buffer);
+      view.setUint32(0, Math.floor(offset / 4294967296));
+      view.setUint32(4, offset % 4294967296);
+      payload.set(bytes, 8);
+      const acked = new Promise((resolve, reject) => {
+        pending.set(requestId, { resolve, reject });
+        setTimeout(() => {
+          if (pending.has(requestId)) {
+            pending.delete(requestId);
+            reject(new Error(`dialtone write timeout offset=${offset} len=${bytes.length}`));
+          }
+        }, msg.readTimeoutMs || 30000);
+      });
+      ws.send(frame(DIALTONE.MsgWriteRequest, requestId, payload));
+      await acked;
     },
   };
 }
