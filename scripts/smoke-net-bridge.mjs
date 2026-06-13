@@ -35,6 +35,7 @@ for (let i = 0; i < args.length; i += 1) {
   else if (a === "--zone") options.zone = args[++i];
   else if (a === "--inject") options.inject = true;
   else if (a === "--sniff") options.sniff = true;
+  else if (a === "--agent") options.agent = true;
   else if (a === "--relay-ws") options.relayWs = args[++i];
 }
 options.zone = options.zone || "";
@@ -195,6 +196,29 @@ async function evaluate(cdp, expression) {
   return r.result ? r.result.value : null;
 }
 
+async function evaluateAsync(cdp, expression) {
+  const r = await cdp.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, 40000);
+  return r.result ? r.result.value : null;
+}
+
+// Drive the in-page auxagent client (window.AuxAgent) to prove the web app
+// itself can run commands inside A/UX. Net mode auto-shares one zone between
+// the NIC bridge and the agent peer.
+async function runAgentTest(cdp) {
+  await evaluate(cdp, `(window.AuxQemuNet && window.AuxQemuNet.connect(), "net-connect")`);
+  stamp({ event: "agent-net-connect" });
+  let up = false;
+  for (let i = 0; i < 24; i++) {
+    const r = await evaluateAsync(cdp, `window.AuxAgent.ping().then(x=>JSON.stringify(x)).catch(e=>"ERR:"+(e&&e.message||e))`);
+    stamp({ event: "agent-ping", i, r });
+    if (r && r.includes("auxagent")) { up = true; break; }
+    await delay(10000);
+  }
+  if (!up) { stamp({ event: "agent-timeout" }); return; }
+  const ex = await evaluateAsync(cdp, `window.AuxAgent.exec("uname -a; id").then(x=>JSON.stringify(x)).catch(e=>"ERR:"+(e&&e.message||e))`);
+  stamp({ event: "agent-exec", result: ex });
+}
+
 const port = 9400 + Math.floor(Math.random() * 1000);
 const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), "c89-net-smoke-chrome-"));
 const chrome = spawn(options.chrome, [
@@ -235,6 +259,10 @@ try {
       catch (e) { return 'connect-error: ' + (e && e.message ? e.message : e); }
     })()`);
     stamp({ event: "connect", result: connectRes });
+    if (options.agent) {
+      try { await runAgentTest(cdp); }
+      catch (e) { stamp({ event: "agent-error", message: String(e && e.message ? e.message : e) }); }
+    }
     if (options.sniff) {
       try { await runSniffer(options.zone); }
       catch (e) { stamp({ event: "sniff-error", message: String(e && e.message ? e.message : e) }); }

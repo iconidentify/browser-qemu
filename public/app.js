@@ -6,6 +6,9 @@
   const isolationStatus = document.getElementById("isolationStatus");
   const qemuStatus = document.getElementById("qemuStatus");
   const netStatus = document.getElementById("netStatus");
+  const agentStatus = document.getElementById("agentStatus");
+  const agentCmd = document.getElementById("agentCmd");
+  const agentOut = document.getElementById("agentOut");
   const lastKey = document.getElementById("lastKey");
   const mouseMetric = document.getElementById("mouseMetric");
   const captureMetric = document.getElementById("captureMetric");
@@ -102,6 +105,8 @@
   let qemuDiskReady = null;
   let netBridge = null;
   let netModeRequested = false;
+  let netZone = "";       // shared relay zone for the NIC bridge and the agent
+  let auxAgent = null;
   // Guest NIC MAC. q800 forces the 08:00:07 (Apple) prefix; the low 3 bytes
   // come from this and must match the relay /ethernet init macAddress.
   const AUX_NET_MAC = "08:00:07:0a:0b:0c";
@@ -1250,6 +1255,9 @@
     const params = new URLSearchParams(window.location.search);
     netModeRequested = params.get("net") === "1" || params.get("net") === "relay";
     if (!netModeRequested) return args;
+    // One shared relay zone for both the guest NIC bridge and the agent peer
+    // so they can exchange frames. Unique per page unless ?netZone= pins it.
+    netZone = params.get("netZone") || `aux-${Math.random().toString(36).slice(2, 8)}`;
     const next = [...args];
     const nicSpec = `wasmbridge,model=dp83932,mac=${AUX_NET_MAC}`;
     const nicIndex = next.indexOf("-nic");
@@ -1520,6 +1528,7 @@
         qemuAutoPulseMs = 0;
         stopControlWorker();
         stopDiskWorker();
+        closeAuxAgent();
         hmpMonitorActive = false;
         setStartButtonsDisabled(false);
         setHmpButtonsDisabled(true);
@@ -1587,6 +1596,7 @@
         qemuAutoPulseMs = 0;
         stopControlWorker();
         stopDiskWorker();
+        closeAuxAgent();
         hmpMonitorActive = false;
         setStatus(qemuStatus, "QEMU start failed", "error");
         displayPanel.classList.remove("runtime-active");
@@ -1604,6 +1614,7 @@
       qemuAutoPulseMs = 0;
       stopControlWorker();
       stopDiskWorker();
+      closeAuxAgent();
       hmpMonitorActive = false;
       setStatus(qemuStatus, "QEMU start failed", "error");
       displayPanel.classList.remove("runtime-active");
@@ -1626,8 +1637,7 @@
       return;
     }
 
-    const params = new URLSearchParams(window.location.search);
-    const zone = params.get("netZone") || "";
+    if (!netZone) netZone = `aux-${Math.random().toString(36).slice(2, 8)}`;
 
     setStatus(netStatus, "Connecting", "warn");
     try {
@@ -1635,7 +1645,7 @@
         module: window.AuxQemu,
         wsUrl: wsUrl.value,
         mac: AUX_NET_MAC,
-        zone,
+        zone: netZone,
         log,
         onOpen() {
           setStatus(netStatus, "Network connected", "ready");
@@ -1664,6 +1674,14 @@
       netBridge.stop();
       netBridge = null;
     }
+    closeAuxAgent();
+  }
+
+  function closeAuxAgent() {
+    if (auxAgent) {
+      auxAgent.close();
+      auxAgent = null;
+    }
   }
 
   // Probe/automation surface for the network bridge.
@@ -1673,6 +1691,103 @@
     stats() {
       return netBridge ? netBridge.stats() : null;
     },
+  };
+
+  // In-page auxagent (AAP) client: drives A/UX over the same relay zone as the
+  // NIC bridge. Lazily created; requires net mode + a connected bridge so the
+  // guest is in the zone.
+  function ensureAuxAgent() {
+    if (auxAgent) return auxAgent;
+    if (!netModeRequested) {
+      log("aux agent unavailable: launch with ?net=1");
+      return null;
+    }
+    if (typeof window.createAuxAgent !== "function") {
+      log("aux agent unavailable: aux-agent.js not loaded");
+      return null;
+    }
+    if (!netZone) netZone = `aux-${Math.random().toString(36).slice(2, 8)}`;
+    const params = new URLSearchParams(window.location.search);
+    auxAgent = window.createAuxAgent({
+      wsUrl: wsUrl.value,
+      zone: netZone,
+      token: params.get("aapToken") || "",
+      log,
+    });
+    return auxAgent;
+  }
+
+  // The agent needs the guest in the relay zone, i.e. the NIC bridge running.
+  function withAuxAgent(fn) {
+    const agent = ensureAuxAgent();
+    if (!agent) return Promise.reject(new Error("aux agent unavailable (need ?net=1)"));
+    if (!netBridge || !netBridge.isRunning()) connectNetwork();
+    return fn(agent);
+  }
+
+  function appendAgentOut(text) {
+    if (!agentOut) return;
+    agentOut.textContent += text;
+    agentOut.scrollTop = agentOut.scrollHeight;
+  }
+
+  async function runAgentCommand() {
+    const cmd = (agentCmd && agentCmd.value || "").trim();
+    if (!cmd) return;
+    setStatus(agentStatus, "running", "warn");
+    appendAgentOut(`$ ${cmd}\n`);
+    try {
+      const r = await withAuxAgent((a) => a.exec(cmd));
+      appendAgentOut(r.output + (r.output.endsWith("\n") ? "" : "\n") + `[exit ${r.exitCode}]\n\n`);
+      setStatus(agentStatus, "ready", "ready");
+    } catch (error) {
+      appendAgentOut(`[error: ${formatError(error)}]\n\n`);
+      setStatus(agentStatus, "error", "error");
+    }
+  }
+
+  async function pingAgent() {
+    setStatus(agentStatus, "pinging", "warn");
+    try {
+      const r = await withAuxAgent((a) => a.ping());
+      appendAgentOut(`/ping -> ${r.text || "(no body)"} [${r.status}]\n`);
+      setStatus(agentStatus, r.ok ? "ready" : "error", r.ok ? "ready" : "error");
+    } catch (error) {
+      appendAgentOut(`[ping error: ${formatError(error)}]\n`);
+      setStatus(agentStatus, "error", "error");
+    }
+  }
+
+  // Reconfigure the guest for outbound internet via the relay slirp gateway,
+  // mirroring scripts/aux-online.sh (ephemeral; the disk runs with -snapshot).
+  async function bringAuxOnline() {
+    setStatus(agentStatus, "configuring", "warn");
+    appendAgentOut("# bringing A/UX online (default route -> relay 10.68.0.1)\n");
+    const steps = [
+      "/etc/ifconfig ao0 10.1.1.20 netmask 255.0.0.0 up",
+      "/usr/etc/route delete default 10.1.1.1 2>/dev/null; /usr/etc/route add default 10.68.0.1 1",
+      "echo nameserver 10.68.0.1 > /etc/resolv.conf; echo domain local >> /etc/resolv.conf",
+      "netstat -rn | grep -E 'default|^10 '",
+    ];
+    try {
+      for (const c of steps) {
+        const r = await withAuxAgent((a) => a.exec(c));
+        if (r.output.trim()) appendAgentOut(r.output.trim() + "\n");
+      }
+      appendAgentOut("# online. Try: telnet 1.1.1.1 80\n\n");
+      setStatus(agentStatus, "online", "ready");
+    } catch (error) {
+      appendAgentOut(`[online error: ${formatError(error)}]\n\n`);
+      setStatus(agentStatus, "error", "error");
+    }
+  }
+
+  window.AuxAgent = {
+    exec: (cmd) => withAuxAgent((a) => a.exec(cmd)),
+    ping: () => withAuxAgent((a) => a.ping()),
+    getFile: (path) => withAuxAgent((a) => a.getFile(path)),
+    putFile: (path, bytes) => withAuxAgent((a) => a.putFile(path, bytes)),
+    online: bringAuxOnline,
   };
 
   window.AuxQemuProbe = {
@@ -2035,6 +2150,11 @@
   document.getElementById("startQemu").addEventListener("click", () => startQemu("qemu"));
   document.getElementById("connectNet").addEventListener("click", connectNetwork);
   document.getElementById("disconnectNet").addEventListener("click", disconnectNetwork);
+  document.getElementById("agentRun").addEventListener("click", runAgentCommand);
+  document.getElementById("agentPing").addEventListener("click", pingAgent);
+  document.getElementById("agentOnline").addEventListener("click", bringAuxOnline);
+  document.getElementById("agentClear").addEventListener("click", () => { if (agentOut) agentOut.textContent = ""; });
+  agentCmd.addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); runAgentCommand(); } });
   document.getElementById("sendHmpA").addEventListener("click", () => sendHmpKey("a"));
   document.getElementById("sendHmpReturn").addEventListener("click", () => sendHmpKey("ret"));
   document.getElementById("sendHmpHelp").addEventListener("click", () => sendHmp("help", false));

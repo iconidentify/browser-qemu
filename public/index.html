@@ -87,6 +87,21 @@
         </section>
 
         <section>
+          <h2>A/UX Agent <span id="agentStatus" class="status">idle</span></h2>
+          <p class="hint">Runs commands inside A/UX via auxagent over the network bridge (needs <code>?net=1</code> and Connect).</p>
+          <div class="button-row">
+            <input id="agentCmd" type="text" placeholder="shell command, e.g. uname -a" spellcheck="false" autocomplete="off">
+            <button id="agentRun" type="button">Run</button>
+          </div>
+          <div class="button-row">
+            <button id="agentPing" type="button">Ping agent</button>
+            <button id="agentOnline" type="button">Bring online</button>
+            <button id="agentClear" type="button">Clear</button>
+          </div>
+          <pre id="agentOut" class="agent-out" aria-live="polite"></pre>
+        </section>
+
+        <section>
           <h2>Input</h2>
           <dl class="metrics">
             <div>
@@ -173,6 +188,7 @@
     </section>
 
     <script src="./net-bridge.js"></script>
+    <script src="./aux-agent.js"></script>
     <script src="./app.js"></script>
   </body>
 </html>

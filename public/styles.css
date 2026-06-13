@@ -303,6 +303,36 @@ dd {
   white-space: pre-wrap;
 }
 
+.agent-out {
+  min-height: 120px;
+  max-height: 260px;
+  overflow: auto;
+  margin: 8px 0 0;
+  padding: 10px;
+  border-radius: 6px;
+  background: #090c10;
+  color: #d7f7e8;
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+}
+
+#agentCmd {
+  flex: 1 1 auto;
+  min-width: 160px;
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text, #d7f7e8);
+  font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.hint {
+  margin: 4px 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 @media (max-width: 980px) {
   .topbar,
   .workspace {
