@@ -209,13 +209,17 @@ lethal.
 
 5b. auxagent (in-VM control): DONE 2026-06-13. The project's auxagent (AAP =
    HTTP/1.0 over TCP, source ~/se30/auxagent) runs inside the guest on
-   10.1.1.20:8377. scripts/auxctl-zone.mjs speaks AAP to it over the bridge
-   via a minimal userspace TCP client on the relay zone (no real route to the
-   guest exists). ping/exec/get/put all work: `exec "uname -a; id"` ->
-   "A/UX auxvm 3.1.1 SVR2 mc68040 / uid=0(root)". This is the reliable
-   programmatic control channel for the system. NEXT: move the zone-TCP+AAP
-   transport into the browser shell/worker so the web app itself drives A/UX
-   (today it's a Node CLI).
+   10.1.1.20:8377. A minimal userspace TCP client on the relay zone (no real
+   route to the guest exists) speaks AAP to it -- ping/exec/get/put all work:
+   `exec "uname -a; id"` -> "A/UX auxvm 3.1.1 SVR2 mc68040 / uid=0(root)".
+   Two front-ends: scripts/auxctl-zone.mjs (Node CLI) and, IN THE BROWSER,
+   public/aux-agent.js (window.AuxAgent) -- the emulator page itself runs
+   commands/moves files in A/UX, with an "A/UX Agent" UI panel (Run / Ping /
+   Bring online). One shared relay zone is auto-generated per page so the NIC
+   bridge and the agent peer can exchange frames. This is the reliable
+   programmatic control channel for the system. NEXT (optional): per-session
+   zones for multi-user, and a configurable relay gateway (10.1.1.1) so no
+   per-boot guest reconfig is needed for outbound.
 6. Auth and sessions: reuse the dialtone JWT model. DEPRIORITIZED for the
    disk side -- the v1 model is one shared read-only base for visitors plus
    single-tab admin writes (done, see item 4); per-session disk overlays
