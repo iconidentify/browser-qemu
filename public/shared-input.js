@@ -27,6 +27,7 @@
   var MOD_CMD = 0x0100;
   var BUTTON_RELEASE_HOLD_MS = 60;
   var KEY_AUTO_RELEASE_MS = 350;
+  var KEY_TAP_NON_MODIFIERS = true;
 
   var qkeyNames = [
     "unmapped", "shift", "shift_r", "alt", "alt_r", "ctrl", "ctrl_r",
@@ -178,18 +179,54 @@
     return name ? (QK[name] || 0) : 0;
   }
 
-  function canvasScale(canvas) {
-    var rect = canvasContentBox(canvas);
-    if (!rect) return null;
+  function positiveInt(value, fallback) {
+    value = Math.trunc(Number(value) || 0);
+    return value > 0 ? value : fallback;
+  }
+
+  function normalizeGuestGeometry(canvas, geometry) {
+    var backingWidth = positiveInt(geometry && geometry.backingWidth, canvas.width || 1);
+    var backingHeight = positiveInt(geometry && geometry.backingHeight, canvas.height || 1);
+    var width = positiveInt(geometry && geometry.width, backingWidth);
+    var height = positiveInt(geometry && geometry.height, backingHeight);
+    var offsetX = clampInt(geometry && geometry.offsetX, 0, Math.max(0, backingWidth - 1));
+    var offsetY = clampInt(geometry && geometry.offsetY, 0, Math.max(0, backingHeight - 1));
+    width = Math.max(1, Math.min(width, Math.max(1, backingWidth - offsetX)));
+    height = Math.max(1, Math.min(height, Math.max(1, backingHeight - offsetY)));
     return {
-      rect: rect,
-      x: canvas.width / rect.width,
-      y: canvas.height / rect.height,
+      width: width,
+      height: height,
+      backingWidth: backingWidth,
+      backingHeight: backingHeight,
+      offsetX: offsetX,
+      offsetY: offsetY,
     };
   }
 
-  function movementForEvent(canvas, event) {
-    var scale = canvasScale(canvas);
+  function canvasScale(canvas, geometry) {
+    var rect = canvasContentBox(canvas);
+    if (!rect) return null;
+    var guest = normalizeGuestGeometry(canvas, geometry);
+    var viewportLeft = rect.left + rect.width * guest.offsetX / guest.backingWidth;
+    var viewportTop = rect.top + rect.height * guest.offsetY / guest.backingHeight;
+    var viewportWidth = Math.max(1, rect.width * guest.width / guest.backingWidth);
+    var viewportHeight = Math.max(1, rect.height * guest.height / guest.backingHeight);
+    return {
+      rect: {
+        left: viewportLeft,
+        top: viewportTop,
+        width: viewportWidth,
+        height: viewportHeight,
+      },
+      x: guest.width / viewportWidth,
+      y: guest.height / viewportHeight,
+      guest: guest,
+      contentRect: rect,
+    };
+  }
+
+  function movementForEvent(canvas, event, geometry) {
+    var scale = canvasScale(canvas, geometry);
     if (!scale) return null;
     return {
       dx: clampInt((event.movementX || 0) * scale.x, -2048, 2048),
@@ -197,19 +234,19 @@
     };
   }
 
-  function pointForEvent(canvas, event, lastPoint) {
-    var scale = canvasScale(canvas);
+  function pointForEvent(canvas, event, lastPoint, geometry) {
+    var scale = canvasScale(canvas, geometry);
     if (!scale) return null;
     if (root.document && root.document.pointerLockElement === canvas && lastPoint) {
-      var movement = movementForEvent(canvas, event) || { dx: 0, dy: 0 };
+      var movement = movementForEvent(canvas, event, geometry) || { dx: 0, dy: 0 };
       return {
-        x: clampInt(lastPoint.x + movement.dx, 0, canvas.width - 1),
-        y: clampInt(lastPoint.y + movement.dy, 0, canvas.height - 1),
+        x: clampInt(lastPoint.x + movement.dx, 0, scale.guest.width - 1),
+        y: clampInt(lastPoint.y + movement.dy, 0, scale.guest.height - 1),
       };
     }
     return {
-      x: clampInt((event.clientX - scale.rect.left) * scale.x, 0, canvas.width - 1),
-      y: clampInt((event.clientY - scale.rect.top) * scale.y, 0, canvas.height - 1),
+      x: clampInt((event.clientX - scale.rect.left) * scale.x, 0, scale.guest.width - 1),
+      y: clampInt((event.clientY - scale.rect.top) * scale.y, 0, scale.guest.height - 1),
     };
   }
 
@@ -217,6 +254,8 @@
     var module = options.module;
     var canvas = options.canvas;
     var log = options.log || function () {};
+    var getGuestGeometry = typeof options.getGuestGeometry === "function" ?
+      options.getGuestGeometry : function () { return null; };
 
     var base = 0, ctrlBase = 0, keyBase = 0;
     var ctrl = null;
@@ -232,7 +271,11 @@
     var capsLockState = false;
     var pressedCodes = new Set();
     var ready = false;
-    var stats = { keys: 0, keyDrops: 0, mouseMoves: 0, buttons: 0, autoKeyReleases: 0 };
+    var stats = { keys: 0, keyDrops: 0, mouseMoves: 0, buttons: 0, autoKeyReleases: 0, keyTaps: 0 };
+
+    function activeGuestGeometry() {
+      return normalizeGuestGeometry(canvas, getGuestGeometry() || null);
+    }
 
     function refreshViews() {
       if (ctrl !== module.HEAP32) {
@@ -263,8 +306,9 @@
       keyBase = (base + WI_NCTRL * 4) >> 2;
       ready = keySlots > 0 && keyStride >= 4;
       if (!ready) throw new Error("wasminput invalid key ring layout");
-      Atomics.store(ctrl, ctrlBase + C_ABS_WIDTH, canvas.width);
-      Atomics.store(ctrl, ctrlBase + C_ABS_HEIGHT, canvas.height);
+      var guest = activeGuestGeometry();
+      Atomics.store(ctrl, ctrlBase + C_ABS_WIDTH, guest.width);
+      Atomics.store(ctrl, ctrlBase + C_ABS_HEIGHT, guest.height);
     }
 
     function queueKey(qcode, down, adb, mods) {
@@ -294,16 +338,17 @@
       });
     }
 
-    function writePoint(point, event) {
+    function writePoint(point, event, geometry) {
       if (!ready || !point) return;
+      var guest = normalizeGuestGeometry(canvas, geometry);
       refreshViews();
       Atomics.store(ctrl, ctrlBase + C_ABS_X, point.x);
       Atomics.store(ctrl, ctrlBase + C_ABS_Y, point.y);
-      Atomics.store(ctrl, ctrlBase + C_ABS_WIDTH, canvas.width);
-      Atomics.store(ctrl, ctrlBase + C_ABS_HEIGHT, canvas.height);
+      Atomics.store(ctrl, ctrlBase + C_ABS_WIDTH, guest.width);
+      Atomics.store(ctrl, ctrlBase + C_ABS_HEIGHT, guest.height);
       Atomics.store(ctrl, ctrlBase + C_ABS_FLAGS, 1);
 
-      var movement = event ? movementForEvent(canvas, event) : null;
+      var movement = event ? movementForEvent(canvas, event, geometry) : null;
       if (movement && (movement.dx || movement.dy)) {
         Atomics.add(ctrl, ctrlBase + C_REL_DX, movement.dx);
         Atomics.add(ctrl, ctrlBase + C_REL_DY, movement.dy);
@@ -403,18 +448,21 @@
         }
         if (event.code === "CapsLock") {
           if (!down) return true;
-          pressedCodes.add(event.code);
           if (queueKey(qcode, true, adbKeyCodes[event.code], modifierMask(event, capsLockState))) {
-            root.setTimeout(function () {
-              queueKey(qcode, false, adbKeyCodes[event.code], modifierMask(event, capsLockState));
-              pressedCodes.delete(event.code);
-            }, 50);
+            queueKey(qcode, false, adbKeyCodes[event.code], modifierMask(event, capsLockState));
+            stats.keyTaps++;
           }
           return true;
         }
         var isModifier = Boolean(modifierCodes[event.code]);
         if (down) {
           if (event.repeat || pressedCodes.has(event.code)) return true;
+          if (KEY_TAP_NON_MODIFIERS && !isModifier) {
+            if (!queueKey(qcode, true, adbKeyCodes[event.code], modifierMask(event, capsLockState))) return false;
+            queueKey(qcode, false, adbKeyCodes[event.code], modifierMask(event, capsLockState));
+            stats.keyTaps++;
+            return true;
+          }
           pressedCodes.add(event.code);
           if (queueKey(qcode, true, adbKeyCodes[event.code], modifierMask(event, capsLockState))) {
             scheduleKeyAutoRelease(event.code, modifierMask(event, capsLockState));
@@ -439,8 +487,9 @@
         pressedCodes.clear();
       },
       mouseEvent: function (event) {
-        var point = pointForEvent(canvas, event, lastPoint);
-        var scale = canvasScale(canvas);
+        var geometry = activeGuestGeometry();
+        var point = pointForEvent(canvas, event, lastPoint, geometry);
+        var scale = canvasScale(canvas, geometry);
         if (point && scale) {
           lastPointerDiag = {
             clientX: Math.round(event.clientX || 0),
@@ -451,14 +500,22 @@
             contentTop: Math.round(scale.rect.top),
             contentWidth: Math.round(scale.rect.width),
             contentHeight: Math.round(scale.rect.height),
+            canvasContentWidth: Math.round(scale.contentRect.width),
+            canvasContentHeight: Math.round(scale.contentRect.height),
             scaleX: Number(scale.x.toFixed(4)),
             scaleY: Number(scale.y.toFixed(4)),
+            guestWidth: scale.guest.width,
+            guestHeight: scale.guest.height,
+            guestOffsetX: scale.guest.offsetX,
+            guestOffsetY: scale.guest.offsetY,
+            backingWidth: scale.guest.backingWidth,
+            backingHeight: scale.guest.backingHeight,
             canvasWidth: canvas.width,
             canvasHeight: canvas.height,
             pointerLocked: Boolean(root.document && root.document.pointerLockElement === canvas),
           };
         }
-        writePoint(point, event);
+        writePoint(point, event, geometry);
         queueButtonMask(buttonMaskFromEvent(event));
         return point;
       },
@@ -480,11 +537,12 @@
         return true;
       },
       testPointer: function (x, y, buttons) {
+        var guest = activeGuestGeometry();
         var point = {
-          x: clampInt(x, 0, Math.max(0, canvas.width - 1)),
-          y: clampInt(y, 0, Math.max(0, canvas.height - 1)),
+          x: clampInt(x, 0, Math.max(0, guest.width - 1)),
+          y: clampInt(y, 0, Math.max(0, guest.height - 1)),
         };
-        writePoint(point, null);
+        writePoint(point, null, guest);
         queueButtonMask(clampInt(buttons, 0, 7));
         return point;
       },
@@ -520,6 +578,8 @@
           keyDrops: stats.keyDrops + (ready ? Atomics.load(ctrl, ctrlBase + C_KEY_DROP) : 0),
           autoKeyReleases: stats.autoKeyReleases,
           keyAutoReleaseMs: KEY_AUTO_RELEASE_MS,
+          tapNonModifierKeys: KEY_TAP_NON_MODIFIERS,
+          keyTaps: stats.keyTaps,
           pressedKeys: pressedCodes.size,
           pointer: lastPointerDiag,
           mouseMoves: stats.mouseMoves,

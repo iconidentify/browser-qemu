@@ -445,6 +445,8 @@
     canvasDisplayH = h;
     if (options.queryLock) {
       canvasQueryDisplayLocked = true;
+    } else if (options.native) {
+      canvasQueryDisplayLocked = false;
     } else if (!options.lock) {
       canvasQueryDisplayLocked = false;
     }
@@ -465,6 +467,19 @@
     if (options.reason) {
       log(`canvas display locked: ${w}x${h} (${options.reason})`);
     }
+  }
+
+  function activeGuestGeometry() {
+    const guestW = screenW > 0 ? screenW : canvas.width;
+    const guestH = screenH > 0 ? screenH : canvas.height;
+    return {
+      width: guestW,
+      height: guestH,
+      backingWidth: canvas.width,
+      backingHeight: canvas.height,
+      offsetX: 0,
+      offsetY: 0,
+    };
   }
 
   function syncDisplayToCanvasBacking(reason) {
@@ -667,6 +682,18 @@
     if (w !== screenW || h !== screenH || !screenImage) {
       if (canvasDisplayLocked) {
         canvasNativeFrameSeen = true;
+      }
+
+      if (canvasDisplayLocked && canvasQueryDisplayLocked &&
+          canvasNativeFrameSeen && (w !== canvasDisplayW || h !== canvasDisplayH)) {
+        const requested = `${canvasDisplayW}x${canvasDisplayH}`;
+        setCanvasDisplaySize(w, h, {
+          lock: true,
+          native: true,
+          resizeBacking: true,
+        });
+        canvasDisplayMismatchLogged = false;
+        log(`guest framebuffer ${w}x${h} overrides requested canvas ${requested}; using native pixels`);
       }
 
       const targetW = canvasDisplayLocked ? canvasDisplayW : w;
@@ -1011,6 +1038,7 @@
         module: qemuInstance,
         canvas,
         log,
+        getGuestGeometry: activeGuestGeometry,
       });
       sharedInputBridge.start();
       if (sharedInputRetryTimer) {
@@ -1919,11 +1947,23 @@
         typeof sharedInputBridge.testKey === "function" &&
         typeof sharedInputBridge.testPointer === "function") {
       const sharedBefore = sharedInputBridge.stats();
+      const tapEvent = {
+        code: "KeyR",
+        repeat: false,
+        shiftKey: false,
+        ctrlKey: false,
+        altKey: false,
+        metaKey: false,
+        getModifierState: () => false,
+      };
+      const tapKey = sharedInputBridge.keyEvent(tapEvent, true);
+      const tapKeyUpIgnored = sharedInputBridge.keyEvent(tapEvent, false);
       const lostKeyDown = sharedInputBridge.testKey("KeyC", true);
       await delay((sharedBefore.keyAutoReleaseMs || 350) + 120);
       const sharedAfterAutoRelease = sharedInputBridge.stats();
       const keyDown = sharedInputBridge.testKey("KeyX", true);
       const keyUp = sharedInputBridge.testKey("KeyX", false);
+      const expectedGeometry = activeGuestGeometry();
       const pointerDown = sharedInputBridge.testPointer(400, 300, 1);
       await delay(45);
       const pointerUp = sharedInputBridge.testPointer(400, 300, 0);
@@ -1932,6 +1972,8 @@
       shared = {
         before: sharedBefore,
         after: sharedAfter,
+        tapKey,
+        tapKeyUpIgnored,
         keyDown,
         keyUp,
         lostKeyDown,
@@ -1945,6 +1987,7 @@
         pointerUp,
         ok: Boolean(
           lostKeyDown &&
+          tapKey &&
           sharedAfterAutoRelease.autoKeyReleases >= sharedBefore.autoKeyReleases + 1 &&
           sharedAfterAutoRelease.pressedKeys === 0 &&
           keyDown &&
@@ -1953,11 +1996,12 @@
           pointerUp &&
           sharedAfter.absX === 400 &&
           sharedAfter.absY === 300 &&
-          sharedAfter.absWidth === canvas.width &&
-          sharedAfter.absHeight === canvas.height &&
+          sharedAfter.absWidth === expectedGeometry.width &&
+          sharedAfter.absHeight === expectedGeometry.height &&
           sharedAfter.backendMouse >= sharedBefore.backendMouse + 1 &&
           sharedAfter.backendButtons >= sharedBefore.backendButtons + 2 &&
-          sharedAfter.backendKeys >= sharedBefore.backendKeys + 2 &&
+          sharedAfter.backendKeys >= sharedBefore.backendKeys + 4 &&
+          sharedAfter.keyTaps >= sharedBefore.keyTaps + 1 &&
           sharedAfter.lastAdb === 0x07 &&
           sharedAfter.frontendButtons === 0 &&
           sharedAfter.lastButtons === 0
@@ -1993,6 +2037,8 @@
       lastAdb: shared && shared.after ? shared.after.lastAdb : null,
       frontendButtons: shared && shared.after ? shared.after.frontendButtons : null,
       lastButtons: shared && shared.after ? shared.after.lastButtons : null,
+      tapKey: shared ? shared.tapKey : false,
+      keyTaps: shared && shared.after ? shared.after.keyTaps : null,
       autoKeyReleases: shared && shared.after ? shared.after.autoKeyReleases : null,
       keyAutoReleaseMs: shared && shared.after ? shared.after.keyAutoReleaseMs : null,
       pressedKeys: shared && shared.after ? shared.after.pressedKeys : null,

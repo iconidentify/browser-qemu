@@ -7,6 +7,7 @@
 //   - the bridge writes exact 800x600 geometry into QEMU shared memory
 //   - a center pointer press/release reaches QEMU with both button edges
 //   - a KeyX press/release reaches QEMU as Mac ADB keycode 0x07
+//   - a normal browser keydown is emitted as an immediate guest tap
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -241,6 +242,7 @@ try {
   addCheck(checks, "mouse-backend-saw-button-edges", result.backendButtons >= 2, { result });
   addCheck(checks, "mouse-released", result.frontendButtons === 0 && result.lastButtons === 0, { result });
   addCheck(checks, "keyboard-backend-saw-keyx", result.backendKeys >= 2 && result.lastAdb === 0x07, { result });
+  addCheck(checks, "keyboard-browser-key-tap", result.tapKey === true && result.keyTaps >= 1, { result });
   addCheck(checks, "keyboard-missing-keyup-auto-release", result.autoReleaseOk === true && result.autoKeyReleases >= 1 && result.pressedKeys === 0, { result });
 
   const ok = checks.every((check) => check.pass);

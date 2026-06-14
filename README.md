@@ -513,10 +513,11 @@ Current input/display status:
 
 - The SDL canvas attaches, QEMU/HMP are controllable, and the framebuffer is proven alive: paused prelaunch clears to black, then after `make hmp-cont` QEMU mode-sets the canvas back to 1152x870 and the framebuffer checksum changes.
 - The display surface was previously distorted by the host page's `max-height` rule. The canvas CSS now preserves the Quadra 1152x870 aspect ratio instead of squashing the framebuffer vertically.
-- With `res=800x600`, the visible canvas and backing stay locked to 800x600.
-  The canvas visual frame is a CSS shadow ring instead of a DOM border, so SDL
-  sees the exact guest pixel plane. Both the shared input bridge and HMP fallback
-  map mouse coordinates through the content box.
+- `res=800x600` requests the startup display mode, but the browser now follows
+  the actual guest framebuffer once QEMU publishes it. That lets A/UX's 640x480
+  login framebuffer render as a true 640x480 canvas instead of a clipped image
+  inside an 800x600 shell. Both the shared input bridge and HMP fallback map
+  mouse coordinates through the active guest content box.
 - The active browser input path is shared ADB input. Early headed verification
   shows mouse and keyboard counters moving through `sharedInput`, with `KeyX`
   reaching QEMU as ADB `0x07`; HMP/hybrid/SDL modes remain diagnostic-only.
@@ -525,12 +526,14 @@ Current input/display status:
   mouse/key/button counters. Its nested `pointer` object captures the latest
   browser client coordinate, content box, scale, and guest coordinate for
   cursor/click drift reports.
+- Normal non-modifier keys are emitted as immediate ADB down/up taps. This avoids
+  a delayed browser `keyup` turning into guest key repeat during headed UI stalls.
 - `make smoke-shared-input` is the fast guardrail for this path. It launches a
   temporary headless Chrome against paused `qemu-lazy`, runs the page's
   structured shared-input self-test, verifies the 800x600 shared geometry,
   confirms a center pointer press/release reaches QEMU with both button edges,
-  checks that `KeyX` arrives as ADB `0x07`, and verifies the missing-keyup
-  auto-release guard for headed typing stalls.
+  checks both the browser key-tap path and `KeyX` as ADB `0x07`, and verifies
+  the missing-keyup auto-release guard for headed typing stalls.
 - The page's `Yield 2s` button and `make hmp-yield-pulse-start INTERVAL=2` run the current interactive cadence: every two seconds the control worker queues only `stop; cont`, giving Chrome/QEMU a scheduling window with minimal HMP output. The `Pulse 30s` button and `make hmp-sample-pulse-start INTERVAL=30` keep the diagnostic stop/status/register/block/continue cadence. Do not switch to full pulse-off for normal interaction yet; pair pulse-off with `make hmp-stop` only before screenshots or page inspection.
 - `make browser-interactive` and `make browser-shared-input` add `ptyMin=2&ptyIdle=16`, lowering the generated runtime's bounded monitor wait for headed interaction. Use `ptyMin=8&ptyIdle=32` for the conservative default profile, and compare boot/input behavior before changing the checked-in launcher again.
 - The diagnostic `Input self-test` button and `?inputSelfTest=1` path exercise canvas focus, keyboard counters, mouse counters, and worker-backed HMP input without letting the paused VM run.

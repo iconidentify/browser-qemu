@@ -27,7 +27,9 @@ Current state:
   reproducible build pipeline (`scripts/patch-qemu-out-js-display.mjs`).
   Verify with `#probeState.renderer.framesRendered > 0`; if it stays `0`, the
   browser is still on stock SDL blits.
-- The `res=` URL parameter now locks the visible native canvas size. The canvas
+- The `res=` URL parameter requests the startup display mode, but the browser
+  now adopts the first real guest framebuffer size it sees. This prevents a
+  stale 800x600 shell from wrapping A/UX's 640x480 login framebuffer. The canvas
   visual frame is drawn with a shadow ring instead of a DOM border, so
   Emscripten/SDL sees the exact guest pixel plane; `#probeState.canvas` reports
   client and content-box sizes for verification.
@@ -156,11 +158,12 @@ All verified with headless smoke/watch runs unless noted.
    **1024x768 is NOT a hardware mode** and cannot be set without adding it to
    `hw/display/macfb.c` + a wasm rebuild. Override per-session with `&res=1152x870`.
 
-5. **Query-locked canvas geometry and content-box input mapping.** With
-   `res=800x600`, the visible canvas, backing, and SDL-reported framebuffer stay
-   800x600. The visual ring is CSS shadow, not a DOM border, and mouse/click
-   coordinates use the canvas content box in both `public/app.js` and
-   `public/shared-input.js`.
+5. **Native canvas geometry and content-box input mapping.** `res=800x600`
+   still requests the startup mode, but the browser switches to the first real
+   guest framebuffer size. In headed A/UX login testing this changes the canvas
+   from the requested 800x600 shell to the actual 640x480 framebuffer and keeps
+   mouse/click coordinates in that same guest coordinate plane. The visual ring
+   is CSS shadow, not a DOM border.
 
 6. **Native cursor/click path packaged.** The served wasm includes the
    `wasminput` patch that exports guest cursor bytes, suppresses Mac software
