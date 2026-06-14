@@ -25,6 +25,15 @@ WASM heap plus 200 MB of disk cache. New default launches use
 `tb-size=128` and `diskCacheMb=128`, cutting the valid login run to about
 881 MB WASM heap and 128 MB disk cache with no page stalls. Use `&tb=500` or
 `&diskCacheMb=384` only for old-baseline comparisons.
+The rebuilt cursor/runtime package was re-validated at 640x480 on June 14:
+`make smoke-shared-input` passed, and `make watch-login-session LOGIN_DURATION=75`
+reached login around 135 s, dispatched credentials, opened the classic Mac/A/UX
+environment, and stayed responsive (`maxEvalMs=1`, `maxLagMs=58`, no stalls).
+During the user's manual Chrome burn, process sampling showed a separate
+contention source: native desktop `qemu-system-m68k` was already using about one
+CPU core, and a Codex renderer was also hot. Use `make browser-doctor` when a
+tab feels too slow to click; it prints hot QEMU/Chrome/Codex processes and the
+server-mirrored browser log tail.
 
 Reliable headed recipe: `make serve`, then run `make browser-interactive` or
 open
@@ -44,7 +53,10 @@ continuous `autostart=lazy` only for focused debugging, then close or pause the
 tab before interacting for long.
 If a tab is too busy to click Copy log, run `make browser-log`; the page now
 mirrors periodic breadcrumbs with lag, memory, framebuffer, disk, and input
-counts to the dev server.
+counts to the dev server. If the whole desktop feels saturated, run
+`make browser-doctor` before starting another boot; do not judge headed Chrome
+performance while native desktop QEMU or another browser-QEMU tab is already
+burning a full CPU core.
 For networking, start/keep Dialtone on `:8080`, add `&net=1&netZone=<zone>`,
 and drive auxagent with `node scripts/auxctl-zone.mjs --zone <zone> ...`.
 See ROADMAP.md for the plan to production and VENDOR.md for how the vendor

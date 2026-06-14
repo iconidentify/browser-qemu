@@ -71,6 +71,18 @@ Current state:
   comparison reached login around 123 s, stayed responsive, and peaked at about
   881 MB WASM heap plus 128 MB disk cache. Use `&tb=500&diskCacheMb=384` only
   when intentionally comparing against the old profile.
+- The cursor/click low-memory patch has now been baked into the served wasm.
+  `make smoke-shared-input` passed on the rebuilt package, and
+  `make watch-login-session LOGIN_DURATION=75` reached the login framebuffer at
+  ~135 s, typed `root` / `31337leet`, entered the classic Mac/A/UX environment,
+  and watched 75 s post-login with `maxEvalMs=1`, `maxLagMs=58`, `maxStalls=0`,
+  `maxWasmMb=1011`, and `maxDiskCacheMb=128`.
+- One manual Chrome "burning out" report coincided with external CPU contention:
+  native desktop `qemu-system-m68k` was consuming about one core, and a Codex
+  renderer was also near one core before the headed Chrome watcher even started.
+  Treat that as an environment variable in headed testing. Run
+  `make browser-doctor` when the page is too slow to click; it prints hot
+  QEMU/Chrome/Codex processes and tails the mirrored browser log.
 - The page now emits periodic `breadcrumb` lines to the server-mirrored browser
   log with UI lag, frame generation, memory, disk, and input counters. If the
   visible tab is too busy to click Copy log, run `make browser-log` after
@@ -269,6 +281,9 @@ http://127.0.0.1:8088/?ram=128&heap=384&pace=1&input=shared&cursor=host&fps=8&re
 - The on-page **Serial** panel mirrors the log; click **Copy log** to grab it.
 - Or fetch the server-mirrored log directly:
   `curl -s http://127.0.0.1:8088/__browser-log.json | python3 -m json.tool`
+- If Chrome or the whole desktop is too slow to use, run `make browser-doctor`.
+  It does not stop anything; it shows whether native QEMU, another browser
+  renderer, or Codex itself is already consuming the machine.
 - The browser **DevTools Console** shows uncaught errors (the benign
   `Uncaught unwind` is ASYNCIFY yielding — see test 1).
 - "Frozen" looks like: the `disk worker stats:` line **stops advancing** for
