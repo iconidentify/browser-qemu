@@ -1919,6 +1919,9 @@
         typeof sharedInputBridge.testKey === "function" &&
         typeof sharedInputBridge.testPointer === "function") {
       const sharedBefore = sharedInputBridge.stats();
+      const lostKeyDown = sharedInputBridge.testKey("KeyC", true);
+      await delay((sharedBefore.keyAutoReleaseMs || 350) + 120);
+      const sharedAfterAutoRelease = sharedInputBridge.stats();
       const keyDown = sharedInputBridge.testKey("KeyX", true);
       const keyUp = sharedInputBridge.testKey("KeyX", false);
       const pointerDown = sharedInputBridge.testPointer(400, 300, 1);
@@ -1931,9 +1934,19 @@
         after: sharedAfter,
         keyDown,
         keyUp,
+        lostKeyDown,
+        autoReleaseOk: Boolean(
+          lostKeyDown &&
+          sharedAfterAutoRelease.autoKeyReleases >= sharedBefore.autoKeyReleases + 1 &&
+          sharedAfterAutoRelease.pressedKeys === 0
+        ),
+        afterAutoRelease: sharedAfterAutoRelease,
         pointerDown,
         pointerUp,
         ok: Boolean(
+          lostKeyDown &&
+          sharedAfterAutoRelease.autoKeyReleases >= sharedBefore.autoKeyReleases + 1 &&
+          sharedAfterAutoRelease.pressedKeys === 0 &&
           keyDown &&
           keyUp &&
           pointerDown &&
@@ -1980,6 +1993,10 @@
       lastAdb: shared && shared.after ? shared.after.lastAdb : null,
       frontendButtons: shared && shared.after ? shared.after.frontendButtons : null,
       lastButtons: shared && shared.after ? shared.after.lastButtons : null,
+      autoKeyReleases: shared && shared.after ? shared.after.autoKeyReleases : null,
+      keyAutoReleaseMs: shared && shared.after ? shared.after.keyAutoReleaseMs : null,
+      pressedKeys: shared && shared.after ? shared.after.pressedKeys : null,
+      autoReleaseOk: shared ? shared.autoReleaseOk : false,
     })}`);
     renderProbeLog("input self-test");
     updateProbeStateNow();

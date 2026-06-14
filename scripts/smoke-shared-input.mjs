@@ -241,6 +241,7 @@ try {
   addCheck(checks, "mouse-backend-saw-button-edges", result.backendButtons >= 2, { result });
   addCheck(checks, "mouse-released", result.frontendButtons === 0 && result.lastButtons === 0, { result });
   addCheck(checks, "keyboard-backend-saw-keyx", result.backendKeys >= 2 && result.lastAdb === 0x07, { result });
+  addCheck(checks, "keyboard-missing-keyup-auto-release", result.autoReleaseOk === true && result.autoKeyReleases >= 1 && result.pressedKeys === 0, { result });
 
   const ok = checks.every((check) => check.pass);
   console.log(JSON.stringify({

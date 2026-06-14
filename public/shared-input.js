@@ -26,6 +26,7 @@
   var MOD_ALT = 0x0800;
   var MOD_CMD = 0x0100;
   var BUTTON_RELEASE_HOLD_MS = 60;
+  var KEY_AUTO_RELEASE_MS = 350;
 
   var qkeyNames = [
     "unmapped", "shift", "shift_r", "alt", "alt_r", "ctrl", "ctrl_r",
@@ -226,10 +227,11 @@
     var lastPoint = null;
     var lastButtonMask = 0;
     var buttonReleaseTimer = 0;
+    var keyReleaseTimers = new Map();
     var capsLockState = false;
     var pressedCodes = new Set();
     var ready = false;
-    var stats = { keys: 0, keyDrops: 0, mouseMoves: 0, buttons: 0 };
+    var stats = { keys: 0, keyDrops: 0, mouseMoves: 0, buttons: 0, autoKeyReleases: 0 };
 
     function refreshViews() {
       if (ctrl !== module.HEAP32) {
@@ -314,9 +316,35 @@
     }
 
     function releaseCode(code, mods) {
+      clearKeyReleaseTimer(code);
       var qcode = QK[codeToQKey[code] || ""];
       if (qcode) queueKey(qcode, false, adbKeyCodes[code], mods || 0);
       pressedCodes.delete(code);
+    }
+
+    function clearKeyReleaseTimer(code) {
+      var timer = keyReleaseTimers.get(code);
+      if (!timer) return;
+      root.clearTimeout(timer);
+      keyReleaseTimers.delete(code);
+    }
+
+    function clearAllKeyReleaseTimers() {
+      keyReleaseTimers.forEach(function (timer) {
+        root.clearTimeout(timer);
+      });
+      keyReleaseTimers.clear();
+    }
+
+    function scheduleKeyAutoRelease(code, mods) {
+      if (modifierCodes[code] || code === "CapsLock") return;
+      clearKeyReleaseTimer(code);
+      keyReleaseTimers.set(code, root.setTimeout(function () {
+        keyReleaseTimers.delete(code);
+        if (!pressedCodes.has(code)) return;
+        releaseCode(code, mods || 0);
+        stats.autoKeyReleases++;
+      }, KEY_AUTO_RELEASE_MS));
     }
 
     function writeButtonMask(mask) {
@@ -359,6 +387,7 @@
         ready = false;
         lastPoint = null;
         clearButtonReleaseTimer();
+        clearAllKeyReleaseTimers();
         lastButtonMask = 0;
         pressedCodes.clear();
       },
@@ -386,7 +415,12 @@
         if (down) {
           if (event.repeat || pressedCodes.has(event.code)) return true;
           pressedCodes.add(event.code);
-          return queueKey(qcode, true, adbKeyCodes[event.code], modifierMask(event, capsLockState));
+          if (queueKey(qcode, true, adbKeyCodes[event.code], modifierMask(event, capsLockState))) {
+            scheduleKeyAutoRelease(event.code, modifierMask(event, capsLockState));
+            return true;
+          }
+          pressedCodes.delete(event.code);
+          return false;
         } else {
           if (!isModifier && !pressedCodes.has(event.code)) return true;
           releaseCode(event.code, modifierMask(event, capsLockState));
@@ -400,6 +434,7 @@
         pressedCodes.forEach(function (code) {
           releaseCode(code, 0);
         });
+        clearAllKeyReleaseTimers();
         pressedCodes.clear();
       },
       mouseEvent: function (event) {
@@ -411,7 +446,19 @@
       testKey: function (code, down) {
         var qcode = QK[codeToQKey[code] || ""];
         if (!qcode) return false;
-        return queueKey(qcode, Boolean(down), adbKeyCodes[code], 0);
+        if (down) {
+          if (pressedCodes.has(code)) return true;
+          pressedCodes.add(code);
+          if (queueKey(qcode, true, adbKeyCodes[code], 0)) {
+            scheduleKeyAutoRelease(code, 0);
+            return true;
+          }
+          pressedCodes.delete(code);
+          return false;
+        }
+        if (!modifierCodes[code] && !pressedCodes.has(code)) return true;
+        releaseCode(code, 0);
+        return true;
       },
       testPointer: function (x, y, buttons) {
         var point = {
@@ -452,6 +499,9 @@
         return {
           keys: stats.keys,
           keyDrops: stats.keyDrops + (ready ? Atomics.load(ctrl, ctrlBase + C_KEY_DROP) : 0),
+          autoKeyReleases: stats.autoKeyReleases,
+          keyAutoReleaseMs: KEY_AUTO_RELEASE_MS,
+          pressedKeys: pressedCodes.size,
           mouseMoves: stats.mouseMoves,
           buttons: stats.buttons,
           backendKeys: ready ? Atomics.load(ctrl, ctrlBase + C_KEY_EVENTS) : 0,
