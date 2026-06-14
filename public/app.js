@@ -180,6 +180,8 @@
   let responsivenessLongTasks = 0;
   let responsivenessLastLongTaskAt = 0;
   let responsivenessLastLogAt = 0;
+  let uiPressureLevel = 0;
+  let lastCanvasHeartbeatSyncAt = 0;
   let lastControlId = 0;
   let hmpMonitorActive = false;
   let hmpInputMode = "shared";
@@ -572,6 +574,16 @@
 
   function totalNetFrames(stats) {
     return sumObjectNumbers(stats, ["tx", "rx"]);
+  }
+
+  function uiPressureBackoff() {
+    if (uiPressureLevel >= 2) return 4;
+    if (uiPressureLevel >= 1) return 2;
+    return 1;
+  }
+
+  function effectiveInstrumentInterval(baseMs, maxMs = 60000) {
+    return Math.min(maxMs, Math.round(baseMs * uiPressureBackoff()));
   }
 
   function updateTelemetry() {
@@ -987,7 +999,8 @@
       return;
     }
     const now = performance.now();
-    if (!force && now - lastCursorProbeAt < cursorProbeMinMs) {
+    const minMs = effectiveInstrumentInterval(cursorProbeMinMs, 5000);
+    if (!force && now - lastCursorProbeAt < minMs) {
       return;
     }
     lastCursorProbeAt = now;
@@ -1216,6 +1229,29 @@
     const params = new URLSearchParams(window.location.search);
     url.searchParams.set("build", params.get("build") || String(Date.now()));
     return url.href;
+  }
+
+  async function detectRuntimeMemoryInfo(runtimeDir) {
+    const info = {
+      initialBytes: 0,
+      fixedMaximum: false,
+      error: "",
+    };
+
+    try {
+      const response = await fetch(qemuImportAsset(runtimeDir, "out.js"), { cache: "force-cache" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const source = await response.text();
+      const initialMatch = source.match(/var INITIAL_MEMORY = Module\['INITIAL_MEMORY'\] \|\| (\d+);/);
+      if (initialMatch) {
+        info.initialBytes = Number(initialMatch[1]) || 0;
+      }
+      info.fixedMaximum = /'maximum': INITIAL_MEMORY \/ 65536/.test(source);
+    } catch (error) {
+      info.error = error && error.message ? error.message : String(error);
+    }
+
+    return info;
   }
 
   function createSharedInputQueue() {
@@ -1725,14 +1761,26 @@
   }
 
   function applyUiPressureRelief(lag) {
-    if (!pressureReliefEnabled || uiPressureReliefActive || !qemuStarted) return;
+    if (!pressureReliefEnabled || !qemuStarted) return;
+    const nextLevel = lag >= 2500 || responsivenessLongTasks >= 4 ? 2 : 1;
+    if (uiPressureReliefActive && nextLevel <= uiPressureLevel) return;
+
     uiPressureReliefActive = true;
-    document.documentElement.dataset.pressure = "high";
-    if (screenFpsLimit === 0 || screenFpsLimit > 6) {
-      screenFpsLimit = 6;
-      log(`ui pressure relief: lowered framebuffer cap to ${screenFpsLimit} fps after ${lag}ms lag`);
+    uiPressureLevel = nextLevel;
+    document.documentElement.dataset.pressure = nextLevel >= 2 ? "critical" : "high";
+
+    const targetFps = nextLevel >= 2 ? 4 : 6;
+    if (screenFpsLimit === 0 || screenFpsLimit > targetFps) {
+      screenFpsLimit = targetFps;
+      log(
+        `ui pressure relief: level=${nextLevel} lowered framebuffer cap ` +
+        `to ${screenFpsLimit} fps after ${lag}ms lag`
+      );
     } else {
-      log(`ui pressure relief: lag=${lag}ms with framebuffer cap already at ${screenFpsLimit} fps`);
+      log(
+        `ui pressure relief: level=${nextLevel} lag=${lag}ms ` +
+        `with framebuffer cap already at ${screenFpsLimit} fps`
+      );
     }
     logRuntimeBreadcrumb("pressure-relief");
   }
@@ -2051,6 +2099,9 @@
         serialMs: serialRenderMinMs,
         pressureRelief: pressureReliefEnabled,
         pressureReliefActive: uiPressureReliefActive,
+        pressureLevel: uiPressureLevel,
+        pressureBackoff: uiPressureBackoff(),
+        effectiveInstrumentMs: effectiveInstrumentInterval(runtimeInstrumentIntervalMs),
       },
       ptyDroppedBytes: qemuPty ? qemuPty.droppedBytes() : 0,
       events: { ...eventCounters },
@@ -2090,6 +2141,108 @@
     };
   }
 
+  function readProbeStateSnapshot() {
+    const contentBox = canvasContentBox();
+    const shared = (() => {
+      try {
+        return sharedInputBridge ? sharedInputBridge.stats() : null;
+      } catch {
+        return null;
+      }
+    })();
+    const bridgeStats = (() => {
+      try {
+        return netBridge ? netBridge.stats() : null;
+      } catch {
+        return null;
+      }
+    })();
+
+    return {
+      heartbeat,
+      heartbeatAgeMs: Math.round(performance.now() - lastHeartbeatAt),
+      qemuStarted,
+      qemuStatus: qemuStatus.textContent,
+      hmpMonitorActive,
+      hmpInputMode,
+      sharedInputMotionMode,
+      ptyQueuedBytes: qemuPty ? qemuPty.queuedBytes() : 0,
+      ptyDroppedBytes: qemuPty ? qemuPty.droppedBytes() : 0,
+      capture: captureMetric.textContent,
+      responsiveness: {
+        intervalMs: responsivenessIntervalMs,
+        longTaskMs: responsivenessLongTaskMs,
+        lastLagMs: responsivenessLastLagMs,
+        maxLagMs: responsivenessMaxLagMs,
+        samples: responsivenessSamples,
+        longTasks: responsivenessLongTasks,
+        lastLongTaskAt: responsivenessLastLongTaskAt,
+      },
+      instrumentation: {
+        probeMs: probeStateMinMs,
+        instrumentMs: runtimeInstrumentIntervalMs,
+        cursorMs: cursorProbeMinMs,
+        frameProbeMs: framebufferProbeIntervalMs,
+        diskStatsMs: diskWorkerStatsRequestMs,
+        pressureRelief: pressureReliefEnabled,
+        pressureReliefActive: uiPressureReliefActive,
+        pressureLevel: uiPressureLevel,
+        pressureBackoff: uiPressureBackoff(),
+        effectiveInstrumentMs: effectiveInstrumentInterval(runtimeInstrumentIntervalMs),
+      },
+      events: { ...eventCounters },
+      canvas: {
+        width: canvas.width,
+        height: canvas.height,
+        displayWidth: canvasDisplayW,
+        displayHeight: canvasDisplayH,
+        displayLocked: canvasDisplayLocked,
+        queryDisplayLocked: canvasQueryDisplayLocked,
+        clientWidth: Math.round(canvas.getBoundingClientRect().width),
+        clientHeight: Math.round(canvas.getBoundingClientRect().height),
+        contentWidth: contentBox ? Math.round(contentBox.width) : 0,
+        contentHeight: contentBox ? Math.round(contentBox.height) : 0,
+      },
+      framebuffer: framebufferProbe,
+      renderer: {
+        decoupled: Boolean(qemuScreenCtl),
+        active: Boolean(screenTimerId),
+        framesRendered,
+        fpsLimit: screenFpsLimit,
+        width: screenW,
+        height: screenH,
+        generation: qemuScreenCtl ? Atomics.load(qemuScreenCtl, 4) : -1,
+      },
+      memory: {
+        wasmMb: (qemuInstance && qemuInstance.HEAPU8) ? Math.round(qemuInstance.HEAPU8.length / 1048576) : 0,
+        diskCacheMb: (window.AuxDiskStats && window.AuxDiskStats.cacheBytes) ? Math.round(window.AuxDiskStats.cacheBytes / 1048576) : 0,
+        jsHeapMb: (performance && performance.memory) ? Math.round(performance.memory.usedJSHeapSize / 1048576) : -1,
+      },
+      cpu: lastCpuRegister,
+      net: {
+        requested: netModeRequested,
+        zone: netZone,
+        status: netStatus.textContent,
+        bridgeRunning: Boolean(netBridge && netBridge.isRunning()),
+        bridgeStats,
+      },
+      diskIo: diskIoStats,
+      diskWorker: diskWorkerStats ? {
+        requests: diskWorkerStats.requests,
+        servedBytes: diskWorkerStats.servedBytes,
+        fetches: diskWorkerStats.fetches,
+        fetchedBytes: diskWorkerStats.fetchedBytes,
+        cacheHitRequests: diskWorkerStats.cacheHitRequests,
+        cacheBytes: diskWorkerStats.cacheBytes,
+        writes: diskWorkerStats.writes,
+        writtenBytes: diskWorkerStats.writtenBytes,
+        errors: diskWorkerStats.errors,
+      } : null,
+      sharedInput: shared,
+      serialTail: serialLines.slice(-32).join("\n").slice(-2000),
+    };
+  }
+
   function compactProbeSnapshot(note = "") {
     const snapshot = readProbeSnapshot();
     const diskIo = snapshot.diskIo.entries.map((entry) => ({
@@ -2098,6 +2251,7 @@
       bytesServed: entry.bytesServed,
       lastRange: entry.lastRange || "",
     }));
+    const shared = snapshot.sharedInput || null;
 
     return {
       note,
@@ -2122,6 +2276,22 @@
       memory: snapshot.memory,
       instrumentation: snapshot.instrumentation,
       cpu: snapshot.cpu,
+      sharedInput: shared ? {
+        version: shared.version,
+        motionMode: shared.motionMode,
+        pointer: shared.pointer,
+        abs: `${shared.absX},${shared.absY} ${shared.absWidth}x${shared.absHeight}`,
+        macMouse: `${shared.macMouseX},${shared.macMouseY}`,
+        macMTemp: `${shared.macMTempX},${shared.macMTempY}`,
+        macRaw: `${shared.macRawX},${shared.macRawY}`,
+        macDelta: `${shared.macMouseDeltaX},${shared.macMouseDeltaY}`,
+        lastSync: `${shared.lastSyncX},${shared.lastSyncY}`,
+        lastAbsEvent: `${shared.lastAbsEventX},${shared.lastAbsEventY} ${shared.lastAbsEventW}x${shared.lastAbsEventH}`,
+        cursor: `${shared.cursorHotspotX},${shared.cursorHotspotY} ${shared.cursorValid ? "valid" : "invalid"}`,
+        buttons: `${shared.frontendButtons}/${shared.lastButtons}/${shared.lastAdbButtons}`,
+        backend: `${shared.backendKeys}k/${shared.backendMouse}m/${shared.backendButtons}b`,
+        lastMouseDelta: `${shared.lastMouseDx},${shared.lastMouseDy}`,
+      } : null,
       diskIo,
       serialTail: snapshot.serialTail.split("\n").slice(-18).join("\n"),
     };
@@ -2140,7 +2310,7 @@
       probeStateTimer = 0;
       if (!probeStateDirty) return;
       probeStateDirty = false;
-      probeState.textContent = JSON.stringify(readProbeSnapshot());
+      probeState.textContent = JSON.stringify(readProbeStateSnapshot());
       if (diagnosticLive) {
         renderProbeLog("diagnostic running");
       }
@@ -2153,7 +2323,7 @@
       probeStateTimer = 0;
     }
     probeStateDirty = false;
-    probeState.textContent = JSON.stringify(readProbeSnapshot());
+    probeState.textContent = JSON.stringify(readProbeStateSnapshot());
     if (diagnosticLive) {
       renderProbeLog("diagnostic running");
     }
@@ -2608,6 +2778,7 @@
           pointerUp &&
           sharedAfter.absX === 400 &&
           sharedAfter.absY === 300 &&
+          sharedAfter.version >= 4 &&
           sharedAfter.absWidth === expectedGeometry.width &&
           sharedAfter.absHeight === expectedGeometry.height &&
           sharedAfter.backendMouse >= sharedBefore.backendMouse + 1 &&
@@ -2650,6 +2821,13 @@
       lastMouseDx: shared && shared.after ? shared.after.lastMouseDx : null,
       lastMouseDy: shared && shared.after ? shared.after.lastMouseDy : null,
       motionMode: shared && shared.after ? shared.after.motionMode : null,
+      version: shared && shared.after ? shared.after.version : null,
+      macMouseX: shared && shared.after ? shared.after.macMouseX : null,
+      macMouseY: shared && shared.after ? shared.after.macMouseY : null,
+      macMouseDeltaX: shared && shared.after ? shared.after.macMouseDeltaX : null,
+      macMouseDeltaY: shared && shared.after ? shared.after.macMouseDeltaY : null,
+      lastSyncX: shared && shared.after ? shared.after.lastSyncX : null,
+      lastSyncY: shared && shared.after ? shared.after.lastSyncY : null,
       lastAdb: shared && shared.after ? shared.after.lastAdb : null,
       frontendButtons: shared && shared.after ? shared.after.frontendButtons : null,
       lastButtons: shared && shared.after ? shared.after.lastButtons : null,
@@ -3184,9 +3362,26 @@
         )
       ))));
       log(`RAM configured: ${selectedRamMb()} MB`);
+      const runtimeMemory = await detectRuntimeMemoryInfo(runtimeDir);
+      if (runtimeMemory.error) {
+        log(`runtime memory probe skipped: ${runtimeMemory.error}`);
+      }
       if (qemuHeapMb) {
-        window.Module.INITIAL_MEMORY = qemuHeapMb * 1024 * 1024;
-        log(`wasm heap configured: ${qemuHeapMb} MB`);
+        const requestedHeapMb = qemuHeapMb;
+        const requestedBytes = requestedHeapMb * 1024 * 1024;
+        const configuredBytes = runtimeMemory.initialBytes > requestedBytes
+          ? runtimeMemory.initialBytes
+          : requestedBytes;
+        qemuHeapMb = Math.round(configuredBytes / 1048576);
+        window.Module.INITIAL_MEMORY = configuredBytes;
+        if (qemuHeapMb !== requestedHeapMb) {
+          const kind = runtimeMemory.fixedMaximum ? "fixed" : "minimum";
+          log(`wasm heap ${requestedHeapMb} MB below runtime ${kind}; using ${qemuHeapMb} MB`);
+        } else {
+          log(`wasm heap configured: ${qemuHeapMb} MB`);
+        }
+      } else if (runtimeMemory.initialBytes) {
+        log(`wasm heap runtime default: ${Math.round(runtimeMemory.initialBytes / 1048576)} MB`);
       }
       log(`pty bounded wait: min=${qemuPtyMinWaitMs}ms idle=${qemuPtyIdleWaitMs}ms`);
       if (window.Module.arguments.includes("-icount")) {
@@ -4194,22 +4389,25 @@
     heartbeat += 1;
     lastHeartbeatAt = now;
     heartbeatMetric.textContent = String(heartbeat);
-    syncDisplayToCanvasBacking("heartbeat");
+    if (!qemuStarted || now - lastCanvasHeartbeatSyncAt >= effectiveInstrumentInterval(2000, 10000)) {
+      lastCanvasHeartbeatSyncAt = now;
+      syncDisplayToCanvasBacking("heartbeat");
+    }
     pollSharedCursor();
-    if (now - lastFramebufferProbeAt >= framebufferProbeIntervalMs) {
+    if (now - lastFramebufferProbeAt >= effectiveInstrumentInterval(framebufferProbeIntervalMs, 60000)) {
       lastFramebufferProbeAt = now;
       sampleFramebuffer();
     }
-    if (qemuDiskWorker && now - lastDiskWorkerStatsRequestAt >= diskWorkerStatsRequestMs) {
+    if (qemuDiskWorker && now - lastDiskWorkerStatsRequestAt >= effectiveInstrumentInterval(diskWorkerStatsRequestMs, 60000)) {
       lastDiskWorkerStatsRequestAt = now;
       qemuDiskWorker.postMessage({ type: "stats" });
     }
-    if (now - lastRuntimeInstrumentAt >= runtimeInstrumentIntervalMs) {
+    if (now - lastRuntimeInstrumentAt >= effectiveInstrumentInterval(runtimeInstrumentIntervalMs, 60000)) {
       lastRuntimeInstrumentAt = now;
       pollDiskIoStats();
       updateTelemetry();
     }
-    if (now - lastBreadcrumbAt >= breadcrumbIntervalMs) {
+    if (now - lastBreadcrumbAt >= effectiveInstrumentInterval(breadcrumbIntervalMs, 120000)) {
       lastBreadcrumbAt = now;
       logRuntimeBreadcrumb();
     }

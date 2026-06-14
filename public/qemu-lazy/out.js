@@ -1695,7 +1695,7 @@ var PATH = {
 
 var initRandomFill = () => {
  if (typeof crypto == "object" && typeof crypto["getRandomValues"] == "function") {
-  return view => (view.set(crypto.getRandomValues(new Uint8Array(view.byteLength))),
+  return view => (view.set(crypto.getRandomValues(new Uint8Array(view.byteLength))), 
   view);
  } else if (ENVIRONMENT_IS_NODE) {
   try {

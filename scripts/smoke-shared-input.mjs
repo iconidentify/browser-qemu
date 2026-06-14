@@ -238,6 +238,7 @@ try {
   const result = selfTest.result || {};
   const checks = [];
   addCheck(checks, "self-test-ok", result.ok === true, { result });
+  addCheck(checks, "shared-input-version-4", result.version >= 4, { result });
   addCheck(checks, "shared-dimensions-800x600", result.absWidth === 800 && result.absHeight === 600, { result });
   addCheck(checks, "mouse-abs-center", result.absX === 400 && result.absY === 300, { result });
   addCheck(checks, "mouse-pointer-event-off-center", result.pointerEventOk === true && result.pointerEventX === 123 && result.pointerEventY === 77, { result });

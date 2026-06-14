@@ -9,7 +9,8 @@
   "use strict";
 
   var WI_MAGIC = 0xc8917001;
-  var WI_NCTRL = 32;
+  var WI_VERSION = 4;
+  var WI_NCTRL = 48;
   var C_MAGIC = 0, C_READY = 1, C_VERSION = 2, C_REL_DX = 3, C_REL_DY = 4,
       C_ABS_X = 5, C_ABS_Y = 6, C_ABS_FLAGS = 7, C_BUTTONS = 8,
       C_KEY_WRITE = 9, C_KEY_READ = 10, C_KEY_DROP = 11,
@@ -19,7 +20,15 @@
       C_ABS_WIDTH = 21, C_ABS_HEIGHT = 22, C_CURSOR_SEQ = 23,
       C_CURSOR_HOT_X = 24, C_CURSOR_HOT_Y = 25, C_CURSOR_VALID = 26,
       C_CURSOR_OFFSET = 27, C_CURSOR_BYTES = 28, C_MOUSE_ABS_SYNCS = 29,
-      C_LAST_MOUSE_DX = 30, C_LAST_MOUSE_DY = 31;
+      C_LAST_MOUSE_DX = 30, C_LAST_MOUSE_DY = 31,
+      C_MAC_MTEMP_X = 32, C_MAC_MTEMP_Y = 33,
+      C_MAC_RAW_X = 34, C_MAC_RAW_Y = 35,
+      C_MAC_MOUSE_X = 36, C_MAC_MOUSE_Y = 37,
+      C_MAC_CRSR_NEW = 38, C_MAC_CRSR_COUPLE = 39,
+      C_LAST_SYNC_X = 40, C_LAST_SYNC_Y = 41,
+      C_LAST_ABS_FLAGS = 42, C_LAST_ADB_BUTTONS = 43,
+      C_LAST_ABS_EVENT_X = 44, C_LAST_ABS_EVENT_Y = 45,
+      C_LAST_ABS_EVENT_W = 46, C_LAST_ABS_EVENT_H = 47;
 
   var MOD_SHIFT = 0x0200;
   var MOD_CAPS = 0x0002;
@@ -313,6 +322,10 @@
       }
       if (!Atomics.load(ctrl, ctrlBase + C_READY)) {
         throw new Error("wasminput backend not ready");
+      }
+      var version = Atomics.load(ctrl, ctrlBase + C_VERSION);
+      if (version !== WI_VERSION) {
+        throw new Error("wasminput version mismatch " + version + " (need " + WI_VERSION + "; rebuild/package QEMU)");
       }
       keySlots = Atomics.load(ctrl, ctrlBase + C_KEY_SLOTS);
       keyStride = Atomics.load(ctrl, ctrlBase + C_KEY_STRIDE);
@@ -613,6 +626,11 @@
       },
       stats: function () {
         refreshViews();
+        var version = ready ? Atomics.load(ctrl, ctrlBase + C_VERSION) : 0;
+        var absX = ready ? Atomics.load(ctrl, ctrlBase + C_ABS_X) : 0;
+        var absY = ready ? Atomics.load(ctrl, ctrlBase + C_ABS_Y) : 0;
+        var macMouseX = ready ? Atomics.load(ctrl, ctrlBase + C_MAC_MOUSE_X) : 0;
+        var macMouseY = ready ? Atomics.load(ctrl, ctrlBase + C_MAC_MOUSE_Y) : 0;
         return {
           keys: stats.keys,
           keyDrops: stats.keyDrops + (ready ? Atomics.load(ctrl, ctrlBase + C_KEY_DROP) : 0),
@@ -634,12 +652,12 @@
           lastQcode: ready ? Atomics.load(ctrl, ctrlBase + C_LAST_QCODE) : 0,
           lastAdb: ready ? Atomics.load(ctrl, ctrlBase + C_LAST_ADB) : -1,
           lastButtons: ready ? Atomics.load(ctrl, ctrlBase + C_LAST_BUTTONS) : 0,
-          absX: ready ? Atomics.load(ctrl, ctrlBase + C_ABS_X) : 0,
-          absY: ready ? Atomics.load(ctrl, ctrlBase + C_ABS_Y) : 0,
+          absX: absX,
+          absY: absY,
           absWidth: ready ? Atomics.load(ctrl, ctrlBase + C_ABS_WIDTH) : 0,
           absHeight: ready ? Atomics.load(ctrl, ctrlBase + C_ABS_HEIGHT) : 0,
           frontendButtons: ready ? Atomics.load(ctrl, ctrlBase + C_BUTTONS) : 0,
-          version: ready ? Atomics.load(ctrl, ctrlBase + C_VERSION) : 0,
+          version: version,
           cursorSeq: ready ? Atomics.load(ctrl, ctrlBase + C_CURSOR_SEQ) : 0,
           cursorValid: ready ? Boolean(Atomics.load(ctrl, ctrlBase + C_CURSOR_VALID)) : false,
           cursorHotspotX: ready ? Atomics.load(ctrl, ctrlBase + C_CURSOR_HOT_X) : 0,
@@ -647,6 +665,24 @@
           mouseAbsSyncs: ready ? Atomics.load(ctrl, ctrlBase + C_MOUSE_ABS_SYNCS) : 0,
           lastMouseDx: ready ? Atomics.load(ctrl, ctrlBase + C_LAST_MOUSE_DX) : 0,
           lastMouseDy: ready ? Atomics.load(ctrl, ctrlBase + C_LAST_MOUSE_DY) : 0,
+          lastAbsFlags: ready ? Atomics.load(ctrl, ctrlBase + C_LAST_ABS_FLAGS) : 0,
+          lastAdbButtons: ready ? Atomics.load(ctrl, ctrlBase + C_LAST_ADB_BUTTONS) : 0,
+          lastAbsEventX: ready ? Atomics.load(ctrl, ctrlBase + C_LAST_ABS_EVENT_X) : 0,
+          lastAbsEventY: ready ? Atomics.load(ctrl, ctrlBase + C_LAST_ABS_EVENT_Y) : 0,
+          lastAbsEventW: ready ? Atomics.load(ctrl, ctrlBase + C_LAST_ABS_EVENT_W) : 0,
+          lastAbsEventH: ready ? Atomics.load(ctrl, ctrlBase + C_LAST_ABS_EVENT_H) : 0,
+          lastSyncX: ready ? Atomics.load(ctrl, ctrlBase + C_LAST_SYNC_X) : 0,
+          lastSyncY: ready ? Atomics.load(ctrl, ctrlBase + C_LAST_SYNC_Y) : 0,
+          macMTempX: ready ? Atomics.load(ctrl, ctrlBase + C_MAC_MTEMP_X) : 0,
+          macMTempY: ready ? Atomics.load(ctrl, ctrlBase + C_MAC_MTEMP_Y) : 0,
+          macRawX: ready ? Atomics.load(ctrl, ctrlBase + C_MAC_RAW_X) : 0,
+          macRawY: ready ? Atomics.load(ctrl, ctrlBase + C_MAC_RAW_Y) : 0,
+          macMouseX: macMouseX,
+          macMouseY: macMouseY,
+          macCrsrNew: ready ? Atomics.load(ctrl, ctrlBase + C_MAC_CRSR_NEW) : 0,
+          macCrsrCouple: ready ? Atomics.load(ctrl, ctrlBase + C_MAC_CRSR_COUPLE) : 0,
+          macMouseDeltaX: ready ? absX - macMouseX : 0,
+          macMouseDeltaY: ready ? absY - macMouseY : 0,
           buttonReleaseHoldMs: BUTTON_RELEASE_HOLD_MS,
         };
       },

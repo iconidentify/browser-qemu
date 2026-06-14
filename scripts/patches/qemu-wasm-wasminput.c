@@ -23,8 +23,8 @@
 #endif
 
 #define WI_MAGIC       0xC8917001u
-#define WI_VERSION     3
-#define WI_NCTRL       32
+#define WI_VERSION     4
+#define WI_NCTRL       48
 #define WI_KEY_SLOTS   128
 #define WI_KEY_STRIDE  4
 #define WI_CURSOR_BYTES 64
@@ -77,6 +77,22 @@ enum {
     WI_C_MOUSE_ABS_SYNCS,
     WI_C_LAST_MOUSE_DX,
     WI_C_LAST_MOUSE_DY,
+    WI_C_MAC_MTEMP_X,
+    WI_C_MAC_MTEMP_Y,
+    WI_C_MAC_RAW_X,
+    WI_C_MAC_RAW_Y,
+    WI_C_MAC_MOUSE_X,
+    WI_C_MAC_MOUSE_Y,
+    WI_C_MAC_CRSR_NEW,
+    WI_C_MAC_CRSR_COUPLE,
+    WI_C_LAST_SYNC_X,
+    WI_C_LAST_SYNC_Y,
+    WI_C_LAST_ABS_FLAGS,
+    WI_C_LAST_ADB_BUTTONS,
+    WI_C_LAST_ABS_EVENT_X,
+    WI_C_LAST_ABS_EVENT_Y,
+    WI_C_LAST_ABS_EVENT_W,
+    WI_C_LAST_ABS_EVENT_H,
 };
 
 typedef struct WasmInputShared {
@@ -99,6 +115,8 @@ static bool g_wi_cursor_suppression_logged;
 static bool g_wi_abs_valid;
 static int32_t g_wi_abs_x;
 static int32_t g_wi_abs_y;
+static int32_t g_wi_last_sync_x;
+static int32_t g_wi_last_sync_y;
 
 EMSCRIPTEN_KEEPALIVE uint32_t c89_input_shared_ptr(void)
 {
@@ -119,6 +137,9 @@ static inline int32_t wi_exchange_i32(int32_t *p, int32_t v)
 {
     return __atomic_exchange_n(p, v, __ATOMIC_ACQ_REL);
 }
+
+static uint16_t wi_read_u16_be(hwaddr addr, bool *ok);
+static uint8_t wi_read_u8(hwaddr addr, bool *ok);
 
 static void wi_sync_mac_mouse_lowmem(int x, int y)
 {
@@ -156,6 +177,31 @@ static void wi_sync_mac_mouse_lowmem(int x, int y)
                                      MEMTXATTRS_UNSPECIFIED, &res);
     address_space_stb(&address_space_memory, WI_MAC_CRSR_NEW, crsr_couple,
                       MEMTXATTRS_UNSPECIFIED, &res);
+    g_wi_last_sync_x = x;
+    g_wi_last_sync_y = y;
+}
+
+static int32_t wi_read_mac_point_coord(hwaddr addr)
+{
+    bool ok = false;
+    uint16_t value = wi_read_u16_be(addr, &ok);
+    return ok ? (int16_t)value : INT32_MIN;
+}
+
+static void wi_refresh_mac_mouse_diag(int32_t *ctrl)
+{
+    bool ok = false;
+
+    ctrl[WI_C_MAC_MTEMP_X] = wi_read_mac_point_coord(0x82a);
+    ctrl[WI_C_MAC_MTEMP_Y] = wi_read_mac_point_coord(0x828);
+    ctrl[WI_C_MAC_RAW_X] = wi_read_mac_point_coord(0x82e);
+    ctrl[WI_C_MAC_RAW_Y] = wi_read_mac_point_coord(0x82c);
+    ctrl[WI_C_MAC_MOUSE_X] = wi_read_mac_point_coord(0x832);
+    ctrl[WI_C_MAC_MOUSE_Y] = wi_read_mac_point_coord(0x830);
+    ctrl[WI_C_MAC_CRSR_NEW] = wi_read_u8(WI_MAC_CRSR_NEW, &ok);
+    ctrl[WI_C_MAC_CRSR_COUPLE] = wi_read_u8(WI_MAC_CRSR_COUPLE, &ok);
+    ctrl[WI_C_LAST_SYNC_X] = g_wi_last_sync_x;
+    ctrl[WI_C_LAST_SYNC_Y] = g_wi_last_sync_y;
 }
 
 static int32_t wi_clamp_adb_delta(int32_t value)
@@ -318,6 +364,8 @@ static void wi_poll_mouse(int32_t *ctrl)
     uint32_t buttons = (uint32_t)wi_load_acq(&ctrl[WI_C_BUTTONS]);
     int adb_buttons = 0;
 
+    ctrl[WI_C_LAST_ABS_FLAGS] = abs_flags;
+
     if (buttons & 0x01) {
         adb_buttons |= MOUSE_EVENT_LBUTTON;
     }
@@ -344,6 +392,10 @@ static void wi_poll_mouse(int32_t *ctrl)
         g_wi_abs_x = abs_x;
         g_wi_abs_y = abs_y;
         g_wi_abs_valid = true;
+        ctrl[WI_C_LAST_ABS_EVENT_X] = abs_x;
+        ctrl[WI_C_LAST_ABS_EVENT_Y] = abs_y;
+        ctrl[WI_C_LAST_ABS_EVENT_W] = abs_w;
+        ctrl[WI_C_LAST_ABS_EVENT_H] = abs_h;
         ctrl[WI_C_MOUSE_ABS_SYNCS]++;
     }
 
@@ -380,6 +432,8 @@ static void wi_poll_mouse(int32_t *ctrl)
         }
         g_wi_last_buttons = buttons;
     }
+    ctrl[WI_C_LAST_ADB_BUTTONS] = adb_buttons;
+    wi_refresh_mac_mouse_diag(ctrl);
     ctrl[WI_C_LAST_BUTTONS] = (int32_t)g_wi_last_buttons;
 }
 
@@ -521,6 +575,8 @@ static void wi_reset_shared(void)
     g_wi_abs_valid = false;
     g_wi_abs_x = 0;
     g_wi_abs_y = 0;
+    g_wi_last_sync_x = 0;
+    g_wi_last_sync_y = 0;
     ctrl[WI_C_KEY_SLOTS] = WI_KEY_SLOTS;
     ctrl[WI_C_KEY_STRIDE] = WI_KEY_STRIDE;
     ctrl[WI_C_POLL_MS] = C89_WI_POLL_MS;

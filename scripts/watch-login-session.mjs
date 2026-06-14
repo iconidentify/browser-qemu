@@ -255,24 +255,38 @@ async function typeText(cdp, text) {
 async function waitForSettledLogin(cdp) {
   const started = Date.now();
   const deadline = Date.now() + opts.readyTimeoutSec * 1000;
+  const repeatedWindowMs = 45000;
+  const repeatedChecksums = new Map();
   let previousChecksum = null;
   let stableSamples = 0;
   while (Date.now() < deadline) {
     const probe = await readProbe(cdp);
     const framebuffer = probe && probe.framebuffer ? probe.framebuffer : null;
     if (framebuffer && framebuffer.nonBlack > 1000) {
+      const now = Date.now();
       if (framebuffer.checksum === previousChecksum) stableSamples += 1;
       else stableSamples = 0;
       previousChecksum = framebuffer.checksum;
+      const seenAt = repeatedChecksums.get(framebuffer.checksum) || [];
+      seenAt.push(now);
+      const recentSeenAt = seenAt.filter((sampleAt) => now - sampleAt <= repeatedWindowMs);
+      repeatedChecksums.set(framebuffer.checksum, recentSeenAt);
+      for (const [checksum, samples] of repeatedChecksums) {
+        const recent = samples.filter((sampleAt) => now - sampleAt <= repeatedWindowMs);
+        if (recent.length) repeatedChecksums.set(checksum, recent);
+        else repeatedChecksums.delete(checksum);
+      }
+      const repeatedSamples = Math.max(0, ...Array.from(repeatedChecksums.values(), (samples) => samples.length));
       stamp({
         event: "login-wait",
-        elapsed: Math.round((Date.now() - started) / 1000),
+        elapsed: Math.round((now - started) / 1000),
         stableSamples,
+        repeatedSamples,
         checksum: framebuffer.checksum,
         nonBlack: framebuffer.nonBlack,
         heartbeat: probe.heartbeat,
       });
-      if (stableSamples >= 4 && Date.now() - started >= opts.minLoginSec * 1000) {
+      if ((stableSamples >= 4 || repeatedSamples >= 4) && now - started >= opts.minLoginSec * 1000) {
         return probe;
       }
     }

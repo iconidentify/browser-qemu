@@ -71,12 +71,13 @@ Current state:
   comparison reached login around 123 s, stayed responsive, and peaked at about
   881 MB WASM heap plus 128 MB disk cache. Use `&tb=500&diskCacheMb=384` only
   when intentionally comparing against the old profile.
-- The cursor/click low-memory patch has now been baked into the served wasm.
-  `make smoke-shared-input` passed on the rebuilt package, and
-  `make watch-login-session LOGIN_DURATION=75` reached the login framebuffer at
-  ~135 s, typed `root` / `31337leet`, entered the classic Mac/A/UX environment,
-  and watched 75 s post-login with `maxEvalMs=1`, `maxLagMs=58`, `maxStalls=0`,
-  `maxWasmMb=1011`, and `maxDiskCacheMb=128`.
+- The cursor/click low-memory patch has now been baked into the served
+  growable-memory wasm. `make smoke-shared-input` and the hybrid shared-input
+  smoke both passed on the rebuilt package. A real headed
+  `make watch-login-session LOGIN_DURATION=120` run reached the login
+  framebuffer, typed `root` / `31337leet`, entered the classic Mac/A/UX
+  environment, and watched 120 s post-login with `maxEvalMs=1`,
+  `maxLagMs=80`, `maxStalls=0`, `maxWasmMb=881`, and `maxDiskCacheMb=128`.
 - One manual Chrome "burning out" report coincided with external CPU contention:
   native desktop `qemu-system-m68k` was consuming about one core, and a Codex
   renderer was also near one core before the headed Chrome watcher even started.
@@ -500,3 +501,32 @@ packaged. The files most relevant to the current headed-quality work are:
 
 Note: `public/disk-worker.js` is intentionally **unchanged vs HEAD** — the
 readahead experiment was added and then fully reverted, so it shows no diff.
+
+## Appendix D: June 14 headed melt-down notes
+
+A normal Chrome tab reached the A/UX classic Mac environment, but the host became
+too overloaded to copy logs. The concrete causes found so far:
+
+- The host was already saturated: native desktop `qemu-system-m68k` was using
+  about one CPU core, Codex renderers were hot, and the Docker build VM had been
+  consuming several cores during the wasm rebuild.
+- The first ABI-v4 rebuild used `make build-qemu-balanced`, which links a fixed
+  1280 MB wasm memory. Existing headed URLs still passed `heap=384`, causing
+  WebAssembly instantiation to fail until `public/app.js` learned to detect the
+  runtime's compiled minimum and clamp the requested heap upward.
+- The dev dashboard was doing too much work while QEMU was running. The page now
+  has pressure levels: long UI stalls lower the framebuffer cap to 6 fps or 4 fps,
+  stretch cursor/framebuffer/disk/telemetry polling, and publish a smaller hidden
+  `#probeState` while preserving the fields used by automation.
+
+For normal headed testing, prefer a growable-memory runtime:
+
+`JOBS=2 DOCKER_CPUS=2 make build-qemu-grow && make package-smoke package-lazy`
+
+Then verify:
+
+`make smoke-shared-input`
+
+and, for the old diagnostic path:
+
+`node scripts/smoke-shared-input.mjs --url 'http://127.0.0.1:8088/?build=shared-input-hybrid-smoke&ram=128&heap=384&pace=1&input=shared&inputMotion=hybrid&cursor=host&fps=8&res=800x600&autostart=lazy-paused&inputSelfTest=1&ptyMin=2&ptyIdle=16'`
