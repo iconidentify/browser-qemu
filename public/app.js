@@ -102,6 +102,14 @@
   const DEFAULT_DISPLAY_DEPTH = 8;
   const DEFAULT_DISPLAY_GEOMETRY = `${DEFAULT_DISPLAY_WIDTH}x${DEFAULT_DISPLAY_HEIGHT}`;
 
+  function queryIntParam(name, fallback, min, max) {
+    const params = new URLSearchParams(window.location.search);
+    const raw = params.get(name);
+    const parsed = Number.parseInt(raw || "", 10);
+    const value = Number.isFinite(parsed) ? parsed : fallback;
+    return Math.max(min, Math.min(max, value));
+  }
+
   let keyCapture = false;
   let mouseX = 0;
   let mouseY = 0;
@@ -205,9 +213,17 @@
   let serialRenderTimer = 0;
   let serialRenderDirty = false;
   let lastSerialRenderAt = 0;
-  const probeStateMinMs = 250;
+  const probeStateMinMs = queryIntParam("probeMs", 1500, 250, 10000);
+  const runtimeInstrumentIntervalMs = queryIntParam("instrumentMs", 2000, 500, 10000);
+  const cursorProbeMinMs = queryIntParam("cursorMs", 250, 33, 5000);
+  const framebufferProbeIntervalMs = queryIntParam("frameProbeMs", 5000, 1000, 30000);
+  const diskWorkerStatsRequestMs = queryIntParam("diskStatsMs", 2000, 500, 30000);
   let probeStateTimer = 0;
   let probeStateDirty = false;
+  let lastRuntimeInstrumentAt = 0;
+  let lastCursorProbeAt = 0;
+  let lastFramebufferProbeAt = 0;
+  let lastDiskWorkerStatsRequestAt = 0;
   const uiMetricMinMs = 80;
   let eventMetricTimer = 0;
   let mouseMetricTimer = 0;
@@ -220,6 +236,7 @@
     maxQueue: 500,
     maxBatch: 100,
   };
+  const browserLogMirrorMinMs = queryIntParam("logMirrorMs", 1000, 250, 5000);
   const eventCounters = {
     keydown: 0,
     keyup: 0,
@@ -365,7 +382,7 @@
     scheduleBrowserLogMirrorFlush();
   }
 
-  function scheduleBrowserLogMirrorFlush(delayMs = 250) {
+  function scheduleBrowserLogMirrorFlush(delayMs = browserLogMirrorMinMs) {
     if (browserLogMirror.scheduled || browserLogMirror.posting) return;
     browserLogMirror.scheduled = window.setTimeout(flushBrowserLogMirror, delayMs);
   }
@@ -957,12 +974,17 @@
     return result;
   }
 
-  function pollSharedCursor() {
+  function pollSharedCursor(force = false) {
     if (hostCursorMode !== "host" ||
         !sharedInputBridge ||
         typeof sharedInputBridge.readCursor !== "function") {
       return;
     }
+    const now = performance.now();
+    if (!force && now - lastCursorProbeAt < cursorProbeMinMs) {
+      return;
+    }
+    lastCursorProbeAt = now;
     const cursor = sharedInputBridge.readCursor();
     if (!cursor) return;
     hostCursorCss = macCursorToCss(cursor);
@@ -1254,7 +1276,7 @@
       controlUrl: new URL("./control.local.json", window.location.href).href,
       headerBuffer: sharedInput.headerBuffer,
       ringBuffer: sharedInput.ringBuffer,
-      pollMs: 750,
+      pollMs: 1000,
       ignoreBeforeMs,
     });
     return worker;
@@ -1667,6 +1689,34 @@
     setLedState(uiLagMetric, responsivenessLongTasks ? "warn" : responsivenessLastLagMs >= responsivenessLongTaskMs ? "error" : responsivenessLastLagMs > 80 ? "warn" : "ok");
   }
 
+  function logPressureSnapshot(lag) {
+    let shared = null;
+    try {
+      shared = sharedInputBridge && sharedInputBridge.isReady() ? sharedInputBridge.stats() : null;
+    } catch {
+      shared = null;
+    }
+
+    const disk = currentDiskIoCounters();
+    const wasmMb = (qemuInstance && qemuInstance.HEAPU8) ? Math.round(qemuInstance.HEAPU8.length / 1048576) : 0;
+    const cacheMb = (window.AuxDiskStats && window.AuxDiskStats.cacheBytes) ? Math.round(window.AuxDiskStats.cacheBytes / 1048576) : 0;
+    const jsHeapMb = (performance && performance.memory) ? Math.round(performance.memory.usedJSHeapSize / 1048576) : -1;
+    const adbMouse = shared ? Number(shared.backendMouse) || 0 : 0;
+    const adbKeys = shared ? Number(shared.backendKeys) || 0 : 0;
+    const inputEvents = totalInputEvents(eventCounters);
+    const ptyQueued = qemuPty ? qemuPty.queuedBytes() : 0;
+    const ptyDropped = qemuPty ? qemuPty.droppedBytes() : 0;
+
+    log(
+      `ui pressure: lag=${lag}ms stalls=${responsivenessLongTasks} ` +
+      `mem=${wasmMb}/${cacheMb}/${jsHeapMb}MB wasm/disk/js ` +
+      `frames=${formatCount(framesRendered)} fps=${screenFpsLimit} ` +
+      `disk=${formatCount(disk.guestCalls)}r/${(disk.guestBytes / 1048576).toFixed(1)}MB ` +
+      `input=${formatCount(inputEvents)}ev adb=${formatCount(adbKeys)}k/${formatCount(adbMouse)}m ` +
+      `pty=${formatCount(ptyQueued)}q/${formatCount(ptyDropped)}d`,
+    );
+  }
+
   function sampleResponsiveness() {
     const now = performance.now();
     const lag = Math.max(0, Math.round(now - responsivenessExpectedAt));
@@ -1678,7 +1728,7 @@
       responsivenessLastLongTaskAt = Date.now();
       if (lag >= 1000 && Date.now() - responsivenessLastLogAt > 15000) {
         responsivenessLastLogAt = Date.now();
-        log(`ui lag: ${lag}ms timer drift (${responsivenessLongTasks} stalls)`);
+        logPressureSnapshot(lag);
       }
     }
     responsivenessExpectedAt = now + responsivenessIntervalMs;
@@ -1937,6 +1987,14 @@
         active: pulseRunActive,
         mode: pulseRunMode,
       },
+      instrumentation: {
+        probeMs: probeStateMinMs,
+        instrumentMs: runtimeInstrumentIntervalMs,
+        cursorMs: cursorProbeMinMs,
+        frameProbeMs: framebufferProbeIntervalMs,
+        diskStatsMs: diskWorkerStatsRequestMs,
+        logMirrorMs: browserLogMirrorMinMs,
+      },
       ptyDroppedBytes: qemuPty ? qemuPty.droppedBytes() : 0,
       events: { ...eventCounters },
       canvas: {
@@ -2003,6 +2061,7 @@
       framebuffer: snapshot.framebuffer,
       renderer: snapshot.renderer,
       memory: snapshot.memory,
+      instrumentation: snapshot.instrumentation,
       cpu: snapshot.cpu,
       diskIo,
       serialTail: snapshot.serialTail.split("\n").slice(-18).join("\n"),
@@ -2376,6 +2435,14 @@
       };
       const tapKey = sharedInputBridge.keyEvent(tapEvent, true);
       const tapKeyUpIgnored = sharedInputBridge.keyEvent(tapEvent, false);
+      const repeatBefore = sharedInputBridge.stats();
+      const repeatTapSuppressed = sharedInputBridge.keyEvent(tapEvent, true);
+      const repeatAfter = sharedInputBridge.stats();
+      const repeatSuppressionOk = Boolean(
+        repeatTapSuppressed &&
+        repeatAfter.keyTapRepeatSuppressions >= repeatBefore.keyTapRepeatSuppressions + 1 &&
+        repeatAfter.keyTaps === repeatBefore.keyTaps
+      );
       const lostKeyDown = sharedInputBridge.testKey("KeyC", true);
       await delay((sharedBefore.keyAutoReleaseMs || 350) + 120);
       const sharedAfterAutoRelease = sharedInputBridge.stats();
@@ -2395,6 +2462,8 @@
         after: sharedAfter,
         tapKey,
         tapKeyUpIgnored,
+        repeatTapSuppressed,
+        repeatSuppressionOk,
         keyDown,
         keyUp,
         lostKeyDown,
@@ -2410,6 +2479,7 @@
         ok: Boolean(
           lostKeyDown &&
           tapKey &&
+          repeatSuppressionOk &&
           sharedAfterAutoRelease.autoKeyReleases >= sharedBefore.autoKeyReleases + 1 &&
           sharedAfterAutoRelease.pressedKeys === 0 &&
           keyDown &&
@@ -2464,6 +2534,8 @@
       lastButtons: shared && shared.after ? shared.after.lastButtons : null,
       tapKey: shared ? shared.tapKey : false,
       keyTaps: shared && shared.after ? shared.after.keyTaps : null,
+      keyTapRepeatSuppressions: shared && shared.after ? shared.after.keyTapRepeatSuppressions : null,
+      repeatSuppressionOk: shared ? shared.repeatSuppressionOk : false,
       autoKeyReleases: shared && shared.after ? shared.after.autoKeyReleases : null,
       keyAutoReleaseMs: shared && shared.after ? shared.after.keyAutoReleaseMs : null,
       pressedKeys: shared && shared.after ? shared.after.pressedKeys : null,
@@ -3952,19 +4024,28 @@
   updateProbeState();
   window.setTimeout(sampleResponsiveness, responsivenessIntervalMs);
   window.setInterval(() => {
+    const now = performance.now();
     heartbeat += 1;
-    lastHeartbeatAt = performance.now();
+    lastHeartbeatAt = now;
     heartbeatMetric.textContent = String(heartbeat);
     syncDisplayToCanvasBacking("heartbeat");
     pollSharedCursor();
-    applyHostCursorMode();
-    if (heartbeat % 2 === 0) sampleFramebuffer();
-    if (qemuDiskWorker) qemuDiskWorker.postMessage({ type: "stats" });
-    pollDiskIoStats();
-    updateTelemetry();
+    if (now - lastFramebufferProbeAt >= framebufferProbeIntervalMs) {
+      lastFramebufferProbeAt = now;
+      sampleFramebuffer();
+    }
+    if (qemuDiskWorker && now - lastDiskWorkerStatsRequestAt >= diskWorkerStatsRequestMs) {
+      lastDiskWorkerStatsRequestAt = now;
+      qemuDiskWorker.postMessage({ type: "stats" });
+    }
+    if (now - lastRuntimeInstrumentAt >= runtimeInstrumentIntervalMs) {
+      lastRuntimeInstrumentAt = now;
+      pollDiskIoStats();
+      updateTelemetry();
+    }
     updateProbeState();
   }, 1000);
-  window.setInterval(pollControlFile, 750);
+  window.setInterval(pollControlFile, 1000);
   log("browser shell ready");
   checkBundles(true)
     .then(applyQueryAutomation)

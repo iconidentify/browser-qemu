@@ -29,6 +29,7 @@
   var BUTTON_RELEASE_HOLD_MS = 60;
   var KEY_AUTO_RELEASE_MS = 350;
   var KEY_TAP_NON_MODIFIERS = true;
+  var KEY_TAP_REPEAT_SUPPRESS_MS = 80;
 
   var qkeyNames = [
     "unmapped", "shift", "shift_r", "alt", "alt_r", "ctrl", "ctrl_r",
@@ -268,11 +269,20 @@
     var lastButtonMask = 0;
     var buttonReleaseTimer = 0;
     var keyReleaseTimers = new Map();
+    var lastTapTimes = new Map();
     var lastPointerDiag = null;
     var capsLockState = false;
     var pressedCodes = new Set();
     var ready = false;
-    var stats = { keys: 0, keyDrops: 0, mouseMoves: 0, buttons: 0, autoKeyReleases: 0, keyTaps: 0 };
+    var stats = {
+      keys: 0,
+      keyDrops: 0,
+      mouseMoves: 0,
+      buttons: 0,
+      autoKeyReleases: 0,
+      keyTaps: 0,
+      keyTapRepeatSuppressions: 0,
+    };
 
     function activeGuestGeometry() {
       return normalizeGuestGeometry(canvas, getGuestGeometry() || null);
@@ -394,6 +404,17 @@
       }, KEY_AUTO_RELEASE_MS));
     }
 
+    function acceptedTapTime(code) {
+      var now = root.performance && typeof root.performance.now === "function" ?
+        root.performance.now() : Date.now();
+      var last = lastTapTimes.get(code) || 0;
+      if (now - last < KEY_TAP_REPEAT_SUPPRESS_MS) {
+        stats.keyTapRepeatSuppressions++;
+        return null;
+      }
+      return now;
+    }
+
     function writeButtonMask(mask) {
       if (!ready) return;
       refreshViews();
@@ -437,6 +458,7 @@
         clearAllKeyReleaseTimers();
         lastButtonMask = 0;
         pressedCodes.clear();
+        lastTapTimes.clear();
       },
       isReady: function () {
         return ready;
@@ -459,8 +481,11 @@
         if (down) {
           if (event.repeat || pressedCodes.has(event.code)) return true;
           if (KEY_TAP_NON_MODIFIERS && !isModifier) {
+            var tapTime = acceptedTapTime(event.code);
+            if (tapTime === null) return true;
             if (!queueKey(qcode, true, adbKeyCodes[event.code], modifierMask(event, capsLockState))) return false;
             queueKey(qcode, false, adbKeyCodes[event.code], modifierMask(event, capsLockState));
+            lastTapTimes.set(event.code, tapTime);
             stats.keyTaps++;
             return true;
           }
@@ -486,6 +511,7 @@
         });
         clearAllKeyReleaseTimers();
         pressedCodes.clear();
+        lastTapTimes.clear();
       },
       mouseEvent: function (event) {
         var geometry = activeGuestGeometry();
@@ -579,8 +605,10 @@
           keyDrops: stats.keyDrops + (ready ? Atomics.load(ctrl, ctrlBase + C_KEY_DROP) : 0),
           autoKeyReleases: stats.autoKeyReleases,
           keyAutoReleaseMs: KEY_AUTO_RELEASE_MS,
+          keyTapRepeatSuppressMs: KEY_TAP_REPEAT_SUPPRESS_MS,
           tapNonModifierKeys: KEY_TAP_NON_MODIFIERS,
           keyTaps: stats.keyTaps,
+          keyTapRepeatSuppressions: stats.keyTapRepeatSuppressions,
           pressedKeys: pressedCodes.size,
           pointer: lastPointerDiag,
           mouseMoves: stats.mouseMoves,
