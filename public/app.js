@@ -2590,6 +2590,10 @@
   }
 
   function canvasGuestPoint(event) {
+    return guestPointForClient(event.clientX, event.clientY);
+  }
+
+  function guestViewportGeometry() {
     const box = canvasContentBox();
     if (!box) return null;
     const geometry = activeGuestGeometry();
@@ -2603,9 +2607,62 @@
     const viewportTop = box.top + box.height * offsetY / backingHeight;
     const viewportWidth = Math.max(1, box.width * guestWidth / backingWidth);
     const viewportHeight = Math.max(1, box.height * guestHeight / backingHeight);
-    const x = Math.max(0, Math.min(guestWidth - 1, Math.trunc((event.clientX - viewportLeft) * guestWidth / viewportWidth)));
-    const y = Math.max(0, Math.min(guestHeight - 1, Math.trunc((event.clientY - viewportTop) * guestHeight / viewportHeight)));
+    return {
+      box,
+      backingWidth,
+      backingHeight,
+      guestWidth,
+      guestHeight,
+      offsetX,
+      offsetY,
+      viewportLeft,
+      viewportTop,
+      viewportWidth,
+      viewportHeight,
+    };
+  }
+
+  function guestPointForClient(clientX, clientY) {
+    const viewport = guestViewportGeometry();
+    if (!viewport) return null;
+    const x = Math.max(0, Math.min(
+      viewport.guestWidth - 1,
+      Math.trunc((clientX - viewport.viewportLeft) * viewport.guestWidth / viewport.viewportWidth)
+    ));
+    const y = Math.max(0, Math.min(
+      viewport.guestHeight - 1,
+      Math.trunc((clientY - viewport.viewportTop) * viewport.guestHeight / viewport.viewportHeight)
+    ));
     return { x, y };
+  }
+
+  function clientPointForGuest(guestX, guestY) {
+    const viewport = guestViewportGeometry();
+    if (!viewport) return null;
+    const x = Math.max(0, Math.min(viewport.guestWidth - 1, Math.trunc(guestX || 0)));
+    const y = Math.max(0, Math.min(viewport.guestHeight - 1, Math.trunc(guestY || 0)));
+    return {
+      clientX: viewport.viewportLeft + (x + 0.5) * viewport.viewportWidth / viewport.guestWidth,
+      clientY: viewport.viewportTop + (y + 0.5) * viewport.viewportHeight / viewport.guestHeight,
+      guestX: x,
+      guestY: y,
+      viewportLeft: viewport.viewportLeft,
+      viewportTop: viewport.viewportTop,
+      viewportWidth: viewport.viewportWidth,
+      viewportHeight: viewport.viewportHeight,
+      guestWidth: viewport.guestWidth,
+      guestHeight: viewport.guestHeight,
+      backingWidth: viewport.backingWidth,
+      backingHeight: viewport.backingHeight,
+      offsetX: viewport.offsetX,
+      offsetY: viewport.offsetY,
+      contentLeft: viewport.box.left,
+      contentTop: viewport.box.top,
+      contentWidth: viewport.box.width,
+      contentHeight: viewport.box.height,
+      canvasWidth: canvas.width,
+      canvasHeight: canvas.height,
+    };
   }
 
   function queueMouseMoveToEvent(event, immediate = false) {
@@ -3683,6 +3740,9 @@
 
   window.AuxQemuProbe = {
     snapshot: readProbeSnapshot,
+    clientPointForGuest,
+    guestPointForClient,
+    guestViewportGeometry,
     focusCanvas,
     inputSelfTest: runInputSelfTest,
     queueInputHmp,
@@ -4327,7 +4387,7 @@
       event.preventDefault();
     }
     if (hmpInputMode === "shared") {
-      const point = useSharedInputBridge() ? sharedInputBridge.mouseEvent(event) : canvasGuestPoint(event);
+      const point = canvasGuestPoint(event);
       if (point) setMouseMetric(point.x, point.y);
       stopNativeInputPropagation(event);
       return;
@@ -4344,7 +4404,7 @@
       event.preventDefault();
     }
     if (hmpInputMode === "shared") {
-      const point = useSharedInputBridge() ? sharedInputBridge.mouseEvent(event) : canvasGuestPoint(event);
+      const point = canvasGuestPoint(event);
       if (point) setMouseMetric(point.x, point.y);
       stopNativeInputPropagation(event);
       return;
@@ -4363,9 +4423,6 @@
     }
     if (hmpInputMode === "shared") {
       event.preventDefault();
-      if (useSharedInputBridge()) {
-        sharedInputBridge.mouseEvent(event);
-      }
       stopNativeInputPropagation(event);
       return;
     }

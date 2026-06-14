@@ -153,22 +153,22 @@ async function screenshot(cdp, name) {
 
 async function canvasClientPoint(cdp, guestX, guestY) {
   const result = await evalQuick(cdp, `(() => {
+    if (window.AuxQemuProbe && typeof window.AuxQemuProbe.clientPointForGuest === "function") {
+      const mapped = window.AuxQemuProbe.clientPointForGuest(${Math.trunc(guestX)}, ${Math.trunc(guestY)});
+      if (mapped) return { x: mapped.clientX, y: mapped.clientY, mapped };
+    }
     const canvas = document.getElementById("canvas");
     const rect = canvas.getBoundingClientRect();
     return {
-      left: rect.left,
-      top: rect.top,
-      width: rect.width,
-      height: rect.height,
-      canvasWidth: canvas.width,
-      canvasHeight: canvas.height
+      x: rect.left + ${Math.trunc(guestX)} * rect.width / Math.max(1, canvas.width),
+      y: rect.top + ${Math.trunc(guestY)} * rect.height / Math.max(1, canvas.height),
+      fallback: true
     };
   })()`);
   if (!result.value) throw new Error("canvas rect unavailable");
-  const rect = result.value;
   return {
-    x: Math.round(rect.left + guestX * rect.width / Math.max(1, rect.canvasWidth)),
-    y: Math.round(rect.top + guestY * rect.height / Math.max(1, rect.canvasHeight)),
+    x: Math.round(result.value.x),
+    y: Math.round(result.value.y),
   };
 }
 

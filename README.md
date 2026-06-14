@@ -34,6 +34,13 @@ contention source: native desktop `qemu-system-m68k` was already using about one
 CPU core, and a Codex renderer was also hot. Use `make browser-doctor` when a
 tab feels too slow to click; it prints hot QEMU/Chrome/Codex processes and the
 server-mirrored browser log tail.
+The click path now has a focused guardrail: `make probe-click-alignment
+ARGS=--headless` boots to the A/UX login, clicks real login-screen targets, and
+verifies browser client coordinates, shared-input absolute registers, and
+Classic Mac low-memory mouse globals agree within one guest pixel. After the
+probe was added, shared mouse input was hardened to accept only `pointer*`
+events; legacy `mouse*` compatibility events are swallowed so they cannot double
+feed the guest in headed Chrome.
 
 Reliable headed recipe: `make serve`, then run `make browser-interactive` or
 open
@@ -571,6 +578,10 @@ Current input/display status:
   consistent,
   checks both the browser key-tap path and `KeyX` as ADB `0x07`, and verifies
   the missing-keyup auto-release guard for headed typing stalls.
+- `make probe-click-alignment ARGS=--headless` is the heavier guardrail for
+  cursor/click work: it boots to the A/UX login and checks real click targets
+  against the page mapper, shared-input state, and Classic Mac low-memory mouse
+  globals.
 - The page's `Yield 2s` button and `make hmp-yield-pulse-start INTERVAL=2` run the current interactive cadence: every two seconds the control worker queues only `stop; cont`, giving Chrome/QEMU a scheduling window with minimal HMP output. The `Pulse 30s` button and `make hmp-sample-pulse-start INTERVAL=30` keep the diagnostic stop/status/register/block/continue cadence. Do not switch to full pulse-off for normal interaction yet; pair pulse-off with `make hmp-stop` only before screenshots or page inspection.
 - `make browser-interactive` and `make browser-shared-input` add `ptyMin=2&ptyIdle=16`, lowering the generated runtime's bounded monitor wait for headed interaction. Use `ptyMin=8&ptyIdle=32` for the conservative default profile, and compare boot/input behavior before changing the checked-in launcher again.
 - The diagnostic `Input self-test` button and `?inputSelfTest=1` path exercise canvas focus, keyboard counters, mouse counters, and worker-backed HMP input without letting the paused VM run.

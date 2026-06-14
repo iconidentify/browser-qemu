@@ -88,6 +88,16 @@ Current state:
   log with UI lag, frame generation, memory, disk, and input counters. If the
   visible tab is too busy to click Copy log, run `make browser-log` after
   closing or while it is still open.
+- A focused click-alignment probe now exists: `make probe-click-alignment
+  ARGS=--headless`. It boots to the A/UX login, maps browser client points to
+  guest coordinates using the page's own content-box geometry helper, clicks
+  several login-screen targets, and verifies the browser pointer diagnostic,
+  absolute shared-input registers, and Classic Mac low-memory mouse globals
+  agree within one guest pixel. Two June 14 runs passed after the page was
+  hardened so `input=shared` writes mouse input only from `pointer*` events;
+  legacy `mouse*` compatibility events are swallowed and no longer write to the
+  guest. A real headed retest is still required for feel, but coordinate math is
+  no longer the leading suspect.
 
 ---
 
@@ -262,6 +272,11 @@ http://127.0.0.1:8088/?ram=128&heap=384&pace=1&input=shared&cursor=host&fps=8&re
   consistent,
   verifies `KeyX` arrives as Mac ADB `0x07`, and confirms the missing-keyup
   auto-release guard is active.
+- `make probe-click-alignment ARGS=--headless` is the heavier mouse regression:
+  it boots to the A/UX login framebuffer and validates browser-client,
+  shared-input, and Classic Mac low-memory mouse coordinates against real
+  login-screen click targets. Use it after any canvas, cursor, or input-path
+  change before asking for another manual headed test.
 - If the page detects a large main-thread stall, pressure relief automatically
   lowers the framebuffer cap to 6 fps and logs a breadcrumb. A tiny independent
   health worker also writes `mainAge=...ms` samples into `make browser-log`, so

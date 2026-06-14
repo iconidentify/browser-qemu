@@ -90,6 +90,7 @@ help:
 		'  make summarize-probes PROBES="build/probes/*.json" Summarize saved browser/native probe JSON' \
 		'  make smoke-headless-browser DURATION=5 Launch temp headless Chrome and run ROM probe' \
 		'  make smoke-shared-input Verify shared-input canvas geometry, mouse edge latching, and KeyX ADB mapping' \
+		'  make probe-click-alignment ARGS=--headless Boot to login and probe browser/client/guest mouse alignment' \
 		'  make watch-browser-boot DURATION=600 INTERVAL=45 Boot lazy A/UX (128MB, pulse cadence) and record screenshots to build/boot-watch/' \
 		'  make watch-login-session LOGIN_DURATION=360 Boot, login as root, and watch headed post-login responsiveness' \
 		'  make smoke-headless-lazy-pulse DURATION=45 INTERVAL=15 PULSE_MS=30000 Smoke the visible Start lazy pulse path' \
@@ -383,6 +384,9 @@ smoke-headless-browser:
 
 smoke-shared-input:
 	@node ./scripts/smoke-shared-input.mjs
+
+probe-click-alignment:
+	@node ./scripts/probe-click-alignment.mjs $${ARGS:-}
 
 watch-browser-boot:
 	@node ./scripts/watch-browser-boot.mjs --duration "$(DURATION)" --interval "$(INTERVAL)" --url "http://127.0.0.1:8088/?build=aux-login-watch&ram=128&heap=384&pace=1&input=shared&cursor=host&fps=8&res=640x480&autostart=lazy-pulse&pulseMode=yield&pulseMs=2000&ptyMin=2&ptyIdle=16"
