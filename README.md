@@ -61,8 +61,9 @@ is serviced; keep it for headless or instrumented ROM/SCSI probes. Use
 continuous `autostart=lazy` only for focused debugging, then close or pause the
 tab before interacting for long.
 If a tab is too busy to click Copy log, run `make browser-log`; the page now
-mirrors periodic breadcrumbs with lag, memory, framebuffer, disk, and input
-counts to the dev server. If the whole desktop feels saturated, run
+mirrors periodic breadcrumbs with lag, memory, framebuffer, disk, input counts,
+and an independent health-worker sample that reports whether the UI main thread
+is actually wedged. If the whole desktop feels saturated, run
 `make browser-doctor` before starting another boot; do not judge headed Chrome
 performance while native desktop QEMU or another browser-QEMU tab is already
 burning a full CPU core.

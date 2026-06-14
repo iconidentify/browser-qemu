@@ -138,8 +138,12 @@
   // that keeps a throttled tab from wedging. Slots: [0]=MAGIC [1]=W [2]=H
   // [3]=PTR(bytes) [4]=GENERATION. Mirror of patch-qemu-out-js-display.mjs.
   const C89_SCREEN_MAGIC = 0x53435231; // "SCR1"
+  const C89_HEALTH_MAGIC = 0x43383948; // "C89H"
   let qemuScreenShared = null; // SharedArrayBuffer | null
   let qemuScreenCtl = null;    // Int32Array over qemuScreenShared
+  let healthShared = null;     // SharedArrayBuffer | null
+  let healthCtl = null;        // Slots: [0]=MAGIC [1]=heartbeat [2]=Date.now ms wrapped [3]=flags
+  let healthWorker = null;
   let screenTimerId = 0;
   let screenLastGen = -1;
   let screenImage = null;      // ImageData (w x h), reused across frames
@@ -224,6 +228,8 @@
   const breadcrumbIntervalMs = queryIntParam("breadcrumbMs", 15000, 5000, 60000);
   const qemuTbSizeMb = queryIntParam("tb", 128, 32, 500);
   const pressureReliefEnabled = !/^(0|false|off)$/i.test(new URLSearchParams(window.location.search).get("pressureRelief") || "");
+  const healthWorkerIntervalMs = queryIntParam("healthMs", 5000, 1000, 30000);
+  const healthWorkerLagMs = queryIntParam("healthLagMs", 2500, 1000, 60000);
   let probeStateTimer = 0;
   let probeStateDirty = false;
   let lastRuntimeInstrumentAt = 0;
@@ -443,6 +449,47 @@
     } finally {
       browserLogMirror.posting = false;
       if (browserLogMirror.queue.length) scheduleBrowserLogMirrorFlush();
+    }
+  }
+
+  function healthFlags() {
+    let flags = 0;
+    if (qemuStarted) flags |= 1;
+    if (document.visibilityState !== "hidden") flags |= 2;
+    if (uiPressureReliefActive) flags |= 4;
+    if (pulseRunActive) flags |= 8;
+    return flags;
+  }
+
+  function updateHealthHeartbeat() {
+    if (!healthCtl) return;
+    Atomics.store(healthCtl, 0, C89_HEALTH_MAGIC);
+    Atomics.store(healthCtl, 1, heartbeat | 0);
+    Atomics.store(healthCtl, 2, Date.now() & 0x7fffffff);
+    Atomics.store(healthCtl, 3, healthFlags());
+  }
+
+  function startHealthWorker() {
+    if (healthWorker || typeof SharedArrayBuffer === "undefined") return;
+    try {
+      healthShared = new SharedArrayBuffer(16);
+      healthCtl = new Int32Array(healthShared);
+      updateHealthHeartbeat();
+      healthWorker = new Worker("./health-worker.js");
+      healthWorker.onerror = (event) => {
+        log(`health worker error: ${event.message || "unknown error"}`);
+      };
+      healthWorker.postMessage({
+        type: "start",
+        control: healthShared,
+        endpoint: "./__browser-log",
+        href: window.location.href,
+        intervalMs: healthWorkerIntervalMs,
+        lagMs: healthWorkerLagMs,
+      });
+      log(`health worker armed: interval=${healthWorkerIntervalMs}ms lag=${healthWorkerLagMs}ms`);
+    } catch (error) {
+      log(`health worker disabled: ${formatError(error)}`);
     }
   }
 
@@ -2096,6 +2143,8 @@
         frameProbeMs: framebufferProbeIntervalMs,
         diskStatsMs: diskWorkerStatsRequestMs,
         logMirrorMs: browserLogMirrorMinMs,
+        healthMs: healthWorkerIntervalMs,
+        healthLagMs: healthWorkerLagMs,
         serialMs: serialRenderMinMs,
         pressureRelief: pressureReliefEnabled,
         pressureReliefActive: uiPressureReliefActive,
@@ -2184,6 +2233,8 @@
         cursorMs: cursorProbeMinMs,
         frameProbeMs: framebufferProbeIntervalMs,
         diskStatsMs: diskWorkerStatsRequestMs,
+        healthMs: healthWorkerIntervalMs,
+        healthLagMs: healthWorkerLagMs,
         pressureRelief: pressureReliefEnabled,
         pressureReliefActive: uiPressureReliefActive,
         pressureLevel: uiPressureLevel,
@@ -3251,6 +3302,7 @@
     }
 
     qemuStarted = true;
+    updateHealthHeartbeat();
     const resetButton = document.getElementById("resetQemu");
     qemuRuntimeDir = runtimeDir;
     qemuSharedInput = createSharedInputQueue();
@@ -3326,6 +3378,7 @@
       },
       onAbort(reason) {
         qemuStarted = false;
+        updateHealthHeartbeat();
         qemuInstance = null;
         qemuRuntimeDir = null;
         qemuPty = null;
@@ -3418,6 +3471,7 @@
         }
       }).catch((error) => {
         qemuStarted = false;
+        updateHealthHeartbeat();
         qemuInstance = null;
         qemuRuntimeDir = null;
         qemuPty = null;
@@ -3439,6 +3493,7 @@
       });
     } catch (error) {
       qemuStarted = false;
+      updateHealthHeartbeat();
       qemuInstance = null;
       qemuRuntimeDir = null;
       qemuPty = null;
@@ -4383,11 +4438,13 @@
   updateTelemetry();
   renderProbeLog("initial");
   updateProbeState();
+  startHealthWorker();
   window.setTimeout(sampleResponsiveness, responsivenessIntervalMs);
   window.setInterval(() => {
     const now = performance.now();
     heartbeat += 1;
     lastHeartbeatAt = now;
+    updateHealthHeartbeat();
     heartbeatMetric.textContent = String(heartbeat);
     if (!qemuStarted || now - lastCanvasHeartbeatSyncAt >= effectiveInstrumentInterval(2000, 10000)) {
       lastCanvasHeartbeatSyncAt = now;
@@ -4413,6 +4470,17 @@
     }
     updateProbeState();
   }, 1000);
+  window.addEventListener("visibilitychange", () => {
+    updateHealthHeartbeat();
+    if (document.visibilityState === "hidden") {
+      logRuntimeBreadcrumb("visibility-hidden");
+    }
+  });
+  window.addEventListener("pagehide", () => {
+    updateHealthHeartbeat();
+    logRuntimeBreadcrumb("pagehide");
+    flushBrowserLogMirror();
+  });
   window.setInterval(pollControlFile, 1000);
   log("browser shell ready");
   checkBundles(true)

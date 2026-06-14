@@ -26,6 +26,10 @@ function mbFromKb(kb) {
   return `${Math.round(kb / 1024)}MB`;
 }
 
+function gbFromKb(kb) {
+  return `${(kb / 1048576).toFixed(1)}GB`;
+}
+
 function compactArgs(args) {
   return args.replace(/\s+/g, " ").slice(0, 160);
 }
@@ -107,14 +111,71 @@ async function readBrowserLog() {
   });
 }
 
+async function readDiskUsage(target = process.cwd()) {
+  try {
+    const { stdout } = await execFileAsync("df", ["-k", target]);
+    const lines = stdout.trim().split(/\n/);
+    const line = lines[lines.length - 1] || "";
+    const fields = line.trim().split(/\s+/);
+    if (fields.length < 6) throw new Error(`unexpected df output: ${line}`);
+    return {
+      filesystem: fields[0],
+      sizeKb: Number(fields[1]) || 0,
+      usedKb: Number(fields[2]) || 0,
+      availableKb: Number(fields[3]) || 0,
+      capacity: fields[4] || "",
+      mount: fields.slice(8).join(" ") || fields[5] || "",
+    };
+  } catch (error) {
+    return { error: error.message || String(error) };
+  }
+}
+
+function latestHealthLine(lines = []) {
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i];
+    const match = line.match(/health worker: mainAge=(\d+)ms beat=(\d+) beatChanged=(\d+) flags=([^\s]+)/);
+    if (match) {
+      return {
+        line,
+        mainAgeMs: Number(match[1]),
+        beat: Number(match[2]),
+        beatChanged: match[3] === "1",
+        flags: match[4],
+      };
+    }
+  }
+  return null;
+}
+
 const processes = await readProcesses();
 const watched = processes.filter((proc) => classify(proc));
 const high = processes.filter((proc) => proc.pcpu >= 75).slice(0, 12);
+const diskUsage = await readDiskUsage();
+const browserLog = await readBrowserLog();
+const health = latestHealthLine(browserLog.lines || []);
 
 console.log("browser-qemu doctor");
 console.log(`port=${opts.port} tail=${opts.tail}`);
 printTable("hot processes", high.length ? high : processes.slice(0, 10));
 printTable("watched browser-qemu-related processes", watched);
+
+console.log("\ndisk pressure");
+if (diskUsage.error) {
+  console.log(`  unavailable: ${diskUsage.error}`);
+} else {
+  console.log(
+    `  ${diskUsage.mount}: ${gbFromKb(diskUsage.availableKb)} free, ` +
+      `${gbFromKb(diskUsage.usedKb)} used, ${diskUsage.capacity} full`
+  );
+}
+
+console.log("\npage health");
+if (!health) {
+  console.log("  no health-worker samples in mirrored log yet");
+} else {
+  console.log(`  mainAge=${health.mainAgeMs}ms beat=${health.beat} flags=${health.flags}`);
+}
 
 const nativeQemuHot = watched.some((proc) => classify(proc) === "native-qemu" && proc.pcpu >= 75);
 const rendererHot = watched.filter((proc) => /chrome|renderer/.test(classify(proc)) && proc.pcpu >= 75);
@@ -124,11 +185,16 @@ if (nativeQemuHot) {
 if (rendererHot.length >= 2) {
   console.log("NOTE: multiple browser/Codex renderers are hot at the same time; manual Chrome can feel frozen even if the page heartbeat is healthy.");
 }
+if (!diskUsage.error && (diskUsage.availableKb < 20 * 1048576 || /^(9[5-9]|100)%$/.test(diskUsage.capacity))) {
+  console.log("NOTE: disk headroom is low; Chrome temp profiles, caches, and wasm artifacts get less forgiving here.");
+}
+if (health && health.mainAgeMs >= 2500) {
+  console.log("NOTE: the browser-qemu UI main thread was stalled in the last health sample.");
+}
 if (!high.length) {
   console.log("\nNOTE: no process is currently above 75% CPU.");
 }
 
-const browserLog = await readBrowserLog();
 console.log("\nmirrored browser log");
 if (browserLog.error) {
   console.log(`  unavailable: ${browserLog.error}`);

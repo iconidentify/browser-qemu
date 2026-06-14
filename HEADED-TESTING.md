@@ -263,9 +263,10 @@ http://127.0.0.1:8088/?ram=128&heap=384&pace=1&input=shared&cursor=host&fps=8&re
   verifies `KeyX` arrives as Mac ADB `0x07`, and confirms the missing-keyup
   auto-release guard is active.
 - If the page detects a large main-thread stall, pressure relief automatically
-  lowers the framebuffer cap to 6 fps and logs a breadcrumb so
-  `make browser-doctor` still has useful evidence when the tab is too busy to
-  click.
+  lowers the framebuffer cap to 6 fps and logs a breadcrumb. A tiny independent
+  health worker also writes `mainAge=...ms` samples into `make browser-log`, so
+  `make browser-doctor` can tell the difference between a wedged page thread and
+  general host pressure.
 - `cursor=host` uses the Classic Mac CSS cursor path copied from 68k_web. It is
   instant host-side feedback, and the served wasm now exports guest cursor bytes
   while suppressing the guest software cursor. The default shared input path now
@@ -291,8 +292,9 @@ http://127.0.0.1:8088/?ram=128&heap=384&pace=1&input=shared&cursor=host&fps=8&re
 - Or fetch the server-mirrored log directly:
   `curl -s http://127.0.0.1:8088/__browser-log.json | python3 -m json.tool`
 - If Chrome or the whole desktop is too slow to use, run `make browser-doctor`.
-  It does not stop anything; it shows whether native QEMU, another browser
-  renderer, or Codex itself is already consuming the machine.
+  It does not stop anything; it shows disk headroom, the latest health-worker
+  `mainAge`, and whether native QEMU, another browser renderer, or Codex itself
+  is already consuming the machine.
 - The browser **DevTools Console** shows uncaught errors (the benign
   `Uncaught unwind` is ASYNCIFY yielding — see test 1).
 - "Frozen" looks like: the `disk worker stats:` line **stops advancing** for
