@@ -29,9 +29,13 @@ This handoff started before the latest push. Current state:
   browser is still on stock SDL blits.
 - The canvas now snaps the CSS size and parent panel to the actual framebuffer
   backing size. It no longer scales differently before/after fullscreen.
+- The served `out.js` has a tunable bounded PTY wait. Defaults remain
+  conservative (`ptyMin=8`, `ptyIdle=32`), while the headed interactive profile
+  uses `ptyMin=2&ptyIdle=16` for lower input latency.
 - The canvas uses a host-side Classic Mac cursor and can export the guest Mac
-  `TheCrsr` bytes into CSS cursor data. True guest cursor suppression is still
-  the next cursor milestone.
+  `TheCrsr` bytes into CSS cursor data. QEMU source now contains the next
+  cursor/click-alignment patch, but it requires `make build-qemu-grow &&
+  make package-lazy` before the served wasm picks it up.
 - The browser shell now exposes queued guest text:
   `make hmp-text TEXT=root`, `make hmp-key KEY=tab`,
   `make hmp-text TEXT=31337leet`, `make hmp-key KEY=ret`.
@@ -58,11 +62,13 @@ You are taking over for a stretch. Suggested flow:
    (input + pauses), then the **OOM rebuild** (section 5, item 1; it is prepared
    and one command), then CPU perf. Measure changes with `scripts/bench-boot.mjs`.
 3. **If it still freezes:** capture the serial log (Copy log button) + DevTools
-   console and hunt the next main-thread coupling (cursor `toDataURL` proxy is
-   the leading remaining suspect; section 1 table).
-4. **All work this round is uncommitted** in the working tree (section 10). The
-   user has not asked to commit; confirm before committing. Build/runtime source
-   edits must persist through `scripts/` patches, never the vendor tree (section 8).
+   console and hunt the next main-thread coupling. Start by comparing the
+   conservative `ptyMin=8&ptyIdle=32` profile against the interactive
+   `ptyMin=2&ptyIdle=16` profile so we know whether lower latency changed the
+   freeze surface.
+4. Build/runtime source edits must persist through `scripts/` patches, never
+   the vendor tree (section 8). If QEMU C patches changed, rebuild/package
+   before testing their runtime effect.
 5. **Golden rule:** verify functional changes with a headless boot
    (`make watch-browser-boot` or `bench-boot.mjs`) AND confirm UX/stability in a
    real **normal, focused tab** — headless and `make browser` hide the throttling
@@ -113,8 +119,8 @@ main-thread dependency from QEMU's critical path. Progress so far:
 | --- | --- |
 | Display blit (full-screen putImageData proxied every frame) | **DECOUPLED** — SDL blit writes a shared block; page renders on its own rAF |
 | Guest disk reads (synchronous XHR on the main thread) | **MOVED OFF** — `public/disk-worker.js` services reads via a SAB worker |
-| Monitor PTY idle wait (could park the loop forever) | **FIXED** — see test 1 below |
-| Cursor shape change (`toDataURL` proxied to main) | **PARTIALLY BYPASSED** — page shows an instant host CSS cursor; true guest cursor suppression/export still pending |
+| Monitor PTY idle wait (could park the loop forever) | **FIXED + TUNABLE** — see test 1 below |
+| Cursor shape change (`toDataURL` proxied to main) | **PARTIALLY BYPASSED** — page shows an instant host CSS cursor; QEMU source has 68k_web-style suppression/export pending rebuild |
 | Fixed 1280 MB wasm heap (commits 1.28 GB/tab) | **REBUILT** — growable-memory runtime is packaged in `public/qemu-lazy/` |
 
 ---
@@ -130,9 +136,9 @@ All verified to **boot to the A/UX login screen headless** unless noted.
    **unbounded park**: guest input does not wake that index, and the only waker
    is page-main-thread-armed (throttled in a normal tab). So the whole VM freezes
    (symptom: serial "disk worker stats" line stops advancing; "Uncaught unwind"
-   log lines stop). **Fixed:** the idle wait is now capped at **32 ms**
-   (`... : 32`), so the loop always ticks, runs CPU/timers, and services input.
-   This is the prime suspect for the long-standing intermittent headed freeze.
+   log lines stop). **Fixed:** the idle wait is bounded and tunable through
+   `ptyMin`/`ptyIdle`, so the loop always ticks, runs CPU/timers, and services
+   input. Defaults are `8/32`; headed interactive runs now use `2/16`.
 
 2. **Reverted an experimental disk readahead.** It boots headless but regressed
    the headed boot (hard stall ~2.4 MB into boot). `public/disk-worker.js` is
@@ -163,7 +169,7 @@ make serve            # python server with COOP/COEP + range support on :8088
 Then open, in a **normal browser tab you keep focused and visible**:
 
 ```
-http://127.0.0.1:8088/?ram=128&heap=384&pace=1&input=shared&cursor=host&fps=8&res=800x600&autostart=lazy-pulse&pulseMode=yield&pulseMs=2000
+http://127.0.0.1:8088/?ram=128&heap=384&pace=1&input=shared&cursor=host&fps=8&res=800x600&autostart=lazy-pulse&pulseMode=yield&pulseMs=2000&ptyMin=2&ptyIdle=16
 ```
 
 - `autostart=lazy-pulse&pulseMode=yield` starts QEMU paused, continues it, and
@@ -183,8 +189,9 @@ http://127.0.0.1:8088/?ram=128&heap=384&pace=1&input=shared&cursor=host&fps=8&re
   QEMU timer into the q800 ADB keyboard/mouse devices. `input=hmp`,
   `input=hybrid`, and `input=sdl` are diagnostic-only escape hatches.
 - `cursor=host` uses the Classic Mac CSS cursor copied from 68k_web. It is
-  instant host-side feedback; the guest may still draw its own cursor until the
-  QEMU-side cursor suppression/export patch exists.
+  instant host-side feedback. The QEMU-side cursor suppression/export and
+  absolute low-memory mouse anchor patch exists in source, but the served wasm
+  must be rebuilt before headed testing can judge cursor drift/click alignment.
 - `fps=8` caps the page-side framebuffer loop. Use `fps=20` for smoother
   screen updates or `fps=0` only for display benchmarks; X11 can peg Chrome
   hard when uncapped.
@@ -272,15 +279,16 @@ If DevTools is open, note memory (the page `#probeState` carries `wasmMb` +
    work: run long headed sessions with `heap=384` and confirm there is no late
    browser memory crash.
 
-2. **CPU/sluggishness.** Suspect lever: the main-loop PTY wait min-floor (8 ms)
-   may throttle CPU-bound stretches (one CPU slice per >=8 ms). Worth A/B-ing the
-   floor with `scripts/bench-boot.mjs` (below) before changing it — lowering it
-   risks reintroducing main-thread proxy churn, so measure first.
+2. **CPU/sluggishness.** Suspect lever: the main-loop PTY wait min-floor. The
+   default `8/32` profile is conservative; the interactive launcher now uses
+   `2/16` after a smoke pass. Continue A/B-ing the floor with
+   `scripts/bench-boot.mjs` (below) before changing the default.
 
-3. **True guest hardware cursor.** The host CSS cursor layer is active. The next
-   step is QEMU-side suppression/export of the actual Mac cursor data so the
-   guest stops drawing a laggy software cursor into the framebuffer, matching
-   68k_web's deeper hardware-cursor behavior.
+3. **True guest hardware cursor and click alignment.** The host CSS cursor layer
+   is active. Source now exports the actual Mac cursor data, reasserts
+   DrawCrsr/EraseCrsr suppression, and makes absolute mouse low memory the
+   source of truth instead of queuing large ADB deltas. Rebuild/package QEMU wasm,
+   then retest whether the rendered cursor and guest click target stay aligned.
 
 4. **React shell (`:8090`)** still needs input + disk-worker wiring ported; it
    shares the same runtime fixes (the PTY fix applies to it too).

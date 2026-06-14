@@ -10,7 +10,6 @@
 
   var WI_MAGIC = 0xc8917001;
   var WI_NCTRL = 32;
-  var KEY_TAP_MS = 35;
   var C_MAGIC = 0, C_READY = 1, C_VERSION = 2, C_REL_DX = 3, C_REL_DY = 4,
       C_ABS_X = 5, C_ABS_Y = 6, C_ABS_FLAGS = 7, C_BUTTONS = 8,
       C_KEY_WRITE = 9, C_KEY_READ = 10, C_KEY_DROP = 11,
@@ -203,7 +202,6 @@
     var lastPoint = null;
     var capsLockState = false;
     var pressedCodes = new Set();
-    var tapTimers = new Map();
     var ready = false;
     var stats = { keys: 0, keyDrops: 0, mouseMoves: 0, buttons: 0 };
 
@@ -289,26 +287,10 @@
       lastPoint = point;
     }
 
-    function clearTapTimer(code) {
-      var timer = tapTimers.get(code);
-      if (timer) {
-        root.clearTimeout(timer);
-        tapTimers.delete(code);
-      }
-    }
-
     function releaseCode(code, mods) {
-      clearTapTimer(code);
       var qcode = QK[codeToQKey[code] || ""];
       if (qcode) queueKey(qcode, false, adbKeyCodes[code], mods || 0);
       pressedCodes.delete(code);
-    }
-
-    function scheduleTapRelease(code, mods) {
-      clearTapTimer(code);
-      tapTimers.set(code, root.setTimeout(function () {
-        releaseCode(code, mods);
-      }, KEY_TAP_MS));
     }
 
     return {
@@ -320,8 +302,6 @@
       stop: function () {
         ready = false;
         lastPoint = null;
-        tapTimers.forEach(function (timer) { root.clearTimeout(timer); });
-        tapTimers.clear();
         pressedCodes.clear();
       },
       isReady: function () {
@@ -348,30 +328,20 @@
         if (down) {
           if (event.repeat || pressedCodes.has(event.code)) return true;
           pressedCodes.add(event.code);
-          if (queueKey(qcode, true, adbKeyCodes[event.code], modifierMask(event, capsLockState))) {
-            if (!isModifier) {
-              scheduleTapRelease(event.code, modifierMask(event, capsLockState));
-            }
-            return true;
-          }
-          return false;
+          return queueKey(qcode, true, adbKeyCodes[event.code], modifierMask(event, capsLockState));
         } else {
           if (!isModifier && !pressedCodes.has(event.code)) return true;
           releaseCode(event.code, modifierMask(event, capsLockState));
-          if (!isModifier) return true;
-          pressedCodes.delete(event.code);
           if (event.code === "MetaLeft" || event.code === "MetaRight") {
             releaseNonModifierKeys();
           }
+          return true;
         }
-        return queueKey(qcode, down, adbKeyCodes[event.code], modifierMask(event, capsLockState));
       },
       releaseAll: function () {
         pressedCodes.forEach(function (code) {
           releaseCode(code, 0);
         });
-        tapTimers.forEach(function (timer) { root.clearTimeout(timer); });
-        tapTimers.clear();
         pressedCodes.clear();
       },
       mouseEvent: function (event) {

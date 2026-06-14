@@ -5866,11 +5866,14 @@ var PTY_waitForReadableWithAtomic = callback => {
  /* c89 pty bounded wait. NEVER Infinity: when the monitor idle-waits
     for stdin (PTY_pollTimeout < 0) an unbounded wait parks the QEMU main-loop
     thread forever -- guest input does not wake this index and a throttled tab
-    can't deliver the page-side wake, so the whole VM freezes. Cap idle waits at
-    32ms so the loop always ticks (CPU + timers run, pending input is serviced);
-    the timed-out path below already handles "no data". min 8ms keeps churn low. */
+    can't deliver the page-side wake, so the whole VM freezes. Cap idle waits so
+    the loop always ticks (CPU + timers run, pending input is serviced). These
+    values are tunable through Module.c89PtyMinWaitMs / c89PtyIdleWaitMs for
+    headed latency A/B tests without rebuilding QEMU. */
+ var c89PtyMinWaitMs = Math.max(0, Math.min(64, Number(Module["c89PtyMinWaitMs"] ?? 8) || 0));
+ var c89PtyIdleWaitMs = Math.max(1, Math.min(250, Number(Module["c89PtyIdleWaitMs"] ?? 32) || 32));
  Atomics.wait(GROWABLE_HEAP_I32(), PTY_atomicIndex, -1,
-              PTY_pollTimeout >= 0 ? Math.max(PTY_pollTimeout, 8) : 32);
+              PTY_pollTimeout >= 0 ? Math.max(PTY_pollTimeout, c89PtyMinWaitMs) : c89PtyIdleWaitMs);
  /* If the page-side wake never arrived, report a plain poll timeout. */
  Atomics.compareExchange(GROWABLE_HEAP_I32(), PTY_atomicIndex, -1, 2);
  callback(GROWABLE_HEAP_I32()[PTY_atomicIndex]);

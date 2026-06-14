@@ -96,6 +96,8 @@
   let qemuPty = null;
   let qemuStartPaused = false;
   let qemuHeapMb = null;
+  let qemuPtyMinWaitMs = 8;
+  let qemuPtyIdleWaitMs = 32;
   let qemuAutoPulseMs = 0;
   let qemuAutoPulseMode = "sample";
   let qemuControlWorker = null;
@@ -1388,6 +1390,8 @@
       qemuRuntimeDir,
       qemuStartPaused,
       qemuHeapMb,
+      qemuPtyMinWaitMs,
+      qemuPtyIdleWaitMs,
       qemuAutoPulseMs,
       qemuAutoPulseMode,
       lastControlId,
@@ -1902,6 +1906,13 @@
     return Math.max(minMs, Math.min(60000, intervalMs));
   }
 
+  function normalizePtyWaitMs(value, fallback, minMs, maxMs) {
+    if (value === null || value === undefined || value === "") return fallback;
+    const waitMs = Number.parseInt(value, 10);
+    if (!Number.isFinite(waitMs)) return fallback;
+    return Math.max(minMs, Math.min(maxMs, waitMs));
+  }
+
   function normalizeFpsLimit(value) {
     if (value === null || value === undefined || value === "") return 20;
     const fps = Number.parseInt(value, 10);
@@ -1913,6 +1924,24 @@
   function selectedHeapMb() {
     const params = new URLSearchParams(window.location.search);
     return params.has("heap") ? normalizeHeapMb(params.get("heap")) : null;
+  }
+
+  function selectedPtyWaitOptions() {
+    const params = new URLSearchParams(window.location.search);
+    return {
+      min: normalizePtyWaitMs(
+        params.get("ptyMin") || params.get("ptyFloor") || params.get("pty_min"),
+        8,
+        0,
+        64
+      ),
+      idle: normalizePtyWaitMs(
+        params.get("ptyIdle") || params.get("ptyIdleWait") || params.get("pty_idle"),
+        32,
+        1,
+        250
+      ),
+    };
   }
 
   function applyRamSize(args) {
@@ -2207,6 +2236,9 @@
     qemuDiskWorker = startDiskWorker(runtime, runtimeDir);
     qemuStartPaused = Boolean(options.startPaused);
     qemuHeapMb = selectedHeapMb();
+    const ptyWaitOptions = selectedPtyWaitOptions();
+    qemuPtyMinWaitMs = ptyWaitOptions.min;
+    qemuPtyIdleWaitMs = ptyWaitOptions.idle;
     qemuAutoPulseMode = options.autoPulseMode === "yield" ? "yield" : "sample";
     qemuAutoPulseMs = normalizePulseIntervalMs(options.autoPulseMs, qemuAutoPulseMode === "yield" ? 1000 : 5000);
     hmpMonitorActive = false;
@@ -2232,6 +2264,8 @@
       pty: qemuPty,
       c89Disk: qemuDiskShared || undefined,
       c89Screen: qemuScreenShared || undefined,
+      c89PtyMinWaitMs: qemuPtyMinWaitMs,
+      c89PtyIdleWaitMs: qemuPtyIdleWaitMs,
       preRun: [createRuntimeDirs],
       // Pointer lock OFF: auto-requesting it on any canvas click engages real
       // pointer lock in a headed browser (no-op in headless), and the ensuing
@@ -2308,6 +2342,7 @@
         window.Module.INITIAL_MEMORY = qemuHeapMb * 1024 * 1024;
         log(`wasm heap configured: ${qemuHeapMb} MB`);
       }
+      log(`pty bounded wait: min=${qemuPtyMinWaitMs}ms idle=${qemuPtyIdleWaitMs}ms`);
       if (window.Module.arguments.includes("-icount")) {
         const icountIndex = window.Module.arguments.indexOf("-icount");
         log(`cpu pacing enabled: -icount ${window.Module.arguments[icountIndex + 1] || ""}`);

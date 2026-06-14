@@ -29,8 +29,11 @@
 #define WI_KEY_STRIDE  4
 #define WI_CURSOR_BYTES 64
 #define WI_MAC_THECRSR  0x844
+#define WI_MAC_CRSR_VIS 0x8cc
 #define WI_MAC_CRSR_NEW 0x8ce
+#define WI_MAC_CRSR_STATE 0x8d0
 #define WI_MAC_DRAW_CRSR_VECTOR 0x1fb8
+#define WI_MAC_ERASE_CRSR_VECTOR 0x1fbc
 #define WI_MAC_ROM_BASE 0x40800000u
 #define WI_MAC_ROM_SCAN_BYTES 0x00100000u
 #ifndef C89_WI_POLL_MS
@@ -85,6 +88,7 @@ static uint8_t g_wi_last_cursor_hot_x;
 static uint8_t g_wi_last_cursor_hot_y;
 static bool g_wi_last_cursor_valid;
 static uint32_t g_wi_cursor_rts_addr;
+static bool g_wi_cursor_hardware_active;
 static bool g_wi_cursor_suppression_logged;
 static bool g_wi_abs_valid;
 static int32_t g_wi_abs_x;
@@ -162,6 +166,17 @@ static uint16_t wi_read_u16_be(hwaddr addr, bool *ok)
     return value;
 }
 
+static uint8_t wi_read_u8(hwaddr addr, bool *ok)
+{
+    MemTxResult res;
+    uint8_t value = address_space_ldub(&address_space_memory, addr,
+                                       MEMTXATTRS_UNSPECIFIED, &res);
+    if (ok) {
+        *ok = res == MEMTX_OK;
+    }
+    return value;
+}
+
 static void wi_write_u32_be(hwaddr addr, uint32_t value)
 {
     MemTxResult res;
@@ -206,59 +221,59 @@ static void wi_suppress_mac_software_cursor(void)
 {
     bool ok = false;
     uint32_t draw_vec = wi_read_u32_be(WI_MAC_DRAW_CRSR_VECTOR, &ok);
+    uint32_t erase_vec;
     uint32_t rts_addr;
+    bool ok_erase = false;
+    bool ok_vis = false;
+    bool ok_state = false;
+    uint8_t crsr_vis;
+    uint16_t crsr_state;
+    bool cursor_visible;
 
     if (!ok || !wi_guest_code_addr_is_plausible(draw_vec)) {
         return;
     }
+    erase_vec = wi_read_u32_be(WI_MAC_ERASE_CRSR_VECTOR, &ok_erase);
 
     rts_addr = wi_find_rom_rts();
     if (!rts_addr) {
         return;
     }
+    g_wi_cursor_hardware_active = true;
 
     /*
-     * 68k_web fully replaces DrawCrsr/EraseCrsr after erasing the old cursor.
-     * QEMU is outside the guest CPU here, so we take the safer first step:
-     * redirect DrawCrsrVector to a ROM RTS and leave EraseCrsrVector alone.
-     * The original erase routine can still remove any cursor already painted
-     * into the framebuffer, while new software cursor draws become no-ops.
+     * 68k_web replaces both DrawCrsr/EraseCrsr with an RTS stub and reasserts
+     * the patch because Mac OS reinstalls these vectors. From this QEMU timer
+     * we cannot safely execute the guest erase routine first, so use a two
+     * phase version: suppress draws immediately, and suppress erases once the
+     * low-memory state says no software cursor is currently painted. This keeps
+     * EraseCrsr available long enough to clean up an already-drawn cursor while
+     * still preventing future framebuffer cursor churn.
      */
     if (draw_vec != rts_addr) {
         wi_write_u32_be(WI_MAC_DRAW_CRSR_VECTOR, rts_addr);
-        wi_write_u8(WI_MAC_CRSR_NEW, 0);
-        if (!g_wi_cursor_suppression_logged) {
-            info_report("c89 wasminput: Mac software cursor draw suppressed "
-                        "(DrawCrsrVector -> 0x%08x)", rts_addr);
-            g_wi_cursor_suppression_logged = true;
-        }
     }
-}
 
-static bool wi_read_mac_mouse_lowmem(int32_t *x, int32_t *y)
-{
-    bool ok_x = false;
-    bool ok_y = false;
-    uint16_t raw_x = wi_read_u16_be(0x832, &ok_x);
-    uint16_t raw_y = wi_read_u16_be(0x830, &ok_y);
+    crsr_vis = wi_read_u8(WI_MAC_CRSR_VIS, &ok_vis);
+    crsr_state = wi_read_u16_be(WI_MAC_CRSR_STATE, &ok_state);
+    cursor_visible = ok_vis && ok_state && crsr_vis != 0 &&
+                     (int16_t)crsr_state > 0;
+    if (ok_erase && erase_vec != rts_addr &&
+        (!cursor_visible || !wi_guest_code_addr_is_plausible(erase_vec))) {
+        wi_write_u32_be(WI_MAC_ERASE_CRSR_VECTOR, rts_addr);
+    }
 
-    if (!ok_x || !ok_y) {
-        return false;
+    wi_write_u8(WI_MAC_CRSR_NEW, 0);
+    if (!g_wi_cursor_suppression_logged &&
+        (draw_vec != rts_addr || (ok_erase && erase_vec != rts_addr))) {
+        info_report("c89 wasminput: Mac software cursor suppressed "
+                    "(draw%s, erase%s -> 0x%08x)",
+                    draw_vec == rts_addr ? " already" : "",
+                    ok_erase && erase_vec == rts_addr ? " already" :
+                    (cursor_visible ? " pending-visible" : ""),
+                    rts_addr);
+        g_wi_cursor_suppression_logged = true;
     }
-    *x = (int16_t)raw_x;
-    *y = (int16_t)raw_y;
-    return true;
-}
-
-static int32_t wi_clamp_delta(int32_t value)
-{
-    if (value > 2048) {
-        return 2048;
-    }
-    if (value < -2048) {
-        return -2048;
-    }
-    return value;
 }
 
 static void wi_poll_mouse(int32_t *ctrl)
@@ -303,39 +318,35 @@ static void wi_poll_mouse(int32_t *ctrl)
     }
 
     if (g_wi_abs_valid) {
-        int32_t mac_x = g_wi_abs_x - dx;
-        int32_t mac_y = g_wi_abs_y - dy;
-
         /*
-         * Absolute browser input follows 68k_web/BasiliskII's model: update
-         * every Mac low-memory mouse Point before and after ADB. QEMU's ADB
-         * path still needs a movement/button event to wake the guest handler,
-         * so compute the relative signal from the guest's current Event
-         * Manager Mouse position to the latest browser coordinate.
+         * Absolute browser input should behave like 68k_web: the source of
+         * truth is the Mac low-memory mouse Points, not a large residual ADB
+         * relative delta. The previous path queued a big dx/dy into QEMU's ADB
+         * mouse, then immediately rewrote low memory to the target coordinate;
+         * ADB would keep draining that stale delta in 63px chunks and the VM
+         * cursor/click target drifted away from the host cursor. In absolute
+         * mode we now anchor low memory every poll and use ADB only to report
+         * button-state changes.
          */
-        if (wi_read_mac_mouse_lowmem(&mac_x, &mac_y)) {
-            dx = wi_clamp_delta(g_wi_abs_x - mac_x);
-            dy = wi_clamp_delta(g_wi_abs_y - mac_y);
-        }
         wi_sync_mac_mouse_lowmem(g_wi_abs_x, g_wi_abs_y);
+        dx = 0;
+        dy = 0;
     }
 
-    if (dx || dy || buttons != g_wi_last_buttons) {
+    if (dx || dy || buttons != g_wi_last_buttons || abs_flags) {
         if (g_wi_abs_valid) {
-            c89_adb_mouse_set_event(dx, dy, adb_buttons);
-            /*
-             * The guest's ADB path updates Mouse/RawMouse from the ADB packet.
-             * Keep the low-memory Event Manager position anchored to the latest
-             * browser coordinate; the next poll recomputes dx/dy from whatever
-             * the guest consumed.
-             */
+            c89_adb_mouse_set_event(0, 0, adb_buttons);
             wi_sync_mac_mouse_lowmem(g_wi_abs_x, g_wi_abs_y);
         } else {
             c89_adb_mouse_event(dx, dy, adb_buttons);
         }
+        if (dx || dy || abs_flags) {
+            ctrl[WI_C_MOUSE_EVENTS]++;
+        }
+        if (buttons != g_wi_last_buttons) {
+            ctrl[WI_C_BUTTON_EVENTS]++;
+        }
         g_wi_last_buttons = buttons;
-        ctrl[WI_C_MOUSE_EVENTS]++;
-        ctrl[WI_C_BUTTON_EVENTS]++;
     }
     ctrl[WI_C_LAST_BUTTONS] = (int32_t)g_wi_last_buttons;
 }
@@ -424,7 +435,7 @@ static void wi_poll_cursor(int32_t *ctrl)
         hot_y = wi_clamp_cursor_hotspot(hot_y);
         hot_x = wi_clamp_cursor_hotspot(hot_x);
         valid = wi_cursor_has_content(cursor);
-        if (valid) {
+        if (valid || g_wi_cursor_hardware_active) {
             wi_suppress_mac_software_cursor();
         }
     }
@@ -473,6 +484,7 @@ static void wi_reset_shared(void)
     g_wi_last_cursor_hot_y = 0;
     g_wi_last_cursor_valid = false;
     g_wi_cursor_rts_addr = 0;
+    g_wi_cursor_hardware_active = false;
     g_wi_cursor_suppression_logged = false;
     g_wi_abs_valid = false;
     g_wi_abs_x = 0;

@@ -248,10 +248,10 @@ browser:
 	./scripts/launch-aux-chrome.sh
 
 browser-interactive:
-	RES=800x600 INPUT=shared FPS=8 PACE=1 AUTOSTART=lazy-pulse PULSE_MS=2000 PULSE_MODE=yield ./scripts/launch-aux-chrome.sh
+	RES=800x600 INPUT=shared FPS=8 PACE=1 PTY_MIN=2 PTY_IDLE=16 AUTOSTART=lazy-pulse PULSE_MS=2000 PULSE_MODE=yield ./scripts/launch-aux-chrome.sh
 
 browser-shared-input:
-	RES=800x600 INPUT=shared FPS=8 PACE=1 AUTOSTART=lazy-pulse PULSE_MS=2000 PULSE_MODE=yield ./scripts/launch-aux-chrome.sh
+	RES=800x600 INPUT=shared FPS=8 PACE=1 PTY_MIN=2 PTY_IDLE=16 AUTOSTART=lazy-pulse PULSE_MS=2000 PULSE_MODE=yield ./scripts/launch-aux-chrome.sh
 
 browser-stop:
 	@pids="$$(pgrep -f 'c89-aux-chrome' || true)"; \

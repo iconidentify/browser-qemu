@@ -583,11 +583,14 @@ if (!source.includes("c89 pty bounded wait")) {
         `${prefix}${indent}/* c89 pty bounded wait. NEVER Infinity: when the monitor idle-waits
 ${indent}   for stdin (PTY_pollTimeout < 0) an unbounded wait parks the QEMU main-loop
 ${indent}   thread forever -- guest input does not wake this index and a throttled tab
-${indent}   can't deliver the page-side wake, so the whole VM freezes. Cap idle waits at
-${indent}   32ms so the loop always ticks (CPU + timers run, pending input is serviced);
-${indent}   the timed-out path below already handles "no data". min 8ms keeps churn low. */
+${indent}   can't deliver the page-side wake, so the whole VM freezes. Cap idle waits so
+${indent}   the loop always ticks (CPU + timers run, pending input is serviced). These
+${indent}   values are tunable through Module.c89PtyMinWaitMs / c89PtyIdleWaitMs for
+${indent}   headed latency A/B tests without rebuilding QEMU. */
+${indent}var c89PtyMinWaitMs = Math.max(0, Math.min(64, Number(Module["c89PtyMinWaitMs"] ?? 8) || 0));
+${indent}var c89PtyIdleWaitMs = Math.max(1, Math.min(250, Number(Module["c89PtyIdleWaitMs"] ?? 32) || 32));
 ${indent}Atomics.wait(${heapWait}, PTY_atomicIndex, -1,
-${indent}             PTY_pollTimeout >= 0 ? Math.max(PTY_pollTimeout, 8) : 32);
+${indent}             PTY_pollTimeout >= 0 ? Math.max(PTY_pollTimeout, c89PtyMinWaitMs) : c89PtyIdleWaitMs);
 ${indent}/* If the page-side wake never arrived, report a plain poll timeout. */
 ${indent}Atomics.compareExchange(${heapWait}, PTY_atomicIndex, -1, 2);`
     );

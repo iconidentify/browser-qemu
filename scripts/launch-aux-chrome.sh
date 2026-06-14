@@ -24,6 +24,8 @@ INPUT="${INPUT:-shared}" # shared = 68k_web-style browser buffer into QEMU ADB.
 FPS="${FPS:-20}"       # Page-side framebuffer cap; FPS=0 disables the cap.
 RES="${RES:-}"          # e.g. RES=800x600 to shrink the framebuffer
 NET="${NET:-}"          # NET=1 to enable the wasmbridge NIC + relay bridge
+PTY_MIN="${PTY_MIN:-}"  # Optional QEMU PTY bounded-wait floor in ms.
+PTY_IDLE="${PTY_IDLE:-}" # Optional QEMU PTY idle bounded-wait cap in ms.
 PROFILE="$(mktemp -d "${TMPDIR:-/tmp}/c89-aux-chrome-XXXXXX")"
 
 if [ "${AUTOSTART}" = "none" ]; then
@@ -34,6 +36,8 @@ fi
 [ -n "${RES}" ] && URL="${URL}&res=${RES}"
 [ -n "${NET}" ] && URL="${URL}&net=${NET}"
 [ -n "${ICOUNT}" ] && URL="${URL}&icount=${ICOUNT}"
+[ -n "${PTY_MIN}" ] && URL="${URL}&ptyMin=${PTY_MIN}"
+[ -n "${PTY_IDLE}" ] && URL="${URL}&ptyIdle=${PTY_IDLE}"
 if [ "${AUTOSTART}" = "lazy-pulse" ] && [ -n "${PULSE_MS}" ]; then
   URL="${URL}&pulseMs=${PULSE_MS}"
 fi
