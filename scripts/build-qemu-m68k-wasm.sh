@@ -446,18 +446,14 @@ apply_qemu_wasm_source_patches() {
   local adb_header="${QEMU_DIR}/include/hw/input/adb.h"
   local adb_kbd="${QEMU_DIR}/hw/input/adb-kbd.c"
   local adb_mouse="${QEMU_DIR}/hw/input/adb-mouse.c"
+  local adb_button_queue_patch="${ROOT}/scripts/patches/qemu-wasm-adb-button-queue.patch"
   cp "${wasminput_src}" "${QEMU_DIR}/ui/wasminput.c"
 
   if ! grep -q "wasminput.c" "${ui_meson}"; then
     perl -0pi -e "s/(  'input\\.c',\\n)/\$1  'wasminput.c',\\n/" "${ui_meson}"
   fi
 
-  if ! grep -q 'c89_adb_kbd_put_key' "${adb_header}"; then
-    perl -0pi -e 's/(#define TYPE_ADB_MOUSE "adb-mouse"\n)/$1\nvoid c89_adb_kbd_put_key(int adb_keycode, bool down);\nvoid c89_adb_mouse_event(int dx, int dy, int buttons_state);\n/' "${adb_header}"
-  fi
-  if ! grep -q 'c89_adb_mouse_set_event' "${adb_header}"; then
-    perl -0pi -e 's/(void c89_adb_mouse_event\(int dx, int dy, int buttons_state\);\n)/$1void c89_adb_mouse_set_event(int dx, int dy, int buttons_state);\n/' "${adb_header}"
-  fi
+  perl -0pi -e 's{#define TYPE_ADB_MOUSE "adb-mouse".*?#endif /\* ADB_H \*/}{#define TYPE_ADB_MOUSE "adb-mouse"\n\ntypedef struct C89ADBMouseDebug {\n    int abs_x;\n    int abs_y;\n    int pending_dx;\n    int pending_dy;\n    int buttons_state;\n    int last_buttons_state;\n    int desired_buttons;\n    int queue_depth;\n    int last_poll_before_x;\n    int last_poll_before_y;\n    int last_poll_after_x;\n    int last_poll_after_y;\n    int last_poll_dx;\n    int last_poll_dy;\n    int last_poll_buttons;\n    uint32_t poll_count;\n    uint32_t empty_poll_count;\n} C89ADBMouseDebug;\n\nvoid c89_adb_kbd_put_key(int adb_keycode, bool down);\nvoid c89_adb_mouse_event(int dx, int dy, int buttons_state);\nvoid c89_adb_mouse_set_event(int dx, int dy, int buttons_state);\nvoid c89_adb_mouse_set_position(int x, int y);\nbool c89_adb_mouse_get_position(int *x, int *y, int *pending_dx, int *pending_dy);\nbool c89_adb_mouse_get_debug(C89ADBMouseDebug *debug);\n\n#endif /* ADB_H */}s' "${adb_header}"
 
   if ! grep -q 'c89_adb_keyboard' "${adb_kbd}"; then
     perl -0pi -e 's/(struct ADBKeyboardClass \{\n    \/\*< private >\*\/\n    ADBDeviceClass parent_class;\n    \/\*< public >\*\/\n\n    DeviceRealize parent_realize;\n\};\n)/$1\nstatic KBDState *c89_adb_keyboard;\n/' "${adb_kbd}"
@@ -465,10 +461,11 @@ apply_qemu_wasm_source_patches() {
     perl -0pi -e 's/(static void adb_kbd_realizefn\(DeviceState \*dev, Error \*\*errp\)\n\{\n    ADBKeyboardClass \*akc = ADB_KEYBOARD_GET_CLASS\(dev\);\n    akc->parent_realize\(dev, errp\);\n)/$1    c89_adb_keyboard = ADB_KEYBOARD(dev);\n/' "${adb_kbd}"
   fi
 
-  if ! grep -q 'c89_adb_mouse' "${adb_mouse}"; then
-    perl -0pi -e 's/(struct ADBMouseClass \{\n    \/\*< public >\*\/\n    ADBDeviceClass parent_class;\n    \/\*< private >\*\/\n\n    DeviceRealize parent_realize;\n\};\n)/$1\nstatic MouseState *c89_adb_mouse;\n/' "${adb_mouse}"
-    perl -0pi -e 's/(static int adb_mouse_poll\(ADBDevice \*d, uint8_t \*obuf\)\n)/void c89_adb_mouse_event(int dx, int dy, int buttons_state)\n{\n    if (!c89_adb_mouse) {\n        return;\n    }\n    adb_mouse_event(c89_adb_mouse, dx, dy, 0, buttons_state);\n}\n\nvoid c89_adb_mouse_set_event(int dx, int dy, int buttons_state)\n{\n    if (!c89_adb_mouse) {\n        return;\n    }\n    c89_adb_mouse->dx = dx;\n    c89_adb_mouse->dy = dy;\n    c89_adb_mouse->dz = 0;\n    c89_adb_mouse->buttons_state = buttons_state;\n}\n\n$1/' "${adb_mouse}"
-    perl -0pi -e 's/(static void adb_mouse_realizefn\(DeviceState \*dev, Error \*\*errp\)\n\{\n    MouseState \*s = ADB_MOUSE\(dev\);\n    ADBMouseClass \*amc = ADB_MOUSE_GET_CLASS\(dev\);\n\n    amc->parent_realize\(dev, errp\);\n\n)/$1    c89_adb_mouse = s;\n/' "${adb_mouse}"
+  if ! grep -q 'c89_adb_mouse_button_queue' "${adb_mouse}"; then
+    git -C "${QEMU_DIR}" apply "${adb_button_queue_patch}"
+  fi
+  if grep -q 'c89_adb_mouse_clear_button_queue(s->buttons_state);' "${adb_mouse}"; then
+    perl -0pi -e 's/\n        c89_adb_mouse_clear_button_queue\(s->buttons_state\);//' "${adb_mouse}"
   fi
 }
 

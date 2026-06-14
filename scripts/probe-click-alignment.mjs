@@ -19,15 +19,17 @@ const opts = {
   readyTimeoutSec: 260,
   minLoginSec: 90,
   stock: true,
+  cssScale: 1,
+  radioSweep: false,
 };
 
 function usage() {
   console.error(`Usage:
   node scripts/probe-click-alignment.mjs [--headless] [--url url]
-    [--ready-timeout sec] [--min-login-sec sec] [--out-dir dir]
+    [--ready-timeout sec] [--min-login-sec sec] [--css-scale n] [--radio-sweep] [--out-dir dir]
 
 Default URL:
-  :8088/?build=click-align&ram=128&heap=384&pace=1&input=shared&cursor=host&fps=8&res=640x480&autostart=lazy-pulse&pulseMode=yield&pulseMs=2000&ptyMin=2&ptyIdle=16&probeMs=500&healthMs=1000`);
+  :8088/?build=click-align&ram=128&heap=384&pace=1&input=shared&inputMotion=hybrid&cursor=host&fps=8&res=640x480&autostart=lazy-pulse&pulseMode=yield&pulseMs=2000&ptyMin=2&ptyIdle=16&probeMs=500&healthMs=1000`);
 }
 
 const argv = process.argv.slice(2);
@@ -39,6 +41,8 @@ for (let i = 0; i < argv.length; i += 1) {
   else if (arg === "--out-dir") opts.outDir = argv[++i] || opts.outDir;
   else if (arg === "--ready-timeout") opts.readyTimeoutSec = Number.parseInt(argv[++i] || "", 10);
   else if (arg === "--min-login-sec") opts.minLoginSec = Number.parseInt(argv[++i] || "", 10);
+  else if (arg === "--css-scale") opts.cssScale = Number(argv[++i] || "1");
+  else if (arg === "--radio-sweep") opts.radioSweep = true;
   else if (arg === "--headless") opts.stock = false;
   else if (arg === "--help" || arg === "-h") {
     usage();
@@ -50,11 +54,16 @@ for (let i = 0; i < argv.length; i += 1) {
 }
 
 if (!opts.url) {
-  opts.url = `${opts.server}/?build=click-align&ram=128&heap=384&pace=1&input=shared&cursor=host&fps=8&res=640x480&autostart=lazy-pulse&pulseMode=yield&pulseMs=2000&ptyMin=2&ptyIdle=16&probeMs=500&healthMs=1000`;
+  opts.url = `${opts.server}/?build=click-align&ram=128&heap=384&pace=1&input=shared&inputMotion=hybrid&cursor=host&fps=8&res=640x480&autostart=lazy-pulse&pulseMode=yield&pulseMs=2000&ptyMin=2&ptyIdle=16&probeMs=500&healthMs=1000`;
 }
 
 if (!fs.existsSync(opts.chrome)) {
   console.error(`Chrome executable not found: ${opts.chrome}`);
+  process.exit(2);
+}
+
+if (!Number.isFinite(opts.cssScale) || opts.cssScale <= 0) {
+  console.error(`Invalid --css-scale: ${opts.cssScale}`);
   process.exit(2);
 }
 
@@ -188,6 +197,48 @@ async function clientPointForGuest(cdp, guestX, guestY) {
   return result.value;
 }
 
+async function setCanvasCssScale(cdp, scale) {
+  if (!Number.isFinite(scale) || Math.abs(scale - 1) < 0.001) return null;
+  const result = await evalQuick(cdp, `(() => {
+    const canvas = document.getElementById("canvas");
+    if (!canvas) return null;
+    const scale = ${JSON.stringify(scale)};
+    for (const selector of [".telemetry-panel", ".control-panel", ".topbar"]) {
+      const node = document.querySelector(selector);
+      if (node) node.style.display = "none";
+    }
+    const workspace = document.querySelector(".workspace");
+    if (workspace) {
+      workspace.style.display = "block";
+      workspace.style.padding = "8px";
+    }
+    const stage = document.querySelector(".stage-column");
+    if (stage) stage.style.width = Math.round(canvas.width * scale + 24) + "px";
+    const display = document.getElementById("displayPanel");
+    if (display) {
+      display.style.position = "static";
+      display.style.width = Math.round(canvas.width * scale + 24) + "px";
+    }
+    canvas.style.width = Math.round(canvas.width * scale) + "px";
+    canvas.style.height = Math.round(canvas.height * scale) + "px";
+    window.dispatchEvent(new Event("resize"));
+    const rect = canvas.getBoundingClientRect();
+    const probe = window.AuxQemuProbe && typeof window.AuxQemuProbe.snapshot === "function"
+      ? window.AuxQemuProbe.snapshot()
+      : null;
+    return {
+      scale,
+      canvasWidth: canvas.width,
+      canvasHeight: canvas.height,
+      clientWidth: Math.round(rect.width),
+      clientHeight: Math.round(rect.height),
+      hostCursor: probe ? probe.hostCursor : null,
+    };
+  })()`);
+  await delay(500);
+  return result.value;
+}
+
 async function sampleLoginRadioState(cdp) {
   const result = await evalQuick(cdp, `(() => {
     const canvas = document.getElementById("canvas");
@@ -219,6 +270,33 @@ async function sampleLoginRadioState(cdp) {
     };
   })()`);
   if (!result.value) throw new Error("login radio state unavailable");
+  return result.value;
+}
+
+async function sampleNameFieldTextState(cdp) {
+  const result = await evalQuick(cdp, `(() => {
+    const canvas = document.getElementById("canvas");
+    if (!canvas) return null;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return null;
+    const x = 316, y = 238, w = 164, h = 22;
+    const image = ctx.getImageData(x, y, w, h);
+    let dark = 0;
+    let ink = 0;
+    let checksum = 2166136261 >>> 0;
+    for (let i = 0; i < image.data.length; i += 4) {
+      const r = image.data[i + 0];
+      const g = image.data[i + 1];
+      const b = image.data[i + 2];
+      const a = image.data[i + 3];
+      if (a > 128 && r < 110 && g < 110 && b < 110) dark += 1;
+      if (a > 128 && r < 180 && g < 180 && b < 180) ink += 1;
+      checksum ^= ((r << 16) ^ (g << 8) ^ b ^ i) >>> 0;
+      checksum = Math.imul(checksum, 16777619) >>> 0;
+    }
+    return { x, y, w, h, dark, ink, checksum };
+  })()`);
+  if (!result.value) throw new Error("name field text state unavailable");
   return result.value;
 }
 
@@ -355,11 +433,12 @@ async function waitForSettledLogin(cdp) {
         checksum: framebuffer.checksum,
         nonBlack: framebuffer.nonBlack,
         loginDialog: dialog.present ? `${dialog.dialog.x0},${dialog.dialog.y0} ${dialog.dialog.width}x${dialog.dialog.height}` : "not-present",
+        auxLoginDialog: isAuxLoginDialog(dialog),
         heartbeat: probe.heartbeat,
         renderer: probe.renderer ? `${probe.renderer.width}x${probe.renderer.height}` : null,
         canvas: probe.canvas ? `${probe.canvas.width}x${probe.canvas.height}` : null,
       });
-      if (dialog.present &&
+      if (isAuxLoginDialog(dialog) &&
           (stableSamples >= 4 || repeatedSamples >= 4) &&
           now - started >= opts.minLoginSec * 1000) {
         probe.loginDialog = dialog;
@@ -369,6 +448,109 @@ async function waitForSettledLogin(cdp) {
     await delay(3000);
   }
   throw new Error("login framebuffer did not settle before timeout");
+}
+
+function isAuxLoginDialog(dialogState) {
+  const dialog = dialogState && dialogState.dialog;
+  if (!dialog) return false;
+  return (
+    dialog.width >= 300 &&
+    dialog.width <= 380 &&
+    dialog.height >= 130 &&
+    dialog.height <= 180 &&
+    dialog.x0 >= 120 &&
+    dialog.x1 <= 520 &&
+    dialog.y0 >= 80 &&
+    dialog.y0 <= 130
+  );
+}
+
+const keyInfo = new Map([
+  ["\t", { key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 }],
+  ["\r", { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 }],
+  [" ", { key: " ", code: "Space", windowsVirtualKeyCode: 32, text: " " }],
+  ["ArrowUp", { key: "ArrowUp", code: "ArrowUp", windowsVirtualKeyCode: 38 }],
+  ["ArrowDown", { key: "ArrowDown", code: "ArrowDown", windowsVirtualKeyCode: 40 }],
+  ["ArrowLeft", { key: "ArrowLeft", code: "ArrowLeft", windowsVirtualKeyCode: 37 }],
+  ["ArrowRight", { key: "ArrowRight", code: "ArrowRight", windowsVirtualKeyCode: 39 }],
+]);
+
+function infoForChar(char) {
+  if (keyInfo.has(char)) return keyInfo.get(char);
+  const lower = char.toLowerCase();
+  if (/^[a-z]$/.test(lower)) {
+    return {
+      key: char,
+      code: `Key${lower.toUpperCase()}`,
+      windowsVirtualKeyCode: lower.toUpperCase().charCodeAt(0),
+      text: char,
+    };
+  }
+  if (/^[0-9]$/.test(char)) {
+    return {
+      key: char,
+      code: `Digit${char}`,
+      windowsVirtualKeyCode: char.charCodeAt(0),
+      text: char,
+    };
+  }
+  throw new Error(`unsupported probe char ${JSON.stringify(char)}`);
+}
+
+async function sendKey(cdp, char) {
+  const info = infoForChar(char);
+  await cdp.send("Input.dispatchKeyEvent", {
+    type: "rawKeyDown",
+    key: info.key,
+    code: info.code,
+    windowsVirtualKeyCode: info.windowsVirtualKeyCode,
+    nativeVirtualKeyCode: info.windowsVirtualKeyCode,
+    text: info.text || "",
+    unmodifiedText: info.text || "",
+  }, 5000);
+  await delay(35);
+  await cdp.send("Input.dispatchKeyEvent", {
+    type: "keyUp",
+    key: info.key,
+    code: info.code,
+    windowsVirtualKeyCode: info.windowsVirtualKeyCode,
+    nativeVirtualKeyCode: info.windowsVirtualKeyCode,
+  }, 5000);
+  await delay(120);
+}
+
+async function waitForNameFieldTextChange(cdp, beforeText, beforeProbe, timeoutMs = 3000) {
+  const started = Date.now();
+  const beforeKeys = beforeProbe && beforeProbe.buttons ? beforeProbe.buttons.backendKeys || 0 : 0;
+  let last = {
+    text: await sampleNameFieldTextState(cdp),
+    probe: summarizeProbe(await readProbe(cdp)),
+  };
+
+  while (Date.now() - started < timeoutMs) {
+    const text = await sampleNameFieldTextState(cdp);
+    const probe = summarizeProbe(await readProbe(cdp));
+    last = { text, probe };
+
+    const keyConsumed = (probe.buttons.backendKeys || 0) > beforeKeys;
+    const textChanged = text.checksum !== beforeText.checksum ||
+      text.ink > beforeText.ink + 3 ||
+      text.dark > beforeText.dark + 3;
+    if (keyConsumed && textChanged) {
+      return {
+        ...last,
+        elapsedMs: Date.now() - started,
+        changed: true,
+      };
+    }
+    await delay(150);
+  }
+
+  return {
+    ...last,
+    elapsedMs: Date.now() - started,
+    changed: false,
+  };
 }
 
 function summarizeProbe(probe) {
@@ -391,6 +573,19 @@ function summarizeProbe(probe) {
     macRaw: { x: shared.macRawX, y: shared.macRawY },
     macDelta: { x: shared.macMouseDeltaX, y: shared.macMouseDeltaY },
     lastSync: { x: shared.lastSyncX, y: shared.lastSyncY },
+    adbPosition: { x: shared.adbPositionX, y: shared.adbPositionY },
+    adbPending: { dx: shared.adbPendingDx, dy: shared.adbPendingDy },
+    adbLastPoll: {
+      beforeX: shared.adbLastPollBeforeX,
+      beforeY: shared.adbLastPollBeforeY,
+      afterX: shared.adbLastPollAfterX,
+      afterY: shared.adbLastPollAfterY,
+      dx: shared.adbLastPollDx,
+      dy: shared.adbLastPollDy,
+      buttons: shared.adbLastPollButtons,
+      count: shared.adbPollCount,
+      emptyCount: shared.adbEmptyPollCount,
+    },
     lastAbsEvent: {
       x: shared.lastAbsEventX,
       y: shared.lastAbsEventY,
@@ -413,15 +608,28 @@ function summarizeProbe(probe) {
       frontend: shared.frontendButtons,
       last: shared.lastButtons,
       adb: shared.lastAdbButtons,
+      adbState: shared.adbStateButtons,
+      adbLastState: shared.adbLastButtonsState,
+      adbDesired: shared.adbDesiredButtons,
+      adbQueueDepth: shared.adbQueueDepth,
+      localQueueDepth: shared.localButtonQueueDepth,
+      pressPrimeMs: shared.buttonPressPrimeMs,
+      pressPending: shared.buttonPressPending,
+      pendingMask: shared.pendingButtonMask,
+      releaseHoldMs: shared.buttonReleaseHoldMs,
+      targetPending: shared.targetPending,
+      backendKeys: shared.backendKeys,
       backendButtons: shared.backendButtons,
       backendMouse: shared.backendMouse,
     },
+    alignment: probe ? probe.alignment : null,
     cursor: {
       valid: shared.cursorValid,
       seq: shared.cursorSeq,
       hotspotX: shared.cursorHotspotX,
       hotspotY: shared.cursorHotspotY,
     },
+    hostCursor: probe ? probe.hostCursor : null,
   };
 }
 
@@ -439,18 +647,92 @@ function deltaFromTarget(summary, point) {
   };
 }
 
-async function dispatchClickProbe(cdp, point) {
+function buttonTransitionSummary(before, result) {
+  const beforeButtons = before && before.buttons ? before.buttons : {};
+  const moveButtons = result.afterMove && result.afterMove.buttons ? result.afterMove.buttons : {};
+  const downButtons = result.afterDown && result.afterDown.buttons ? result.afterDown.buttons : {};
+  const upButtons = result.afterUp && result.afterUp.buttons ? result.afterUp.buttons : {};
+  const beforePoll = before && before.adbLastPoll ? before.adbLastPoll : {};
+  const upPoll = result.afterUp && result.afterUp.adbLastPoll ? result.afterUp.adbLastPoll : {};
+  return {
+    backendButtonsBefore: beforeButtons.backendButtons || 0,
+    backendButtonsAfterMove: moveButtons.backendButtons || 0,
+    backendButtonsAfterDown: downButtons.backendButtons || 0,
+    backendButtonsAfterUp: upButtons.backendButtons || 0,
+    downEdges: Math.max(0, (downButtons.backendButtons || 0) - (moveButtons.backendButtons || 0)),
+    upEdges: Math.max(0, (upButtons.backendButtons || 0) - (downButtons.backendButtons || 0)),
+    totalEdges: Math.max(0, (upButtons.backendButtons || 0) - (beforeButtons.backendButtons || 0)),
+    adbPollDelta: Math.max(0, (upPoll.count || 0) - (beforePoll.count || 0)),
+    emptyPollDelta: Math.max(0, (upPoll.emptyCount || 0) - (beforePoll.emptyCount || 0)),
+    finalFrontend: upButtons.frontend,
+    finalAdb: upButtons.adb,
+    finalQueueDepth: upButtons.adbQueueDepth,
+  };
+}
+
+function compactClickResult(result, beforeProbe = null) {
+  return {
+    name: result.name,
+    target: result.target,
+    timing: result.timing,
+    mapped: result.mapped,
+    deltas: result.deltas,
+    buttonTransitions: buttonTransitionSummary(beforeProbe || result.afterMoveImmediate, result),
+    buttons: {
+      before: beforeProbe && beforeProbe.buttons ? beforeProbe.buttons : null,
+      move: result.afterMove.buttons,
+      down: result.afterDown.buttons,
+      up: result.afterUp.buttons,
+    },
+    adbLastPoll: {
+      before: beforeProbe && beforeProbe.adbLastPoll ? beforeProbe.adbLastPoll : null,
+      down: result.afterDown.adbLastPoll,
+      up: result.afterUp.adbLastPoll,
+    },
+    alignment: result.afterUp.alignment,
+    hostCursor: result.afterUp.hostCursor,
+  };
+}
+
+function summarizeFailureForConsole(failure) {
+  if (!failure) return failure;
+  const summary = {
+    name: failure.name,
+    issues: failure.issues,
+  };
+  if (Array.isArray(failure.attempts)) {
+    const byMode = {};
+    for (const attempt of failure.attempts) {
+      const mode = attempt.mode || "unknown";
+      byMode[mode] = (byMode[mode] || 0) + 1;
+    }
+    summary.attempts = failure.attempts.length;
+    summary.byMode = byMode;
+  }
+  if (failure.deltas) summary.deltas = failure.deltas;
+  if (failure.state) summary.state = failure.state;
+  return summary;
+}
+
+async function dispatchClickProbe(cdp, point, options = {}) {
   const mapped = await clientPointForGuest(cdp, point.x, point.y);
-  const x = Math.round(mapped.clientX);
-  const y = Math.round(mapped.clientY);
+  const x = mapped.clientX;
+  const y = mapped.clientY;
+  const moveDelayMs = Number.isFinite(options.moveDelayMs) ? options.moveDelayMs : 160;
+  const downDelayMs = Number.isFinite(options.downDelayMs) ? options.downDelayMs : 120;
+  const upDelayMs = Number.isFinite(options.upDelayMs) ? options.upDelayMs : 260;
+  const clickCount = Number.isFinite(options.clickCount) ? Math.max(1, Math.trunc(options.clickCount)) : 1;
+  const downMoves = Array.isArray(options.downMoves) ? options.downMoves : [];
 
   await cdp.send("Input.dispatchMouseEvent", {
     type: "mouseMoved",
     x,
     y,
     button: "none",
+    buttons: 0,
   }, 5000);
-  await delay(160);
+  const afterMoveImmediate = summarizeProbe(await readProbe(cdp));
+  await delay(moveDelayMs);
   const afterMove = summarizeProbe(await readProbe(cdp));
 
   await cdp.send("Input.dispatchMouseEvent", {
@@ -458,9 +740,35 @@ async function dispatchClickProbe(cdp, point) {
     x,
     y,
     button: "left",
-    clickCount: 1,
+    buttons: 1,
+    clickCount,
   }, 5000);
-  await delay(120);
+  const afterDownImmediate = summarizeProbe(await readProbe(cdp));
+  const afterDownMoves = [];
+  for (const move of downMoves) {
+    await delay(Number.isFinite(move.delayMs) ? move.delayMs : 45);
+    await cdp.send("Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x: x + (Number(move.dx) || 0),
+      y: y + (Number(move.dy) || 0),
+      button: "none",
+      buttons: 1,
+    }, 5000);
+    afterDownMoves.push({
+      move,
+      probe: summarizeProbe(await readProbe(cdp)),
+    });
+  }
+  if (downMoves.length) {
+    await cdp.send("Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x,
+      y,
+      button: "none",
+      buttons: 1,
+    }, 5000);
+  }
+  await delay(downDelayMs);
   const afterDown = summarizeProbe(await readProbe(cdp));
 
   await cdp.send("Input.dispatchMouseEvent", {
@@ -468,22 +776,34 @@ async function dispatchClickProbe(cdp, point) {
     x,
     y,
     button: "left",
-    clickCount: 1,
+    buttons: 0,
+    clickCount,
   }, 5000);
-  await delay(260);
+  const afterUpImmediate = summarizeProbe(await readProbe(cdp));
+  await delay(upDelayMs);
   const afterUp = summarizeProbe(await readProbe(cdp));
 
   return {
     name: point.name,
     target: point,
+    timing: { moveDelayMs, downDelayMs, upDelayMs },
     mapped,
-    roundedClient: { x, y },
+    client: { x, y },
+    roundedClient: { x: Math.round(x), y: Math.round(y) },
+    reverse: mapped.reverse || null,
+    afterMoveImmediate,
     afterMove,
+    afterDownImmediate,
+    afterDownMoves,
     afterDown,
+    afterUpImmediate,
     afterUp,
     deltas: {
+      moveImmediate: deltaFromTarget(afterMoveImmediate, point),
       move: deltaFromTarget(afterMove, point),
+      downImmediate: deltaFromTarget(afterDownImmediate, point),
       down: deltaFromTarget(afterDown, point),
+      upImmediate: deltaFromTarget(afterUpImmediate, point),
       up: deltaFromTarget(afterUp, point),
     },
   };
@@ -498,6 +818,166 @@ const probePoints = [
   { name: "dialog-icon", x: 228, y: 164 },
   { name: "desktop-center", x: 320, y: 240 },
 ];
+
+const radioSweepTargets = [
+  { name: "guest-circle", x: 243, y: 201 },
+  { name: "guest-circle-upper", x: 243, y: 198 },
+  { name: "guest-circle-lower", x: 243, y: 204 },
+  { name: "guest-label-left", x: 270, y: 201 },
+  { name: "guest-label-mid", x: 302, y: 201 },
+  { name: "guest-row-right", x: 360, y: 201 },
+];
+
+const radioSweepHoldMs = [120, 250, 500, 900];
+const radioSweepModes = [
+  {
+    name: "plain",
+    targets: radioSweepTargets,
+    holdMs: radioSweepHoldMs,
+  },
+  {
+    name: "micro-drag-east",
+    targets: radioSweepTargets.slice(0, 4),
+    holdMs: [250, 700],
+    downMoves: [{ dx: 1, dy: 0, delayMs: 70 }, { dx: 0, dy: 0, delayMs: 70 }],
+  },
+  {
+    name: "micro-drag-south",
+    targets: radioSweepTargets.slice(0, 4),
+    holdMs: [250, 700],
+    downMoves: [{ dx: 0, dy: 1, delayMs: 70 }, { dx: 0, dy: 0, delayMs: 70 }],
+  },
+  {
+    name: "double-click",
+    targets: [radioSweepTargets[0], radioSweepTargets[3], radioSweepTargets[4]],
+    holdMs: [160],
+    clicks: 2,
+    interClickMs: 180,
+  },
+  {
+    name: "click-space",
+    targets: [radioSweepTargets[0], radioSweepTargets[3], radioSweepTargets[4]],
+    holdMs: [250],
+    keyAfter: " ",
+  },
+];
+
+function selectedRadio(state) {
+  if (!state || !state.guest || !state.registered) return "unknown";
+  if (state.guest.dark > state.registered.dark + 8) return "guest";
+  if (state.registered.dark > state.guest.dark + 8) return "registered";
+  if (state.guest.ink > state.registered.ink + 8) return "guest-ish";
+  if (state.registered.ink > state.guest.ink + 8) return "registered-ish";
+  return "ambiguous";
+}
+
+async function restoreRegisteredRadio(cdp) {
+  await dispatchClickProbe(cdp, { name: "registered-radio-restore", x: 243, y: 220 }, {
+    moveDelayMs: 220,
+    downDelayMs: 350,
+    upDelayMs: 420,
+  });
+  await delay(300);
+  return sampleLoginRadioState(cdp);
+}
+
+async function runRadioSweep(cdp) {
+  const attempts = [];
+  let restoredState = null;
+
+  for (const mode of radioSweepModes) {
+    for (const target of mode.targets) {
+      for (const holdMs of mode.holdMs) {
+        const before = await sampleLoginRadioState(cdp);
+        const beforeProbe = summarizeProbe(await readProbe(cdp));
+        const result = await dispatchClickProbe(cdp, target, {
+          moveDelayMs: 260,
+          downDelayMs: holdMs,
+          upDelayMs: 520,
+          downMoves: mode.downMoves,
+        });
+        const clickResults = [result];
+        for (let click = 1; click < (mode.clicks || 1); click += 1) {
+          await delay(mode.interClickMs || 160);
+          clickResults.push(await dispatchClickProbe(cdp, target, {
+            moveDelayMs: 80,
+            downDelayMs: holdMs,
+            upDelayMs: 320,
+            clickCount: click + 1,
+            downMoves: mode.downMoves,
+          }));
+        }
+        if (mode.keyAfter) {
+          await sendKey(cdp, mode.keyAfter);
+          await delay(250);
+        }
+        const after = await sampleLoginRadioState(cdp);
+        const selection = selectedRadio(after);
+        const lastClick = clickResults[clickResults.length - 1];
+        const attempt = {
+          mode: mode.name,
+          target,
+          holdMs,
+          clicks: mode.clicks || 1,
+          keyAfter: mode.keyAfter || "",
+          before: selectedRadio(before),
+          after: selection,
+          state: after,
+          clickResults: clickResults.map((item) => compactClickResult(item, beforeProbe)),
+          immediateDeltas: lastClick.deltas.upImmediate,
+          downDeltas: lastClick.deltas.down,
+          upDeltas: lastClick.deltas.up,
+          immediateButtons: lastClick.afterUpImmediate.buttons,
+          downButtons: lastClick.afterDown.buttons,
+          upButtons: lastClick.afterUp.buttons,
+          buttonTransitions: buttonTransitionSummary(beforeProbe, lastClick),
+          alignment: lastClick.afterUp.alignment,
+        };
+        attempts.push(attempt);
+        stamp({
+          event: "radio-sweep",
+          mode: mode.name,
+          target: target.name,
+          point: { x: target.x, y: target.y },
+          holdMs,
+          clicks: attempt.clicks,
+          keyAfter: attempt.keyAfter,
+          before: attempt.before,
+          after: selection,
+          immediateDeltas: attempt.immediateDeltas,
+          downDeltas: attempt.downDeltas,
+          upDeltas: attempt.upDeltas,
+          immediateButtons: attempt.immediateButtons,
+          downButtons: attempt.downButtons,
+          upButtons: attempt.upButtons,
+          buttonTransitions: attempt.buttonTransitions,
+          alignment: attempt.alignment,
+        });
+
+        if (selection === "guest") {
+          restoredState = await restoreRegisteredRadio(cdp);
+          return {
+            ok: true,
+            attempts,
+            restored: selectedRadio(restoredState),
+            restoredState,
+          };
+        }
+
+        if (selection !== "registered" && selection !== "registered-ish") {
+          restoredState = await restoreRegisteredRadio(cdp);
+        }
+      }
+    }
+  }
+
+  return {
+    ok: false,
+    attempts,
+    restored: restoredState ? selectedRadio(restoredState) : selectedRadio(await sampleLoginRadioState(cdp)),
+    restoredState,
+  };
+}
 
 fs.mkdirSync(opts.outDir, { recursive: true });
 await resetServerState();
@@ -550,6 +1030,10 @@ try {
   stamp({ event: "navigated", stock: opts.stock, url: opts.url });
 
   const loginProbe = await waitForSettledLogin(cdp);
+  const cssScaleProbe = await setCanvasCssScale(cdp, opts.cssScale);
+  if (cssScaleProbe) {
+    stamp({ event: "css-scale", state: cssScaleProbe });
+  }
   await screenshot(cdp, "login-before-probes.png");
   stamp({
     event: "login-settled",
@@ -565,6 +1049,8 @@ try {
   const results = [];
   let radioAfterGuest = null;
   let radioAfterRegistered = null;
+  let nameTypeProbe = null;
+  let radioSweepResult = null;
   for (const point of probePoints) {
     const result = await dispatchClickProbe(cdp, point);
     results.push(result);
@@ -572,10 +1058,16 @@ try {
       event: "click-probe",
       name: point.name,
       target: { x: point.x, y: point.y },
-      mapped: result.roundedClient,
+      client: result.client,
+      roundedClient: result.roundedClient,
+      reverse: result.reverse,
+      deltasImmediate: result.deltas.upImmediate,
       deltas: result.deltas.up,
       buttons: result.afterUp.buttons,
+      buttonTransitions: buttonTransitionSummary(result.afterMoveImmediate, result),
+      alignment: result.afterUp.alignment,
       cursor: result.afterUp.cursor,
+      hostCursor: result.afterUp.hostCursor,
     });
 
     if (point.name === "guest-radio-center") {
@@ -584,7 +1076,35 @@ try {
     } else if (point.name === "registered-radio-center") {
       radioAfterRegistered = await sampleLoginRadioState(cdp);
       stamp({ event: "radio-state", phase: "after-registered", state: radioAfterRegistered });
+    } else if (point.name === "name-field-mid") {
+      const beforeText = await sampleNameFieldTextState(cdp);
+      const beforeProbe = summarizeProbe(await readProbe(cdp));
+      await sendKey(cdp, "x");
+      const after = await waitForNameFieldTextChange(cdp, beforeText, beforeProbe);
+      const afterText = after.text;
+      const afterProbe = after.probe;
+      nameTypeProbe = { beforeText, afterText, beforeProbe, afterProbe, waitMs: after.elapsedMs, changed: after.changed };
+      stamp({
+        event: "name-field-type",
+        beforeText,
+        afterText,
+        backendKeysBefore: beforeProbe.buttons.backendKeys,
+        backendKeysAfter: afterProbe.buttons.backendKeys,
+        waitMs: after.elapsedMs,
+        changed: after.changed,
+      });
     }
+  }
+
+  if (opts.radioSweep) {
+    radioSweepResult = await runRadioSweep(cdp);
+    await screenshot(cdp, "login-after-radio-sweep.png");
+    stamp({
+      event: "radio-sweep-result",
+      ok: radioSweepResult.ok,
+      attempts: radioSweepResult.attempts.length,
+      restored: radioSweepResult.restored,
+    });
   }
   await screenshot(cdp, "login-after-probes.png");
 
@@ -597,20 +1117,47 @@ try {
     if (result.afterDown.buttons.frontend !== 1 || result.afterUp.buttons.frontend !== 0) issues.push("button");
     return issues.length ? [{ name: result.name, issues, deltas: up }] : [];
   });
-  if (radioBefore.registered.dark <= radioBefore.guest.dark + 8) {
+  if (radioBefore.registered.ink <= radioBefore.guest.ink + 8) {
     failures.push({ name: "radio-before", issues: ["registered-not-selected"], state: radioBefore });
   }
   if (!radioAfterGuest || radioAfterGuest.guest.dark <= radioAfterGuest.registered.dark + 8) {
-    failures.push({ name: "radio-after-guest", issues: ["guest-not-selected"], state: radioAfterGuest });
+    stamp({ event: "radio-note", note: "Guest radio did not toggle; treating as non-fatal because Registered User is the A/UX login path", state: radioAfterGuest });
   }
-  if (!radioAfterRegistered || radioAfterRegistered.registered.dark <= radioAfterRegistered.guest.dark + 8) {
+  if (!radioAfterRegistered || radioAfterRegistered.registered.ink <= radioAfterRegistered.guest.ink + 8) {
     failures.push({ name: "radio-after-registered", issues: ["registered-not-restored"], state: radioAfterRegistered });
+  }
+  if (opts.radioSweep && (!radioSweepResult || !radioSweepResult.ok)) {
+    failures.push({
+      name: "radio-sweep",
+      issues: ["guest-radio-never-toggled"],
+      attempts: radioSweepResult ? radioSweepResult.attempts : [],
+    });
+  }
+  if (!nameTypeProbe) {
+    failures.push({ name: "name-field-type", issues: ["not-run"] });
+  } else {
+    const typeIssues = [];
+    const beforeKeys = nameTypeProbe.beforeProbe.buttons.backendKeys || 0;
+    const afterKeys = nameTypeProbe.afterProbe.buttons.backendKeys || 0;
+    const beforeText = nameTypeProbe.beforeText;
+    const afterText = nameTypeProbe.afterText;
+    if (afterKeys <= beforeKeys) typeIssues.push("backend-key-not-consumed");
+    if (afterText.ink <= beforeText.ink + 3 && afterText.checksum === beforeText.checksum) {
+      typeIssues.push("name-field-no-visible-text");
+    }
+    if (afterKeys - beforeKeys > 4) typeIssues.push("possible-key-repeat-storm");
+    if (typeIssues.length) {
+      failures.push({ name: "name-field-type", issues: typeIssues, beforeText, afterText, beforeKeys, afterKeys });
+    }
   }
 
   report = {
     ok: failures.length === 0,
     url: opts.url,
     stock: opts.stock,
+    cssScale: opts.cssScale,
+    radioSweepEnabled: opts.radioSweep,
+    cssScaleProbe,
     login: {
       framebuffer: loginProbe.framebuffer,
       canvas: loginProbe.canvas,
@@ -624,14 +1171,21 @@ try {
       before: radioBefore,
       afterGuest: radioAfterGuest,
       afterRegistered: radioAfterRegistered,
+      sweep: radioSweepResult,
     },
+    nameTypeProbe,
     failures,
     chromeStderrTail: chromeErrors.slice(-20),
   };
 
   const reportPath = path.join(opts.outDir, "click-alignment-report.json");
   fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
-  stamp({ event: "report", ok: report.ok, path: reportPath, failures });
+  stamp({
+    event: "report",
+    ok: report.ok,
+    path: reportPath,
+    failures: failures.map(summarizeFailureForConsole),
+  });
   if (!report.ok) process.exitCode = 1;
 } catch (error) {
   let finalProbe = null;

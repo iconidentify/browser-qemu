@@ -1,0 +1,248 @@
+diff --git a/hw/input/adb-mouse.c b/hw/input/adb-mouse.c
+index e6b341f0..47638cac 100644
+--- a/hw/input/adb-mouse.c
++++ b/hw/input/adb-mouse.c
+@@ -51,6 +51,86 @@ struct ADBMouseClass {
+     DeviceRealize parent_realize;
+ };
+
++static MouseState *c89_adb_mouse;
++static int c89_adb_mouse_abs_x;
++static int c89_adb_mouse_abs_y;
++static bool c89_adb_mouse_abs_valid;
++
++#define C89_ADB_MOUSE_BUTTON_QUEUE_SLOTS 16
++static int c89_adb_mouse_button_queue[C89_ADB_MOUSE_BUTTON_QUEUE_SLOTS];
++static uint32_t c89_adb_mouse_button_queue_read;
++static uint32_t c89_adb_mouse_button_queue_write;
++static int c89_adb_mouse_button_desired;
++static int c89_adb_mouse_last_poll_before_x;
++static int c89_adb_mouse_last_poll_before_y;
++static int c89_adb_mouse_last_poll_after_x;
++static int c89_adb_mouse_last_poll_after_y;
++static int c89_adb_mouse_last_poll_dx;
++static int c89_adb_mouse_last_poll_dy;
++static int c89_adb_mouse_last_poll_buttons;
++static uint32_t c89_adb_mouse_poll_count;
++static uint32_t c89_adb_mouse_empty_poll_count;
++
++static bool c89_adb_mouse_button_queue_empty(void)
++{
++    return c89_adb_mouse_button_queue_read ==
++           c89_adb_mouse_button_queue_write;
++}
++
++static uint32_t c89_adb_mouse_button_queue_depth(void)
++{
++    if (c89_adb_mouse_button_queue_write >= c89_adb_mouse_button_queue_read) {
++        return c89_adb_mouse_button_queue_write -
++               c89_adb_mouse_button_queue_read;
++    }
++    return C89_ADB_MOUSE_BUTTON_QUEUE_SLOTS -
++           c89_adb_mouse_button_queue_read +
++           c89_adb_mouse_button_queue_write;
++}
++
++static void c89_adb_mouse_clear_button_queue(int buttons_state)
++{
++    c89_adb_mouse_button_queue_read = 0;
++    c89_adb_mouse_button_queue_write = 0;
++    c89_adb_mouse_button_desired = buttons_state;
++}
++
++static void c89_adb_mouse_queue_button_state(int buttons_state)
++{
++    uint32_t next;
++
++    if (buttons_state == c89_adb_mouse_button_desired) {
++        return;
++    }
++
++    next = (c89_adb_mouse_button_queue_write + 1) %
++           C89_ADB_MOUSE_BUTTON_QUEUE_SLOTS;
++    if (next == c89_adb_mouse_button_queue_read) {
++        c89_adb_mouse_button_queue_read =
++            (c89_adb_mouse_button_queue_read + 1) %
++            C89_ADB_MOUSE_BUTTON_QUEUE_SLOTS;
++    }
++
++    c89_adb_mouse_button_queue[c89_adb_mouse_button_queue_write] =
++        buttons_state;
++    c89_adb_mouse_button_queue_write = next;
++    c89_adb_mouse_button_desired = buttons_state;
++}
++
++static bool c89_adb_mouse_dequeue_button_state(int *buttons_state)
++{
++    if (c89_adb_mouse_button_queue_empty()) {
++        return false;
++    }
++
++    *buttons_state =
++        c89_adb_mouse_button_queue[c89_adb_mouse_button_queue_read];
++    c89_adb_mouse_button_queue_read =
++        (c89_adb_mouse_button_queue_read + 1) %
++        C89_ADB_MOUSE_BUTTON_QUEUE_SLOTS;
++    return true;
++}
++
+ static void adb_mouse_event(void *opaque,
+                             int dx1, int dy1, int dz1, int buttons_state)
+ {
+@@ -63,13 +143,103 @@ static void adb_mouse_event(void *opaque,
+ }
+
+
++void c89_adb_mouse_event(int dx, int dy, int buttons_state)
++{
++    if (!c89_adb_mouse) {
++        return;
++    }
++    c89_adb_mouse->dx += dx;
++    c89_adb_mouse->dy += dy;
++    c89_adb_mouse->dz = 0;
++    c89_adb_mouse_queue_button_state(buttons_state);
++}
++
++void c89_adb_mouse_set_event(int dx, int dy, int buttons_state)
++{
++    if (!c89_adb_mouse) {
++        return;
++    }
++    c89_adb_mouse->dx = dx;
++    c89_adb_mouse->dy = dy;
++    c89_adb_mouse->dz = 0;
++    c89_adb_mouse_queue_button_state(buttons_state);
++}
++
++void c89_adb_mouse_set_position(int x, int y)
++{
++    c89_adb_mouse_abs_x = x;
++    c89_adb_mouse_abs_y = y;
++    c89_adb_mouse_abs_valid = true;
++    if (c89_adb_mouse) {
++        c89_adb_mouse->dx = 0;
++        c89_adb_mouse->dy = 0;
++        c89_adb_mouse->dz = 0;
++    }
++}
++
++bool c89_adb_mouse_get_position(int *x, int *y, int *pending_dx, int *pending_dy)
++{
++    if (!c89_adb_mouse || !c89_adb_mouse_abs_valid) {
++        return false;
++    }
++    if (x) {
++        *x = c89_adb_mouse_abs_x;
++    }
++    if (y) {
++        *y = c89_adb_mouse_abs_y;
++    }
++    if (pending_dx) {
++        *pending_dx = c89_adb_mouse->dx;
++    }
++    if (pending_dy) {
++        *pending_dy = c89_adb_mouse->dy;
++    }
++    return true;
++}
++
++bool c89_adb_mouse_get_debug(C89ADBMouseDebug *debug)
++{
++    if (!debug) {
++        return false;
++    }
++
++    memset(debug, 0, sizeof(*debug));
++    if (!c89_adb_mouse) {
++        return false;
++    }
++
++    debug->abs_x = c89_adb_mouse_abs_x;
++    debug->abs_y = c89_adb_mouse_abs_y;
++    debug->pending_dx = c89_adb_mouse->dx;
++    debug->pending_dy = c89_adb_mouse->dy;
++    debug->buttons_state = c89_adb_mouse->buttons_state;
++    debug->last_buttons_state = c89_adb_mouse->last_buttons_state;
++    debug->desired_buttons = c89_adb_mouse_button_desired;
++    debug->queue_depth = (int)c89_adb_mouse_button_queue_depth();
++    debug->last_poll_before_x = c89_adb_mouse_last_poll_before_x;
++    debug->last_poll_before_y = c89_adb_mouse_last_poll_before_y;
++    debug->last_poll_after_x = c89_adb_mouse_last_poll_after_x;
++    debug->last_poll_after_y = c89_adb_mouse_last_poll_after_y;
++    debug->last_poll_dx = c89_adb_mouse_last_poll_dx;
++    debug->last_poll_dy = c89_adb_mouse_last_poll_dy;
++    debug->last_poll_buttons = c89_adb_mouse_last_poll_buttons;
++    debug->poll_count = c89_adb_mouse_poll_count;
++    debug->empty_poll_count = c89_adb_mouse_empty_poll_count;
++    return true;
++}
++
+ static int adb_mouse_poll(ADBDevice *d, uint8_t *obuf)
+ {
+     MouseState *s = ADB_MOUSE(d);
+     int dx, dy;
++    int before_x = c89_adb_mouse_abs_x;
++    int before_y = c89_adb_mouse_abs_y;
++
++    c89_adb_mouse_dequeue_button_state(&s->buttons_state);
+
+     if (s->last_buttons_state == s->buttons_state &&
+         s->dx == 0 && s->dy == 0) {
++        c89_adb_mouse_empty_poll_count++;
+         return 0;
+     }
+
+@@ -90,6 +260,18 @@ static int adb_mouse_poll(ADBDevice *d, uint8_t *obuf)
+     s->dx -= dx;
+     s->dy -= dy;
+     s->last_buttons_state = s->buttons_state;
++    if (c89_adb_mouse_abs_valid) {
++        c89_adb_mouse_abs_x += dx;
++        c89_adb_mouse_abs_y += dy;
++    }
++    c89_adb_mouse_poll_count++;
++    c89_adb_mouse_last_poll_before_x = before_x;
++    c89_adb_mouse_last_poll_before_y = before_y;
++    c89_adb_mouse_last_poll_after_x = c89_adb_mouse_abs_x;
++    c89_adb_mouse_last_poll_after_y = c89_adb_mouse_abs_y;
++    c89_adb_mouse_last_poll_dx = dx;
++    c89_adb_mouse_last_poll_dy = dy;
++    c89_adb_mouse_last_poll_buttons = s->buttons_state;
+
+     dx &= 0x7f;
+     dy &= 0x7f;
+@@ -198,7 +380,8 @@ static bool adb_mouse_has_data(ADBDevice *d)
+ {
+     MouseState *s = ADB_MOUSE(d);
+
+-    return !(s->last_buttons_state == s->buttons_state &&
++    return !c89_adb_mouse_button_queue_empty() ||
++           !(s->last_buttons_state == s->buttons_state &&
+              s->dx == 0 && s->dy == 0);
+ }
+
+@@ -211,6 +394,16 @@ static void adb_mouse_reset(DeviceState *dev)
+     d->devaddr = ADB_DEVID_MOUSE;
+     s->last_buttons_state = s->buttons_state = 0;
+     s->dx = s->dy = s->dz = 0;
++    c89_adb_mouse_clear_button_queue(0);
++    c89_adb_mouse_last_poll_before_x = 0;
++    c89_adb_mouse_last_poll_before_y = 0;
++    c89_adb_mouse_last_poll_after_x = 0;
++    c89_adb_mouse_last_poll_after_y = 0;
++    c89_adb_mouse_last_poll_dx = 0;
++    c89_adb_mouse_last_poll_dy = 0;
++    c89_adb_mouse_last_poll_buttons = 0;
++    c89_adb_mouse_poll_count = 0;
++    c89_adb_mouse_empty_poll_count = 0;
+ }
+
+ static const VMStateDescription vmstate_adb_mouse = {
+@@ -236,6 +429,7 @@ static void adb_mouse_realizefn(DeviceState *dev, Error **errp)
+
+     amc->parent_realize(dev, errp);
+
++    c89_adb_mouse = s;
+     qemu_add_mouse_event_handler(adb_mouse_event, s, 0, "QEMU ADB Mouse");
+ }

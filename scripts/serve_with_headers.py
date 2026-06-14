@@ -17,9 +17,11 @@ STATS_LOCK = threading.Lock()
 RANGE_STATS = {}
 LOG_LOCK = threading.Lock()
 BROWSER_LOG_LINES = []
-MAX_BROWSER_LOG_LINES = 4000
-MAX_BROWSER_LOG_CHARS = 600000
+MAX_BROWSER_LOG_LINES = 12000
+MAX_BROWSER_LOG_CHARS = 2000000
 MAX_BROWSER_LOG_POST_BYTES = 1024 * 1024
+LOG_HISTORY_PATH = pathlib.Path(os.environ.get("BROWSER_QEMU_LOG_HISTORY", "build/browser-log-history.log"))
+MAX_BROWSER_LOG_HISTORY_READ_BYTES = 4 * 1024 * 1024
 SESSION_LOCK = threading.Lock()
 SESSIONS = {}
 SESSION_TTL_SEC = 20
@@ -186,18 +188,74 @@ def append_browser_log(lines):
         if trim_at:
             del BROWSER_LOG_LINES[:trim_at]
 
+        try:
+            LOG_HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with LOG_HISTORY_PATH.open("a", encoding="utf-8") as file:
+                for line in cleaned:
+                    file.write(line)
+                    file.write("\n")
+        except OSError:
+            # Diagnostic persistence must never break the dev server.
+            pass
+
     return accepted
 
 
-def browser_log_payload(reset=False):
+def browser_log_payload(reset=False, tail=None):
     with LOG_LOCK:
         if reset:
             BROWSER_LOG_LINES.clear()
         lines = list(BROWSER_LOG_LINES)
+    if tail is not None and tail >= 0:
+        lines = lines[-tail:]
 
     return {
         "generatedAtMs": int(time.time() * 1000),
         "count": len(lines),
+        "lines": lines,
+    }
+
+
+def browser_log_history_payload(tail=None):
+    try:
+        size = LOG_HISTORY_PATH.stat().st_size
+    except OSError:
+        return {
+            "generatedAtMs": int(time.time() * 1000),
+            "path": str(LOG_HISTORY_PATH),
+            "count": 0,
+            "truncated": False,
+            "lines": [],
+        }
+
+    try:
+        with LOG_HISTORY_PATH.open("rb") as file:
+            truncated = size > MAX_BROWSER_LOG_HISTORY_READ_BYTES
+            if truncated:
+                file.seek(max(0, size - MAX_BROWSER_LOG_HISTORY_READ_BYTES))
+            data = file.read().decode("utf-8", "replace")
+    except OSError as error:
+        return {
+            "generatedAtMs": int(time.time() * 1000),
+            "path": str(LOG_HISTORY_PATH),
+            "error": str(error),
+            "count": 0,
+            "truncated": False,
+            "lines": [],
+        }
+
+    lines = data.splitlines()
+    if truncated and lines:
+        lines = lines[1:]
+    if tail is not None and tail >= 0:
+        lines = lines[-tail:]
+
+    return {
+        "generatedAtMs": int(time.time() * 1000),
+        "path": str(LOG_HISTORY_PATH),
+        "count": len(lines),
+        "size": size,
+        "truncated": truncated,
         "lines": lines,
     }
 
@@ -234,8 +292,25 @@ class IsolationHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json(range_stats_payload(reset=reset))
             return
         if parsed.path == "/__browser-log.json":
-            reset = parse_qs(parsed.query).get("reset") == ["1"]
-            self.send_json(browser_log_payload(reset=reset))
+            query = parse_qs(parsed.query)
+            reset = query.get("reset") == ["1"]
+            tail = None
+            try:
+                if query.get("tail"):
+                    tail = max(0, int(query["tail"][0]))
+            except (TypeError, ValueError):
+                tail = None
+            self.send_json(browser_log_payload(reset=reset, tail=tail))
+            return
+        if parsed.path == "/__browser-log-history.json":
+            query = parse_qs(parsed.query)
+            tail = None
+            try:
+                if query.get("tail"):
+                    tail = max(0, int(query["tail"][0]))
+            except (TypeError, ValueError):
+                tail = None
+            self.send_json(browser_log_history_payload(tail=tail))
             return
         if parsed.path == "/__session.json":
             reset = parse_qs(parsed.query).get("reset") == ["1"]
@@ -253,6 +328,9 @@ class IsolationHandler(http.server.SimpleHTTPRequestHandler):
             return
         if parsed.path == "/__browser-log.json":
             self.send_json(browser_log_payload(), include_body=False)
+            return
+        if parsed.path == "/__browser-log-history.json":
+            self.send_json(browser_log_history_payload(tail=0), include_body=False)
             return
         if parsed.path == "/__session.json":
             self.send_json(session_payload(), include_body=False)

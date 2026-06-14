@@ -67,7 +67,15 @@ function classify(proc) {
   if (args.includes("Google Chrome") && args.includes("remote-debugging-port")) return "debug-chrome";
   if (args.includes("Google Chrome") && proc.pcpu >= 10) return "chrome";
   if (args.includes("Codex (Renderer)")) return "codex-renderer";
+  if (args.includes("mediaanalysisd") || args.includes("photoanalysisd")) return "media-analysis";
+  if (args.includes("mdworker") || args.includes("mds_stores") || args.includes(" mds ") || args.includes("mdbulkimport")) return "spotlight";
+  if (args.includes("syspolicyd")) return "system-policy";
+  if (args.includes("com.apple.Virtualization.VirtualMachine")) return "apple-virtualization";
+  if (args.includes("Docker.app") || args.includes("com.docker.") || args.includes("docker exec")) return "docker";
+  if (args.includes("claude ")) return "claude";
   if (args.includes("WindowServer")) return "window-server";
+  if (args.includes("DesktopServicesHelper")) return "desktop-services";
+  if (args.includes("Finder.app")) return "finder";
   return "";
 }
 
@@ -87,6 +95,12 @@ function printTable(title, rows) {
 
 async function readBrowserLog() {
   const path = `/__browser-log.json?tail=${encodeURIComponent(opts.tail)}&ts=${Date.now()}`;
+  return readJsonEndpoint(path);
+}
+
+async function readBrowserLogHistory() {
+  const tail = Math.max(opts.tail, 1000);
+  const path = `/__browser-log-history.json?tail=${encodeURIComponent(tail)}&ts=${Date.now()}`;
   return readJsonEndpoint(path);
 }
 
@@ -157,13 +171,50 @@ function latestHealthLine(lines = []) {
   return null;
 }
 
+function latestMatchingLine(lines = [], pattern) {
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    if (pattern.test(lines[i])) return lines[i];
+  }
+  return "";
+}
+
+function parseLineTime(line, now = new Date()) {
+  const match = String(line || "").match(/^\[(\d{2}):(\d{2}):(\d{2})\]/);
+  if (!match) return null;
+  const date = new Date(now);
+  // Browser log lines use new Date().toISOString().slice(11, 19), so the
+  // bracketed wall clock is UTC even when this doctor runs in local time.
+  date.setUTCHours(Number(match[1]), Number(match[2]), Number(match[3]), 0);
+  if (date.getTime() - now.getTime() > 3600_000) {
+    date.setUTCDate(date.getUTCDate() - 1);
+  }
+  return date;
+}
+
+function formatAge(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return "unknown age";
+  if (ms < 90_000) return `${Math.round(ms / 1000)}s ago`;
+  if (ms < 90 * 60_000) return `${Math.round(ms / 60_000)}m ago`;
+  return `${(ms / 3600_000).toFixed(1)}h ago`;
+}
+
 const processes = await readProcesses();
 const watched = processes.filter((proc) => classify(proc));
 const high = processes.filter((proc) => proc.pcpu >= 75).slice(0, 12);
 const diskUsage = await readDiskUsage();
 const browserLog = await readBrowserLog();
+const browserHistory = await readBrowserLogHistory();
 const sessionInfo = await readSessionInfo();
-const health = latestHealthLine(browserLog.lines || []);
+const browserLines = browserLog.lines || [];
+const historyLines = browserHistory.lines || [];
+const forensicLines = historyLines.length ? historyLines : browserLines;
+const health = latestHealthLine(forensicLines);
+const latestLine = forensicLines[forensicLines.length - 1] || "";
+const latestLineTime = parseLineTime(latestLine);
+const latestLineAgeMs = latestLineTime ? Date.now() - latestLineTime.getTime() : NaN;
+const latestPagehide = latestMatchingLine(forensicLines, /breadcrumb (?:pagehide|hidden|visibility-hidden)/);
+const latestPressure = latestMatchingLine(forensicLines, /(?:ui pressure|pressure-relief|health worker: mainAge=\d{4,})/);
+const latestBreadcrumb = latestMatchingLine(forensicLines, /breadcrumb /);
 
 console.log("browser-qemu doctor");
 console.log(`port=${opts.port} tail=${opts.tail}`);
@@ -181,10 +232,31 @@ if (diskUsage.error) {
 }
 
 console.log("\npage health");
+console.log(`  mirrored memory log lines=${browserLog.count ?? browserLines.length}`);
+if (browserHistory.error) {
+  console.log(`  persistent log unavailable: ${browserHistory.error}`);
+} else {
+  console.log(
+    `  persistent log ${browserHistory.path || "n/a"} lines=${browserHistory.count || 0}` +
+      `${browserHistory.truncated ? " (tail truncated)" : ""}`
+  );
+}
 if (!health) {
   console.log("  no health-worker samples in mirrored log yet");
 } else {
   console.log(`  mainAge=${health.mainAgeMs}ms beat=${health.beat} flags=${health.flags}`);
+}
+if (latestLine) {
+  console.log(`  latest log: ${formatAge(latestLineAgeMs)} ${latestLine.slice(0, 140)}`);
+}
+if (latestPagehide) {
+  console.log(`  latest close/hide marker: ${latestPagehide.slice(0, 160)}`);
+}
+if (latestPressure) {
+  console.log(`  latest pressure marker: ${latestPressure.slice(0, 160)}`);
+}
+if (latestBreadcrumb && latestBreadcrumb !== latestPressure && latestBreadcrumb !== latestPagehide) {
+  console.log(`  latest breadcrumb: ${latestBreadcrumb.slice(0, 160)}`);
 }
 
 console.log("\nsession guard");
@@ -212,11 +284,29 @@ if (nativeQemuHot) {
 if (rendererHot.length >= 2) {
   console.log("NOTE: multiple browser/Codex renderers are hot at the same time; manual Chrome can feel frozen even if the page heartbeat is healthy.");
 }
+if (watched.some((proc) => classify(proc) === "apple-virtualization" && proc.pcpu >= 75)) {
+  console.log("NOTE: an Apple Virtualization VM is consuming about one CPU core; headed browser-QEMU testing will feel worse until that load drops.");
+}
+if (watched.some((proc) => classify(proc) === "desktop-services" && proc.pcpu >= 75)) {
+  console.log("NOTE: macOS DesktopServicesHelper is hot; Finder/file-provider work can starve headed Chrome even when browser-QEMU itself is healthy.");
+}
+if (watched.some((proc) => classify(proc) === "window-server" && proc.pcpu >= 50)) {
+  console.log("NOTE: WindowServer is hot; compositor pressure can make pointer/canvas interaction feel worse than the page heartbeat suggests.");
+}
+const spotlightCpu = watched
+  .filter((proc) => classify(proc) === "spotlight")
+  .reduce((sum, proc) => sum + proc.pcpu, 0);
+if (spotlightCpu >= 50) {
+  console.log(`NOTE: Spotlight workers are consuming about ${spotlightCpu.toFixed(0)}% CPU combined; wait for indexing to settle before judging headed feel.`);
+}
 if (!diskUsage.error && (diskUsage.availableKb < 20 * 1048576 || /^(9[5-9]|100)%$/.test(diskUsage.capacity))) {
   console.log("NOTE: disk headroom is low; Chrome temp profiles, caches, and wasm artifacts get less forgiving here.");
 }
 if (health && health.mainAgeMs >= 2500) {
   console.log("NOTE: the browser-qemu UI main thread was stalled in the last health sample.");
+}
+if (!sessionInfo.error && (sessionInfo.runningCount || 0) === 0 && health && /qemu/.test(health.flags)) {
+  console.log("NOTE: the latest health sample is from a closed/stale tab; use it as postmortem evidence, not a live page status.");
 }
 if (!sessionInfo.error && (sessionInfo.runningCount || 0) > 1) {
   console.log("NOTE: more than one browser-QEMU session is live; the session guard should pause non-leaders.");
@@ -232,6 +322,13 @@ if (browserLog.error) {
   console.log("  empty");
 } else {
   for (const line of browserLog.lines.slice(-opts.tail)) {
+    console.log(`  ${line}`);
+  }
+}
+
+if (!browserHistory.error && browserHistory.lines?.length) {
+  console.log("\npersistent browser log history");
+  for (const line of browserHistory.lines.slice(-Math.min(opts.tail, 80))) {
     console.log(`  ${line}`);
   }
 }

@@ -84,6 +84,15 @@ Current state:
   Treat that as an environment variable in headed testing. Run
   `make browser-doctor` when the page is too slow to click; it prints hot
   QEMU/Chrome/Codex processes and tails the mirrored browser log.
+- June 14 follow-up: the growable-memory runtime was rebuilt again with the
+  native hybrid ADB persistence patch. The bridge now keeps pending ADB-relative
+  motion alive until the guest consumes it instead of clearing it on a timer tick
+  with no new pointermove. `make smoke-shared-input` passes with the expected
+  paused hybrid result: `buttonEdgesDeferred=true`, `localButtonQueueDepth=2`,
+  `targetPending=true`, and `adbPendingDx/adbPendingDy=63/63`. In this mode the
+  smoke should not require backend button edges while the VM is stopped; it
+  should require that the click transitions remain queued for delivery once ADB
+  catches up.
 - The page now emits periodic `breadcrumb` lines to the server-mirrored browser
   log with UI lag, frame generation, memory, disk, and input counters. If the
   visible tab is too busy to click Copy log, run `make browser-log` after
@@ -131,6 +140,165 @@ Current state:
   temporary stock Chrome profile's helper processes on normal exit, SIGINT, and
   SIGTERM. This matters because an orphaned watcher Chrome can silently keep a
   full browser-QEMU VM running and make a later manual tab feel like it melted.
+- Latest June 14 checkpoint: the growable-memory runtime was rebuilt and
+  repackaged with an ADB mouse button-state queue so press/release transitions
+  are delivered at ADB poll time instead of being overwritten by a fast browser
+  mouseup. `make smoke-shared-input` passes on the served package.
+- `make probe-click-alignment ARGS=--headless` now waits specifically for the
+  final 326x143 A/UX login dialog, ignoring the wider transient Mac startup
+  dialogs that previously caused false probe failures. It passes: click targets,
+  browser-client coordinates, shared-input absolute registers, and Classic Mac
+  low-memory mouse globals agree within one guest pixel; the Name field accepts a
+  typed `x` with backend keys `0 -> 2` and no repeat storm.
+- A short `node scripts/watch-login-session.mjs --headless --watch-secs 30
+  --snapshot-interval 15` run reached the final A/UX login at about 188 s,
+  dispatched `root` / `31337leet`, entered the Classic Mac surface, and stayed
+  responsive for the post-login watch (`maxEvalMs=1`, `maxLagMs=39`,
+  `maxStalls=0`, `maxWasmMb=881`, `maxDiskCacheMb=80`).
+- The latest manual Chrome burn still looks like host/UI starvation rather than
+  a guest deadlock: `make browser-doctor` showed the page heartbeat alive
+  (`mainAge` around 36 ms after the headless run) while native desktop
+  `qemu-system-m68k` consumed about one core, a Codex renderer consumed about
+  one core, and the data volume was 97% full. Do not run native desktop QEMU
+  alongside headed browser-QEMU when judging Chrome feel.
+- Follow-up on that burn: the closed-tab browser log was saved under
+  `build/diagnostics/` before smoke tests reset it. The last live breadcrumbs
+  showed a healthy page (`maxLag=39ms`, no stalls, disk still advancing, about
+  `881MB` wasm and `84MB` disk cache), then `pagehide`/`hidden`. `make
+  browser-doctor` now labels this as stale postmortem evidence when no live
+  session remains, instead of presenting the old health sample like a current
+  page state.
+- The dev shell now applies automatic UI work backoff while QEMU is active:
+  serial rendering, telemetry charts, disk/stat polling, and hidden probe
+  updates stretch out under active/pulsed/hidden/pressure conditions. This keeps
+  the diagnostic dashboard useful without making the foreground renderer do
+  unnecessary DOM/canvas work while A/UX is busy.
+- The headed launcher and dashboard were calmed further after a manual
+  post-login burn report: active/pulsed QEMU now uses a stronger UI backoff,
+  serial paints can defer longer under pressure, browser-log mirroring defaults
+  to a slower cadence, and `make browser-interactive` uses less chatty health /
+  probe intervals. Use `make browser-log TAIL=120` or
+  `make browser-doctor ARGS='--tail 120'` when the tab itself is too busy to
+  click.
+- `make probe-click-alignment` now waits for the decoupled page renderer to
+  repaint the Name field after a key event before declaring text missing. The
+  previous check could sample too early and report a false keyboard failure even
+  though the next screenshot showed the typed character.
+- A fullscreen/resize drift class was found and patched. A scaled headed probe
+  could make SDL/Emscripten publish a `1280x960` backing surface while the real
+  guest plane was still the 640x480 A/UX login. The page now treats exact
+  integer-scale backing surfaces as presentation scaling, keeps guest/input
+  geometry locked to the Mac framebuffer size, and downscales the backing
+  surface crisply instead of adopting it as a fake guest resolution.
+- `make probe-click-alignment ARGS="--headless --css-scale 2 --ready-timeout
+  360"` now passes. At 2x CSS scale the host cursor stays scaled (`scale=2`,
+  hotspot `8,8 -> 16,16`), all click targets agree across browser client,
+  shared-input absolute registers, and Classic Mac low-memory mouse globals, and
+  the Name field accepts a typed key without a repeat storm.
+- Latest June 14 post-meltdown check: the lazy bundle was rebuilt with the ADB
+  button queue preserved across `ADB_FLUSH` and repackaged successfully.
+  `make smoke-shared-input` still passes on the served package, including
+  keyboard repeat suppression and absolute mouse self-test.
+- `make probe-radio-click` now boots specifically to the final A/UX login dialog
+  and runs a 24-attempt Guest radio sweep. Result after the rebuild:
+  **still failing by design/usefully**. Coordinates, browser pointer diagnostics,
+  shared absolute registers, and Classic Mac low-memory mouse globals agree
+  within one pixel, and text-field clicking/typing works, but the Guest radio
+  never toggles. Treat this as the next input semantic blocker, not a canvas
+  scaling problem.
+- The newest meltdown diagnosis is consistent: with the manual Chrome tab
+  closed, `make browser-doctor` showed no live browser-QEMU session and stale
+  browser breadcrumbs with healthy page-main latency (`lag=2/44ms`, no stalls,
+  disk advancing, about `881MB` wasm). The host was still hot: native desktop
+  `qemu-system-m68k` was near one core, a Codex renderer was near one core,
+  `syspolicyd` was hot, and `/System/Volumes/Data` had about `14GB` free
+  (`97%` full). Do not judge headed Chrome feel while native desktop QEMU is
+  also running.
+- Read-only strings inspection of `/Users/chrisk/aux_qemu_local/AUX3.img`
+  found the post-login X path: `Proceeding with X startup ...`,
+  `/usr/lib/X11/.x11start`, and `xinit xterm ... XmacII`. Root/Registered User
+  login is therefore expected to move toward the expensive X startup path. For
+  the current browser-quality push, the next concrete product choice is either
+  make Guest/Classic login selection reliable or create a disposable/writable
+  disk overlay that suppresses X startup for browser-QEMU testing.
+- The headed launcher now performs a host-pressure preflight before opening
+  Chrome. It warns if native desktop `qemu-system-m68k` is already burning a
+  core, if a browser/Codex renderer is hot, if another browser-QEMU session is
+  still registered, or if disk headroom is low. `make browser-interactive` and
+  `make browser-shared-input` now use the calmer manual profile by default:
+  `fps=6`, low-overhead UI enabled, `tb=128`, `diskCacheMb=128`, and slower
+  dashboard probes. This is meant to make manual Classic Mac testing less likely
+  to starve Chrome while we fix the remaining ADB mouse semantics.
+- Latest June 14 ABI v6 checkpoint: QEMU rebuilt and `public/qemu-lazy/` was
+  repackaged with ADB mouse debug counters exposed through the shared input
+  block. `make smoke-shared-input` passes with exact pointer coordinates, button
+  edge delivery, and the new keyboard contract: normal keys use held
+  down/up events, synthetic non-modifier key taps are disabled, and repeat
+  keydown is suppressed.
+- The newest headed Chrome burn had a useful postmortem: the mirrored page
+  heartbeat was still healthy before the tab was closed (`lag=2/44ms`, no
+  recorded stalls, disk worker still advancing), but the host was overloaded by
+  native desktop QEMU, hot Codex renderers, and 97% disk usage. The browser UI
+  now renders a smaller visible serial tail by default (`140` lines /
+  `28000` chars; Copy log still keeps the retained buffer), and the normal
+  headed launch path refuses to open Chrome when native desktop QEMU is already
+  pegging a core. Override with `HOST_PREFLIGHT_STRICT=0` only for diagnostics.
+- Latest June 14 postmortem/fix: the "clicks are off" report had a concrete
+  browser-side cursor component. The guest `TheCrsr` arrow still reports a
+  source hotspot of `8,8`, but the bitmap is the normal Classic Mac arrow shape.
+  `public/app.js` now normalizes that host CSS cursor hotspot to `1,1` (matching
+  68k_web's arrow cursor) while keeping the source hotspot in diagnostics.
+  `node scripts/probe-click-alignment.mjs --headless --ready-timeout 420
+  --out-dir build/click-alignment-hotspot-ui` passed with zero click drift and
+  `hostCursor.render.hotspotNormalized=true`.
+- The same fix pass reduced avoidable headed UI work: repeated `keydown`
+  events are swallowed in shared-keyboard mode, event storms no longer refresh
+  the hidden JSON probe on every event, unchanged LED/stat DOM writes are
+  skipped, and idle render-loop canvas sync checks are throttled. These changes
+  target the "Copy log impossible / roooooot / Chrome burning out" manual
+  symptoms without changing the QEMU guest boot path.
+- `make browser-interactive` strict host preflight now also refuses to launch
+  when a browser/Codex renderer or macOS background service (for example
+  `mediaanalysisd`, Spotlight, or `syspolicyd`) is already consuming a core.
+  `make browser-doctor` labels media analysis, Spotlight, system-policy, and
+  Claude processes so postmortems are less guessy.
+- Latest manual post-login burn check: the tab was closed before we could copy
+  the visible serial log, but the mirrored health log still showed the page
+  heartbeat alive, disk I/O advancing, no recorded long stalls, and no live
+  browser-QEMU session after close. The host remained hot outside Chrome
+  (Codex renderer / WindowServer / system-policy pressure, plus 97% full data
+  volume), so treat this as renderer starvation under host pressure unless a
+  future run shows `health worker: mainAge=...` in multi-second territory.
+- The manual headed profile is now more ruthless while QEMU is active:
+  `make browser-interactive` passes `serialMs=500`, `probeMs=12000`,
+  `instrumentMs=20000`, `diskStatsMs=20000`, `frameProbeMs=30000`,
+  `cursorMs=1000`, `logMirrorMs=5000`, and `liveCharts=0&chartMs=30000`.
+  Text indicators still update, but chart canvas paints and framebuffer probes
+  stop competing with the emulator on every instrumentation tick. Add
+  `URL_EXTRA='liveCharts=1'` only when deliberately profiling the dashboard.
+- Latest input timing pass: shared input now mirrors 68k_web more closely by
+  treating pointer position as immediate state and button presses as ordered
+  edges after a 12 ms position-prime window; release still holds 100 ms.
+  `make smoke-shared-input` passed, and both
+  `make probe-click-alignment ARGS='--headless --ready-timeout 420 --out-dir build/click-alignment-button-prime'`
+  and the same probe with `--css-scale 2` passed with zero click drift and both
+  ADB button edges delivered for each click.
+- Latest A/UX-kernel mouse pass: `input=shared` now defaults to
+  `inputMotion=hybrid`, preserving the absolute low-memory anchor while
+  forwarding bounded ADB-relative deltas. `make smoke-shared-input` passed in
+  that default mode (`lastMouseDx=8`, `lastMouseDy=8`), and
+  `make probe-click-alignment ARGS='--headless --ready-timeout 420 --out-dir build/click-alignment-hybrid-default'`
+  reached the real A/UX login and passed with zero drift through browser,
+  shared-input, Classic low-memory, and ADB poll positions.
+- New Classic-only test path: `make browser-classic` launches the calmer headed
+  profile with `NET=1` and a pinned `netZone=codex-classic`. After the guest
+  reaches the A/UX login and auxagent is up, run
+  `make aux-classic-mode ZONE=codex-classic` before logging in as root. The
+  helper backs up `/.bash_profile`, `/.profile`, `/.login`, `/.cshrc`, and
+  `/.x11start` inside the guest, then installs snapshot-local replacements that
+  suppress the X11/XmacII startup path. Normal browser-QEMU runs use
+  `-snapshot`, so this is lost on reload; use `make aux-classic-restore` before
+  promoting any writable relay disk.
 
 ---
 
@@ -264,10 +432,12 @@ cd ~/Documents/c89summer/browser-qemu
 make serve            # python server with COOP/COEP + range support on :8088
 ```
 
-Then open, in a **normal browser tab you keep focused and visible**:
+Then open, in a **normal browser tab you keep focused and visible**, or use
+`make browser-interactive` to launch the same profile with host-pressure
+preflight:
 
 ```
-http://127.0.0.1:8088/?ram=128&heap=384&pace=1&input=shared&cursor=host&fps=8&res=800x600&autostart=lazy-pulse&pulseMode=yield&pulseMs=2000&ptyMin=2&ptyIdle=16
+http://127.0.0.1:8088/?ram=128&heap=384&pace=1&input=shared&inputMotion=hybrid&cursor=host&fps=6&res=640x480&autostart=lazy-pulse&pulseMode=yield&pulseMs=2000&ptyMin=2&ptyIdle=16&lowOverheadUi=1&tb=128&diskCacheMb=128&serialMs=500&serialVisibleLines=90&serialVisibleChars=16000&probeMs=12000&instrumentMs=20000&diskStatsMs=20000&frameProbeMs=30000&cursorMs=1000&breadcrumbMs=15000&logMirrorMs=5000&liveCharts=0&chartMs=30000
 ```
 
 - `autostart=lazy-pulse&pulseMode=yield` starts QEMU paused, continues it, and
@@ -286,20 +456,25 @@ http://127.0.0.1:8088/?ram=128&heap=384&pace=1&input=shared&cursor=host&fps=8&re
 - `input=shared` is the active path: browser events are translated to Mac ADB
   codes in `public/shared-input.js`, written to wasm memory, and drained by a
   QEMU timer into the q800 ADB keyboard/mouse devices. Mouse motion defaults to
-  `inputMotion=absolute`, mirroring 68k_web's low-memory cursor/click model;
-  `inputMotion=hybrid` is a diagnostic knob if we need to prove A/UX kernel
-  login still needs relative ADB deltas. `input=hmp`,
+  `inputMotion=hybrid`: the browser still writes the exact 68k_web-style
+  absolute low-memory cursor point, and also forwards bounded ADB-relative
+  deltas for the A/UX kernel/login path where pure low-memory anchoring can
+  leave clicks landing in the wrong guest-side place. `inputMotion=absolute`
+  remains a narrow diagnostic comparison mode. `input=hmp`,
   `input=hybrid`, and `input=sdl` are diagnostic-only escape hatches.
   `#probeState.sharedInput` exposes the latest absolute pointer coordinate,
-  frontend button mask, button-release hold time, and backend key/mouse/button
-  counters for drift reports. `autoKeyReleases` increments when the bridge had
+  frontend button mask, button-release hold time, backend key/mouse/button
+  counters, and ABI v5 ADB poll/debug counters for drift reports.
+  Non-modifier keys are now held until browser keyup instead of being converted
+  into synthetic taps, so repeat keydown suppression is the signal to watch for
+  doubled characters. `autoKeyReleases` increments when the bridge had
   to release a non-modifier key because the browser did not deliver keyup in
   time; watch that for `roooooot`-style headed typing stalls. The nested
   `pointer` object records the last browser client coordinate, content-box
   rectangle, scale, and resulting guest coordinate for cursor/click drift.
 - `make smoke-shared-input` is the quick regression check before headed work:
   it starts paused `qemu-lazy` in a temp headless Chrome, runs the page's
-  structured shared-input self-test, asserts exact 800x600 shared geometry,
+  structured shared-input self-test, asserts exact shared geometry,
   checks a center pointer press/release reaches QEMU with both button edges,
   confirms the configured absolute/hybrid mouse-motion mode is internally
   consistent,
@@ -318,10 +493,13 @@ http://127.0.0.1:8088/?ram=128&heap=384&pace=1&input=shared&cursor=host&fps=8&re
 - `cursor=host` uses the Classic Mac CSS cursor path copied from 68k_web. It is
   instant host-side feedback, and the served wasm now exports guest cursor bytes
   while suppressing the guest software cursor. The default shared input path now
-  writes absolute low-memory mouse points without synthetic relative deltas,
+  combines the absolute low-memory anchor with bounded ADB-relative deltas,
   which specifically targets the observed cursor/click drift after the A/UX
-  kernel takes over. Retest headed cursor drift/click alignment here.
-- `fps=8` caps the page-side framebuffer loop. Use `fps=20` for smoother
+  kernel takes over. Diagnostics distinguish the raw guest cursor hotspot from
+  the effective browser CSS hotspot; the normal arrow currently reports
+  `sourceHotspotX/Y=8,8` and renders with `hotspotX/Y=1,1`.
+- `fps=6` caps the page-side framebuffer loop in the headed manual profile.
+  Use `fps=12` or `fps=20` for smoother
   screen updates or `fps=0` only for display benchmarks; X11 can peg Chrome
   hard when uncapped.
 - The Input panel now includes `UI lag`, and `#probeState.responsiveness`
@@ -330,7 +508,9 @@ http://127.0.0.1:8088/?ram=128&heap=384&pace=1&input=shared&cursor=host&fps=8&re
   disk progress.
 - Use `heap=384` with the current growable-memory build. Older fixed-memory
   packages required `heap=1280`; that note is historical.
-- Default resolution is 800x600; append `&res=1152x870` for full size.
+- The manual profile locks the canvas at 640x480 for now. Append
+  `&res=800x600` or `&res=1152x870` only when intentionally testing larger
+  macfb modes.
 - Boot to the "Welcome to A/UX" login takes roughly **90-150 s** on a cold cache
   (it range-fetches the 2 GB disk on demand). The screen is black/grey for the
   first ~30 s — that is normal.
@@ -343,6 +523,13 @@ http://127.0.0.1:8088/?ram=128&heap=384&pace=1&input=shared&cursor=host&fps=8&re
   It does not stop anything; it shows disk headroom, the latest health-worker
   `mainAge`, and whether native QEMU, another browser renderer, or Codex itself
   is already consuming the machine.
+- `make browser-interactive` now runs the same host-pressure check before
+  launching Chrome. If it warns about native desktop QEMU, close/stop that QEMU
+  before judging browser-QEMU performance.
+- `make browser-preflight` runs that same strict check without opening Chrome.
+  A non-zero exit means "do not trust manual headed feel yet"; clear the listed
+  host pressure first or intentionally override with `HOST_PREFLIGHT_STRICT=0`
+  for diagnostics only.
 - The browser **DevTools Console** shows uncaught errors (the benign
   `Uncaught unwind` is ASYNCIFY yielding — see test 1).
 - "Frozen" looks like: the `disk worker stats:` line **stops advancing** for
@@ -419,10 +606,10 @@ If DevTools is open, note memory (the page `#probeState` carries `wasmMb` +
    low-memory mouse anchor, and bounded ADB-relative movement are active in the
    served runtime. Retest in a real tab: after the A/UX kernel reaches the login
    window, the visible cursor, guest click target, and low-memory mouse position
-   should stay in the same content-box coordinate plane. If drift remains,
-   inspect whether the guest is publishing a non-800x600 mode internally while
-   the UI is locked; if the click target is still stuck in a corner, inspect the
-   ADB mouse-event path first.
+   should stay in the same content-box coordinate plane. The headless
+   click-alignment probe is now green against the final A/UX login dialog; if
+   drift remains only in a real headed tab, inspect headed browser scheduling,
+   CSS cursor feedback, and host load before changing coordinate math again.
 
 4. **React shell (`:8090`)** still needs input + disk-worker wiring ported; it
    shares the same runtime fixes (the PTY fix applies to it too).
@@ -568,6 +755,54 @@ too overloaded to copy logs. The concrete causes found so far:
   has pressure levels: long UI stalls lower the framebuffer cap to 6 fps or 4 fps,
   stretch cursor/framebuffer/disk/telemetry polling, and publish a smaller hidden
   `#probeState` while preserving the fields used by automation.
+- Current post-rebuild evidence separates runtime correctness from headed feel:
+  headless boot/login/input/post-login responsiveness is green, while manual
+  Chrome sluggishness coincides with external host load. `make browser-doctor`
+  is the first command to run after any headed meltdown. If it shows a native
+  desktop `qemu-system-m68k` near 100% CPU, stop or ignore that process before
+  judging browser-QEMU.
+- The final A/UX login input status is narrower than "mouse broken": click
+  alignment probes can focus the Name field and typed text changes the pixels,
+  but a 24-attempt Guest-radio sweep did not toggle the selection. That points
+  at ADB/Event Manager click semantics or a disabled Guest path, not DOM
+  geometry.
+- Root/Registered login appears to start X by default. The disk contains
+  `/usr/lib/X11/.x11start` and `xinit ... XmacII` strings next to the exact
+  `Proceeding with X startup ...` message seen on the framebuffer. If the next
+  test target is "Classic Mac/A/UX surface only", avoid using root login as the
+  success criterion until that startup path is suppressed in a snapshot/overlay
+  or Guest selection is proven.
+- The first concrete Classic-only mitigation is checked in as a workflow, not a
+  disk mutation: launch `make browser-classic`, wait for the A/UX login, run
+  `make aux-classic-mode ZONE=codex-classic`, then log in as root. This uses
+  auxagent over the Dialtone Ethernet bridge to suppress root X startup files in
+  the running snapshot. It should reduce post-login X churn while preserving the
+  base disk and keeping the browser-quality work focused on Classic/Mac input.
+- Next performance target: true QEMU/WASM scheduling relief and dashboard
+  backpressure. Lower FPS helped, but the browser still needs a cleaner way to
+  let the foreground tab, input handlers, and compositor breathe while the guest
+  is doing heavy A/UX disk/CPU work.
+- The local dev server now also appends browser/health-worker diagnostics to
+  `build/browser-log-history.log` and exposes it via
+  `make browser-log-history`. Use that after a Chrome melt-down, because the
+  page's Copy Log button may be unreachable and later smoke tests can make the
+  in-memory `/__browser-log.json` tail less useful.
+- `make browser-preflight` now runs the same strict host-pressure checks as
+  `make browser-interactive` without launching Chrome. Use it before asking a
+  human to burn another headed run; it catches hot Codex/Chrome renderers,
+  native QEMU, Apple Virtualization/Docker VMs, system services, existing
+  browser-QEMU sessions, and low disk headroom.
+- The headed login watcher now distinguishes "responsive page" from "actually
+  left the A/UX login dialog." A Guest-mode run that remains on the login dialog
+  is now a failed session even if the page heartbeat stays healthy.
+- Latest radio/input classification: `make probe-radio-click
+  ARGS='--out-dir build/click-alignment-radio-expanded'` ran 46 Guest-radio
+  attempts across plain clicks, held clicks, tiny drag-while-held gestures,
+  double-clicks, and click-then-space. Every attempt delivered both ADB button
+  edges and every settled sample had `coreMaxDelta=0`, but the Guest radio still
+  never toggled. Treat that as a disabled/non-actionable Guest path on this A/UX
+  login screen unless a real headed run proves otherwise; do not keep changing
+  browser coordinate math to fix this specific radio result.
 
 For normal headed testing, prefer a growable-memory runtime:
 
@@ -576,6 +811,11 @@ For normal headed testing, prefer a growable-memory runtime:
 Then verify:
 
 `make smoke-shared-input`
+
+Expected paused hybrid smoke shape: keys and mouse movement are consumed by the
+backend, while click edges may be deferred until the guest polls enough ADB
+motion. A passing run can report `backendButtons=0` when it also reports
+`buttonEdgesDeferred=true`, `localButtonQueueDepth=2`, and `targetPending=true`.
 
 and, for the old diagnostic path:
 

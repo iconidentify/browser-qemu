@@ -1,6 +1,8 @@
 (function () {
   const canvas = document.getElementById("canvas");
   const ctx = canvas.getContext("2d");
+  const alignmentOverlay = document.getElementById("alignmentOverlay");
+  const alignmentCtx = alignmentOverlay ? alignmentOverlay.getContext("2d") : null;
   const displayPanel = document.getElementById("displayPanel");
   const serial = document.getElementById("serialLog");
   const isolationStatus = document.getElementById("isolationStatus");
@@ -34,6 +36,7 @@
   const ramSizeSelect = document.getElementById("ramSize");
   const captureKeysButton = document.getElementById("captureKeys");
   const capturePointerButton = document.getElementById("capturePointer");
+  const toggleAlignHudButton = document.getElementById("toggleAlignHud");
   const fullscreenButton = document.getElementById("fullscreenDisplay");
   const runRomProbeButton = document.getElementById("runRomProbe");
   const inputSelfTestButton = document.getElementById("inputSelfTest");
@@ -143,6 +146,11 @@
   let sharedInputBridge = null;
   let sharedInputRetryTimer = 0;
   let sharedInputRetryCount = 0;
+  let sharedMouseSettleTimer = 0;
+  let sharedMouseSettleCount = 0;
+  let sharedPointerUserEvents = 0;
+  let sharedCursorSuppressionTimer = 0;
+  let sharedCursorSuppressionArmed = false;
   let qemuDiskWorker = null;
   let qemuDiskShared = null;
   // Decoupled renderer: QEMU's SDL blit (patched in out.js) writes the current
@@ -164,6 +172,8 @@
   let screenImage = null;      // ImageData (w x h), reused across frames
   let screenImage32 = null;    // Int32Array over screenImage.data
   let screenImage8 = null;     // Uint8Array over screenImage.data
+  let screenScaleCanvas = null;
+  let screenScaleCtx = null;
   let screenW = 0, screenH = 0;
   let canvasDisplayW = canvas.width;
   let canvasDisplayH = canvas.height;
@@ -172,8 +182,13 @@
   let canvasNativeFrameSeen = false;
   let canvasDisplayMismatchLogged = false;
   let canvasBackingMismatchLogged = false;
+  let screenScaledSurfaceLogged = false;
   let hostCursorMode = "host";
   let hostCursorCss = "";
+  let hostCursorLast = null;
+  let hostCursorScale = 1;
+  let hostCursorRenderInfo = null;
+  const cursorHotspotOverride = parseCursorHotspotOverride();
   const hostCursorCache = new Map();
   let framesRendered = 0; // page-side frames drawn (decoupled renderer health)
   let screenFpsLimit = 20;
@@ -204,7 +219,7 @@
   let lastControlId = 0;
   let hmpMonitorActive = false;
   let hmpInputMode = "shared";
-  let sharedInputMotionMode = "absolute";
+  let sharedInputMotionMode = "hybrid";
   let mouseButtons = 0;
   let guestMouseX = 0;
   let guestMouseY = 0;
@@ -229,9 +244,11 @@
   let pulseRunMode = "sample";
   const serialLines = [];
   let serialFrozen = false; // pause serial re-render while the user selects text
-  const maxSerialLines = 1500;
-  const maxSerialChars = 220000;
-  const serialRenderMinMs = queryIntParam("serialMs", 150, 50, 1000);
+  const maxSerialLines = 900;
+  const maxSerialChars = 120000;
+  const maxVisibleSerialLines = queryIntParam("serialVisibleLines", 140, 40, 900);
+  const maxVisibleSerialChars = queryIntParam("serialVisibleChars", 28000, 8000, 120000);
+  const serialRenderMinMs = queryIntParam("serialMs", 150, 50, 2000);
   let serialRenderTimer = 0;
   let serialRenderDirty = false;
   let lastSerialRenderAt = 0;
@@ -271,10 +288,10 @@
     scheduled: 0,
     posting: false,
     failedUntil: 0,
-    maxQueue: 500,
-    maxBatch: 100,
+    maxQueue: 2000,
+    maxBatch: 200,
   };
-  const browserLogMirrorMinMs = queryIntParam("logMirrorMs", 1000, 250, 5000);
+  const browserLogMirrorMinMs = queryIntParam("logMirrorMs", 3000, 250, 30000);
   const eventCounters = {
     keydown: 0,
     keyup: 0,
@@ -313,6 +330,7 @@
     sr: "",
     at: 0,
   };
+  const lowOverheadUiEnabled = queryFlagParam("lowOverheadUi", true);
   const telemetryCharts = {
     lag: { canvas: document.getElementById("lagChart"), color: "#66f5da", values: [] },
     frame: { canvas: document.getElementById("frameChart"), color: "#ff5cc8", values: [] },
@@ -322,10 +340,19 @@
     net: { canvas: document.getElementById("netChart"), color: "#66f5da", values: [] },
   };
   const telemetryMaxSamples = 64;
+  const liveChartsDuringVm = queryFlagParam("liveCharts", false);
+  const chartPaintMinMs = queryIntParam("chartMs", 30000, 5000, 120000);
+  const eventProbeStateMinMs = queryIntParam("eventProbeMs", lowOverheadUiEnabled ? 900 : 160, 80, 5000);
+  let eventProbeStateTimer = 0;
+  let lastRenderLoopSyncAt = 0;
+  let alignHudEnabled = queryFlagParam("alignHud", false);
+  let lastAlignmentSample = null;
+  let alignmentResampleTimer = 0;
   const diskIoScope = {
     canvas: diskIoScopeCanvas,
     calls: [],
     wireMb: [],
+    lastDrawAt: 0,
   };
   let telemetryLastDiskRanges = 0;
   let telemetryLastInputTotal = 0;
@@ -354,6 +381,14 @@
     node.className = "status" + (kind ? " " + kind : "");
   }
 
+  function updateVmVisualMode() {
+    const active = Boolean(lowOverheadUiEnabled && qemuStarted);
+    document.body.classList.toggle("vm-active", active);
+    document.body.classList.toggle("vm-pressure", active && uiPressureLevel >= 1);
+    document.body.classList.toggle("vm-critical", active && uiPressureLevel >= 2);
+    document.documentElement.dataset.vm = active ? "active" : "idle";
+  }
+
   function log(line) {
     const stamp = new Date().toISOString().slice(11, 19);
     const stampedLine = `[${stamp}] ${line}`;
@@ -380,7 +415,20 @@
     }
     serialRenderDirty = false;
     lastSerialRenderAt = performance.now();
-    serial.textContent = `${serialLines.join("\n")}\n`;
+    let totalChars = 0;
+    let start = serialLines.length;
+    for (let index = serialLines.length - 1; index >= 0; index -= 1) {
+      totalChars += serialLines[index].length + 1;
+      if (serialLines.length - index > maxVisibleSerialLines || totalChars > maxVisibleSerialChars) {
+        break;
+      }
+      start = index;
+    }
+    const visible = serialLines.slice(start);
+    if (start > 0) {
+      visible.unshift(`[tail] showing last ${serialLines.length - start}/${serialLines.length} serial lines; Copy log keeps the retained buffer`);
+    }
+    serial.textContent = `${visible.join("\n")}\n`;
     serial.scrollTop = serial.scrollHeight;
   }
 
@@ -389,7 +437,7 @@
     if (serialFrozen) return;
     if (serialRenderTimer) return;
     const elapsed = performance.now() - lastSerialRenderAt;
-    const delayMs = Math.max(0, serialRenderMinMs - elapsed);
+    const delayMs = Math.max(0, effectiveSerialRenderMinMs() - elapsed);
     serialRenderTimer = window.setTimeout(() => {
       serialRenderTimer = 0;
       if (serialRenderDirty && !serialFrozen) renderSerial();
@@ -615,8 +663,8 @@
 
   function setSignalText(node, text, title = text) {
     if (!node) return;
-    node.textContent = text;
-    node.title = title;
+    if (node.textContent !== text) node.textContent = text;
+    if (node.title !== title) node.title = title;
   }
 
   function shortKeyCode(code) {
@@ -629,15 +677,22 @@
   }
 
   function setTelemetryText(node, text) {
-    if (node) node.textContent = text;
+    if (node && node.textContent !== text) node.textContent = text;
   }
 
   function drawTelemetryChart(chart) {
     if (!chart || !chart.canvas) return;
+    if (qemuStarted && lowOverheadUiEnabled && !liveChartsDuringVm) {
+      const now = performance.now();
+      const lastDrawAt = Number(chart.lastDrawAt) || 0;
+      if (lastDrawAt && now - lastDrawAt < chartPaintMinMs) return;
+      chart.lastDrawAt = now;
+    }
     const canvasRect = chart.canvas.getBoundingClientRect();
     const cssWidth = Math.max(80, Math.round(canvasRect.width || chart.canvas.clientWidth || 220));
     const cssHeight = Math.max(36, Math.round(canvasRect.height || chart.canvas.clientHeight || 54));
-    const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+    const dprCap = qemuStarted ? 1 : 2;
+    const dpr = Math.max(1, Math.min(dprCap, window.devicePixelRatio || 1));
     const targetWidth = Math.round(cssWidth * dpr);
     const targetHeight = Math.round(cssHeight * dpr);
     if (chart.canvas.width !== targetWidth || chart.canvas.height !== targetHeight) {
@@ -724,14 +779,21 @@
     return sumObjectNumbers(stats, ["tx", "rx"]);
   }
 
-  function uiPressureBackoff() {
-    if (uiPressureLevel >= 2) return 4;
-    if (uiPressureLevel >= 1) return 2;
-    return 1;
+  function uiWorkBackoff() {
+    let backoff = 1;
+    if (qemuStarted) backoff = Math.max(backoff, pulseRunActive ? 5 : 6);
+    if (document.visibilityState === "hidden") backoff = Math.max(backoff, 6);
+    if (uiPressureLevel >= 1) backoff = Math.max(backoff, 8);
+    if (uiPressureLevel >= 2) backoff = Math.max(backoff, 12);
+    return backoff;
   }
 
   function effectiveInstrumentInterval(baseMs, maxMs = 60000) {
-    return Math.min(maxMs, Math.round(baseMs * uiPressureBackoff()));
+    return Math.min(maxMs, Math.round(baseMs * uiWorkBackoff()));
+  }
+
+  function effectiveSerialRenderMinMs() {
+    return Math.min(4000, Math.round(serialRenderMinMs * uiWorkBackoff()));
   }
 
   function updateTelemetry() {
@@ -817,10 +879,16 @@
   function drawDiskIoScope() {
     const canvasNode = diskIoScope.canvas;
     if (!canvasNode) return;
+    if (qemuStarted && lowOverheadUiEnabled && !liveChartsDuringVm) {
+      const now = performance.now();
+      if (diskIoScope.lastDrawAt && now - diskIoScope.lastDrawAt < chartPaintMinMs) return;
+      diskIoScope.lastDrawAt = now;
+    }
     const rect = canvasNode.getBoundingClientRect();
     const cssWidth = Math.max(160, Math.round(rect.width || canvasNode.clientWidth || 620));
     const cssHeight = Math.max(44, Math.round(rect.height || canvasNode.clientHeight || 58));
-    const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+    const dprCap = qemuStarted ? 1 : 2;
+    const dpr = Math.max(1, Math.min(dprCap, window.devicePixelRatio || 1));
     const targetWidth = Math.round(cssWidth * dpr);
     const targetHeight = Math.round(cssHeight * dpr);
     if (canvasNode.width !== targetWidth || canvasNode.height !== targetHeight) {
@@ -964,6 +1032,27 @@
     return { width, height, depth };
   }
 
+  function isMacFramebufferSize(width, height) {
+    return (
+      (width === 640 && height === 480) ||
+      (width === 800 && height === 600) ||
+      (width === 1152 && height === 870)
+    );
+  }
+
+  function isScaledLockedSurface(width, height) {
+    if (!canvasDisplayLocked || !canvasDisplayW || !canvasDisplayH) return false;
+    if (isMacFramebufferSize(width, height)) return false;
+    const scaleX = width / canvasDisplayW;
+    const scaleY = height / canvasDisplayH;
+    const rounded = Math.round(scaleX);
+    return (
+      rounded >= 2 &&
+      Math.abs(scaleX - scaleY) < 0.01 &&
+      Math.abs(scaleX - rounded) < 0.01
+    );
+  }
+
   function cssPixelNumber(value) {
     const n = Number.parseFloat(value || "0");
     return Number.isFinite(n) ? n : 0;
@@ -1015,19 +1104,26 @@
       if (canvas.width !== w) canvas.width = w;
       if (canvas.height !== h) canvas.height = h;
     }
+    syncAlignmentOverlayGeometry();
+    rerenderHostCursorForScale(true);
     if (options.reason) {
       log(`canvas display locked: ${w}x${h} (${options.reason})`);
     }
   }
 
   function activeGuestGeometry() {
-    const guestW = screenW > 0 ? screenW : canvas.width;
-    const guestH = screenH > 0 ? screenH : canvas.height;
+    const scaledSurface =
+      isScaledLockedSurface(screenW, screenH) ||
+      isScaledLockedSurface(canvas.width, canvas.height);
+    const guestW = scaledSurface ? canvasDisplayW : (screenW > 0 ? screenW : canvas.width);
+    const guestH = scaledSurface ? canvasDisplayH : (screenH > 0 ? screenH : canvas.height);
+    const backingW = canvasDisplayLocked ? canvasDisplayW : canvas.width;
+    const backingH = canvasDisplayLocked ? canvasDisplayH : canvas.height;
     return {
       width: guestW,
       height: guestH,
-      backingWidth: canvas.width,
-      backingHeight: canvas.height,
+      backingWidth: backingW,
+      backingHeight: backingH,
       offsetX: 0,
       offsetY: 0,
     };
@@ -1069,39 +1165,245 @@
     return Math.max(0, Math.min(15, n));
   }
 
-  function macCursorCacheKey(cursor) {
+  function clampCursorScale(value) {
+    const n = Math.round(Number(value) || 1);
+    return Math.max(1, Math.min(4, n));
+  }
+
+  function hostCursorScaleInfo() {
+    const box = canvasContentBox();
+    const guest = activeGuestGeometry();
+    const scaleX = box ? box.width / Math.max(1, guest.width) : 1;
+    const scaleY = box ? box.height / Math.max(1, guest.height) : 1;
+    const raw = Math.min(scaleX, scaleY);
+    return {
+      scale: clampCursorScale(raw),
+      rawScale: Number((Number.isFinite(raw) ? raw : 1).toFixed(4)),
+      scaleX: Number((Number.isFinite(scaleX) ? scaleX : 1).toFixed(4)),
+      scaleY: Number((Number.isFinite(scaleY) ? scaleY : 1).toFixed(4)),
+    };
+  }
+
+  function cloneMacCursor(cursor) {
+    if (!cursor) return null;
+    return {
+      valid: Boolean(cursor.valid),
+      hotspotX: clampCursorHotspot(cursor.hotspotX),
+      hotspotY: clampCursorHotspot(cursor.hotspotY),
+      seq: cursor.seq,
+      bytes: cursor.bytes ? new Uint8Array(cursor.bytes) : null,
+    };
+  }
+
+  function macCursorCacheKey(cursor, scale) {
     const bytes = cursor.bytes || [];
-    let key = `${cursor.hotspotX},${cursor.hotspotY}`;
+    let key = `${cursor.hotspotX},${cursor.hotspotY},${scale}`;
     for (let i = 0; i < bytes.length; i++) {
       key += `,${bytes[i]}`;
     }
     return key;
   }
 
-  function macCursorToCss(cursor) {
-    if (!cursor || !cursor.valid || !cursor.bytes || cursor.bytes.length !== 64) {
-      return "";
+  function cursorShapeInfo(bytes) {
+    let dataBytes = 0;
+    let maskBytes = 0;
+    let hasMask = false;
+    let minX = 16;
+    let minY = 16;
+    let maxX = -1;
+    let maxY = -1;
+    let inkPixels = 0;
+    let checksum = 2166136261 >>> 0;
+
+    if (!bytes || bytes.length !== 64) {
+      return {
+        dataBytes: 0,
+        maskBytes: 0,
+        hasMask: false,
+        inkPixels: 0,
+        bounds: null,
+        checksum: 0,
+      };
     }
-    const hotspotX = clampCursorHotspot(cursor.hotspotX);
-    const hotspotY = clampCursorHotspot(cursor.hotspotY);
-    const cacheKey = macCursorCacheKey({ ...cursor, hotspotX, hotspotY });
+
+    for (let i = 0; i < 32; i++) {
+      const data = bytes[i] || 0;
+      const mask = bytes[32 + i] || 0;
+      if (data) dataBytes++;
+      if (mask) {
+        maskBytes++;
+        hasMask = true;
+      }
+      checksum ^= data;
+      checksum = Math.imul(checksum, 16777619) >>> 0;
+      checksum ^= mask;
+      checksum = Math.imul(checksum, 16777619) >>> 0;
+    }
+
+    for (let y = 0; y < 16; y++) {
+      for (let x = 0; x < 16; x++) {
+        const byteIndex = y * 2 + Math.floor(x / 8);
+        const bitIndex = 7 - (x % 8);
+        const dataBit = (bytes[byteIndex] >> bitIndex) & 1;
+        const maskBit = (bytes[32 + byteIndex] >> bitIndex) & 1;
+        const visible = hasMask ? maskBit : dataBit;
+        if (!visible) continue;
+        inkPixels++;
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x);
+        maxY = Math.max(maxY, y);
+      }
+    }
+
+    return {
+      dataBytes,
+      maskBytes,
+      hasMask,
+      inkPixels,
+      bounds: inkPixels ? { minX, minY, maxX, maxY, width: maxX - minX + 1, height: maxY - minY + 1 } : null,
+      checksum,
+    };
+  }
+
+  function looksLikeClassicArrowCursor(shape) {
+    if (!shape || !shape.hasMask || !shape.bounds) return false;
+    const b = shape.bounds;
+    return (
+      b.minX === 0 &&
+      b.minY === 0 &&
+      b.maxY >= 14 &&
+      b.width >= 8 &&
+      b.width <= 11 &&
+      b.height >= 14 &&
+      shape.dataBytes >= 18 &&
+      shape.maskBytes >= 18 &&
+      shape.inkPixels >= 90
+    );
+  }
+
+  function parseCursorHotspotOverride() {
+    const params = new URLSearchParams(window.location.search);
+    const rawPair = params.get("cursorHotspot") || params.get("hotspot") || "";
+    const rawX = params.get("cursorHotspotX") || params.get("hotspotX") || "";
+    const rawY = params.get("cursorHotspotY") || params.get("hotspotY") || "";
+    const raw = rawPair || (rawX || rawY ? `${rawX || "0"},${rawY || "0"}` : "");
+    const value = String(raw || "").trim().toLowerCase();
+    if (!value) return null;
+    if (value === "source" || value === "guest" || value === "raw") {
+      return { mode: "source", raw: value };
+    }
+    const match = /^(-?\d+)\s*[,x:]\s*(-?\d+)$/.exec(value);
+    if (!match) return null;
+    return {
+      mode: "point",
+      raw: value,
+      x: clampCursorHotspot(Number.parseInt(match[1], 10)),
+      y: clampCursorHotspot(Number.parseInt(match[2], 10)),
+    };
+  }
+
+  function normalizeCursorHotspot(cursor, shape) {
+    const sourceX = clampCursorHotspot(cursor.hotspotX);
+    const sourceY = clampCursorHotspot(cursor.hotspotY);
+    if (cursorHotspotOverride) {
+      if (cursorHotspotOverride.mode === "source") {
+        return {
+          hotspotX: sourceX,
+          hotspotY: sourceY,
+          sourceHotspotX: sourceX,
+          sourceHotspotY: sourceY,
+          normalized: false,
+          reason: "override-source",
+          override: cursorHotspotOverride.raw,
+        };
+      }
+      return {
+        hotspotX: cursorHotspotOverride.x,
+        hotspotY: cursorHotspotOverride.y,
+        sourceHotspotX: sourceX,
+        sourceHotspotY: sourceY,
+        normalized: true,
+        reason: "override",
+        override: cursorHotspotOverride.raw,
+      };
+    }
+    if (looksLikeClassicArrowCursor(shape) && (sourceX > 2 || sourceY > 2)) {
+      return {
+        hotspotX: 1,
+        hotspotY: 1,
+        sourceHotspotX: sourceX,
+        sourceHotspotY: sourceY,
+        normalized: true,
+        reason: "classic-arrow",
+        override: "",
+      };
+    }
+    return {
+      hotspotX: sourceX,
+      hotspotY: sourceY,
+      sourceHotspotX: sourceX,
+      sourceHotspotY: sourceY,
+      normalized: false,
+      reason: "",
+      override: "",
+    };
+  }
+
+  function macCursorToCss(cursor, scaleInfo = hostCursorScaleInfo()) {
+    const scale = clampCursorScale(scaleInfo.scale);
+    if (!cursor || !cursor.valid || !cursor.bytes || cursor.bytes.length !== 64) {
+      hostCursorRenderInfo = {
+        valid: false,
+        scale,
+        rawScale: scaleInfo.rawScale,
+        hotspotX: 0,
+        hotspotY: 0,
+        cssHotspotX: 0,
+        cssHotspotY: 0,
+        size: 0,
+        dataBytes: 0,
+        maskBytes: 0,
+      };
+      return "none";
+    }
+    const shape = cursorShapeInfo(cursor.bytes);
+    const hotspot = normalizeCursorHotspot(cursor, shape);
+    const hotspotX = hotspot.hotspotX;
+    const hotspotY = hotspot.hotspotY;
+    const cacheKey = macCursorCacheKey({ ...cursor, hotspotX, hotspotY }, scale);
     const cached = hostCursorCache.get(cacheKey);
-    if (cached) return cached;
+    if (cached) {
+      hostCursorRenderInfo = {
+        valid: true,
+        scale,
+        rawScale: scaleInfo.rawScale,
+        scaleX: scaleInfo.scaleX,
+        scaleY: scaleInfo.scaleY,
+        hotspotX,
+        hotspotY,
+        sourceHotspotX: hotspot.sourceHotspotX,
+        sourceHotspotY: hotspot.sourceHotspotY,
+        hotspotNormalized: hotspot.normalized,
+        hotspotReason: hotspot.reason,
+        hotspotOverride: hotspot.override || "",
+        cssHotspotX: hotspotX * scale,
+        cssHotspotY: hotspotY * scale,
+        size: 16 * scale,
+        ...shape,
+        cached: true,
+      };
+      return cached;
+    }
 
     const cursorCanvas = document.createElement("canvas");
-    cursorCanvas.width = 16;
-    cursorCanvas.height = 16;
+    const size = 16 * scale;
+    cursorCanvas.width = size;
+    cursorCanvas.height = size;
     const cursorCtx = cursorCanvas.getContext("2d");
     if (!cursorCtx) return "";
 
-    const image = cursorCtx.createImageData(16, 16);
-    let hasMask = false;
-    for (let i = 32; i < 64; i++) {
-      if (cursor.bytes[i]) {
-        hasMask = true;
-        break;
-      }
-    }
+    const image = cursorCtx.createImageData(size, size);
 
     for (let y = 0; y < 16; y++) {
       for (let x = 0; x < 16; x++) {
@@ -1109,11 +1411,10 @@
         const bitIndex = 7 - (x % 8);
         const dataBit = (cursor.bytes[byteIndex] >> bitIndex) & 1;
         const maskBit = (cursor.bytes[32 + byteIndex] >> bitIndex) & 1;
-        const pixelIndex = (y * 16 + x) * 4;
         let alpha = 0;
         let color = 0;
 
-        if (hasMask) {
+        if (shape.hasMask) {
           if (maskBit) {
             alpha = 255;
             color = dataBit ? 0 : 255;
@@ -1123,21 +1424,56 @@
           color = 0;
         }
 
-        image.data[pixelIndex + 0] = color;
-        image.data[pixelIndex + 1] = color;
-        image.data[pixelIndex + 2] = color;
-        image.data[pixelIndex + 3] = alpha;
+        for (let dy = 0; dy < scale; dy++) {
+          for (let dx = 0; dx < scale; dx++) {
+            const pixelIndex = (((y * scale + dy) * size) + (x * scale + dx)) * 4;
+            image.data[pixelIndex + 0] = color;
+            image.data[pixelIndex + 1] = color;
+            image.data[pixelIndex + 2] = color;
+            image.data[pixelIndex + 3] = alpha;
+          }
+        }
       }
     }
 
     cursorCtx.putImageData(image, 0, 0);
-    const result = `url("${cursorCanvas.toDataURL("image/png")}") ${hotspotX} ${hotspotY}, auto`;
+    const result = `url("${cursorCanvas.toDataURL("image/png")}") ${hotspotX * scale} ${hotspotY * scale}, auto`;
     if (hostCursorCache.size >= 32) {
       const firstKey = hostCursorCache.keys().next().value;
       if (firstKey) hostCursorCache.delete(firstKey);
     }
     hostCursorCache.set(cacheKey, result);
+    hostCursorRenderInfo = {
+      valid: true,
+      scale,
+      rawScale: scaleInfo.rawScale,
+      scaleX: scaleInfo.scaleX,
+      scaleY: scaleInfo.scaleY,
+      hotspotX,
+      hotspotY,
+      sourceHotspotX: hotspot.sourceHotspotX,
+      sourceHotspotY: hotspot.sourceHotspotY,
+      hotspotNormalized: hotspot.normalized,
+      hotspotReason: hotspot.reason,
+      hotspotOverride: hotspot.override || "",
+      cssHotspotX: hotspotX * scale,
+      cssHotspotY: hotspotY * scale,
+      size,
+      ...shape,
+      cached: false,
+    };
     return result;
+  }
+
+  function rerenderHostCursorForScale(force = false) {
+    if (!hostCursorLast) return false;
+    const scaleInfo = hostCursorScaleInfo();
+    if (!force && scaleInfo.scale === hostCursorScale) return false;
+    hostCursorScale = scaleInfo.scale;
+    hostCursorCss = macCursorToCss(hostCursorLast, scaleInfo);
+    applyHostCursorMode();
+    updateProbeState();
+    return true;
   }
 
   function pollSharedCursor(force = false) {
@@ -1153,19 +1489,32 @@
     }
     lastCursorProbeAt = now;
     const cursor = sharedInputBridge.readCursor();
-    if (!cursor) return;
-    hostCursorCss = macCursorToCss(cursor);
+    if (!cursor) {
+      rerenderHostCursorForScale(force);
+      return;
+    }
+    const scaleInfo = hostCursorScaleInfo();
+    hostCursorLast = cloneMacCursor(cursor);
+    hostCursorScale = scaleInfo.scale;
+    hostCursorCss = macCursorToCss(hostCursorLast, scaleInfo);
     applyHostCursorMode();
+    updateProbeState();
   }
 
   function applyHostCursorMode() {
     canvas.dataset.cursorMode = hostCursorMode;
     if (hostCursorMode === "host") {
+      canvas.dataset.cursorSuppression = sharedCursorSuppressionArmed ? "armed" : "software";
+      if (hmpInputMode === "shared" && !sharedCursorSuppressionArmed) {
+        canvas.style.cursor = "none";
+        return;
+      }
       const cursor = hostCursorCss || getComputedStyle(document.documentElement)
         .getPropertyValue("--mac-arrow-cursor")
         .trim();
       canvas.style.cursor = cursor || "default";
     } else {
+      canvas.dataset.cursorSuppression = "hidden";
       canvas.style.cursor = "none";
     }
   }
@@ -1241,8 +1590,10 @@
         canvasNativeFrameSeen = true;
       }
 
+      const scaledLockedSurface = isScaledLockedSurface(w, h);
       if (canvasDisplayLocked && canvasQueryDisplayLocked &&
-          canvasNativeFrameSeen && (w !== canvasDisplayW || h !== canvasDisplayH)) {
+          canvasNativeFrameSeen && (w !== canvasDisplayW || h !== canvasDisplayH) &&
+          isMacFramebufferSize(w, h)) {
         const requested = `${canvasDisplayW}x${canvasDisplayH}`;
         setCanvasDisplaySize(w, h, {
           lock: true,
@@ -1251,6 +1602,9 @@
         });
         canvasDisplayMismatchLogged = false;
         log(`guest framebuffer ${w}x${h} overrides requested canvas ${requested}; using native pixels`);
+      } else if (scaledLockedSurface && !screenScaledSurfaceLogged) {
+        screenScaledSurfaceLogged = true;
+        log(`framebuffer ${w}x${h} looks like a scaled backing surface; keeping guest geometry locked at ${canvasDisplayW}x${canvasDisplayH}`);
       }
 
       const targetW = canvasDisplayLocked ? canvasDisplayW : w;
@@ -1259,7 +1613,7 @@
       if (canvas.height !== targetH) canvas.height = targetH;
       if (!canvasDisplayLocked) {
         setCanvasDisplaySize(w, h);
-      } else if (canvasNativeFrameSeen && (w !== canvasDisplayW || h !== canvasDisplayH)) {
+      } else if (!scaledLockedSurface && canvasNativeFrameSeen && (w !== canvasDisplayW || h !== canvasDisplayH)) {
         if (!canvasDisplayMismatchLogged) {
           canvasDisplayMismatchLogged = true;
           const lock = canvasQueryDisplayLocked ? "query-locked" : "locked";
@@ -1280,10 +1634,32 @@
     const d8 = screenImage8;
     const end = n * 4;
     for (let i = 3; i < end; i += 4) d8[i] = 0xff;
-    if (canvasDisplayLocked && (w !== canvas.width || h !== canvas.height)) {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const scaledLockedSurface = isScaledLockedSurface(w, h);
+    if (canvasDisplayLocked && (canvas.width !== canvasDisplayW || canvas.height !== canvasDisplayH)) {
+      canvas.width = canvasDisplayW;
+      canvas.height = canvasDisplayH;
     }
-    ctx.putImageData(screenImage, 0, 0);
+    if (scaledLockedSurface) {
+      if (!screenScaleCanvas) {
+        screenScaleCanvas = document.createElement("canvas");
+        screenScaleCtx = screenScaleCanvas.getContext("2d");
+      }
+      if (screenScaleCanvas.width !== w) screenScaleCanvas.width = w;
+      if (screenScaleCanvas.height !== h) screenScaleCanvas.height = h;
+      if (screenScaleCtx) {
+        screenScaleCtx.putImageData(screenImage, 0, 0);
+        ctx.imageSmoothingEnabled = false;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(screenScaleCanvas, 0, 0, w, h, 0, 0, canvasDisplayW, canvasDisplayH);
+      } else {
+        ctx.putImageData(screenImage, 0, 0);
+      }
+    } else if (canvasDisplayLocked && (w !== canvas.width || h !== canvas.height)) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.putImageData(screenImage, 0, 0);
+    } else {
+      ctx.putImageData(screenImage, 0, 0);
+    }
 
     screenLastGen = gen;
     framesRendered++;
@@ -1298,7 +1674,12 @@
       window.requestAnimationFrame(() => {
         if (!screenTimerId) return;
         if (!renderScreenFrame()) {
-          syncDisplayToCanvasBacking("render loop");
+          const syncMinMs = effectiveInstrumentInterval(1000, 5000);
+          const nowMs = performance.now();
+          if (nowMs - lastRenderLoopSyncAt >= syncMinMs) {
+            lastRenderLoopSyncAt = nowMs;
+            syncDisplayToCanvasBacking("render loop");
+          }
         }
         pollSharedCursor();
       });
@@ -1324,8 +1705,11 @@
     screenImage = null;
     screenImage32 = null;
     screenImage8 = null;
+    screenScaleCanvas = null;
+    screenScaleCtx = null;
     screenW = 0;
     screenH = 0;
+    screenScaledSurfaceLogged = false;
     qemuScreenShared = null;
     qemuScreenCtl = null;
     screenLastGen = -1;
@@ -1630,8 +2014,14 @@
         sharedInputRetryTimer = 0;
       }
       sharedInputRetryCount = 0;
+      sharedMouseSettleCount = 0;
+      sharedPointerUserEvents = 0;
+      stopSharedCursorSuppressionTimer();
+      sharedCursorSuppressionArmed = false;
+      setSharedCursorSuppression(false, "bridge-ready");
       setStatus(qemuStatus, qemuStartPaused ? "QEMU paused" : "QEMU running", "ready");
       log(`input mode active: shared memory (68k_web-style, ${sharedInputMotionMode} mouse)`);
+      scheduleSharedMouseSettle("bridge-ready");
       if (runInputSelfTestAfterQemuReady) {
         runInputSelfTestAfterQemuReady = false;
         window.setTimeout(runInputSelfTest, 0);
@@ -1671,8 +2061,16 @@
       sharedInputRetryTimer = 0;
     }
     sharedInputRetryCount = 0;
+    stopSharedMouseSettle();
+    stopSharedCursorSuppressionTimer();
+    sharedMouseSettleCount = 0;
+    sharedPointerUserEvents = 0;
+    sharedCursorSuppressionArmed = false;
     if (sharedInputBridge) {
       try {
+        if (typeof sharedInputBridge.setCursorSuppression === "function") {
+          sharedInputBridge.setCursorSuppression(false);
+        }
         sharedInputBridge.releaseAll();
         sharedInputBridge.stop();
       } catch {
@@ -1680,6 +2078,83 @@
       }
       sharedInputBridge = null;
     }
+  }
+
+  function stopSharedMouseSettle() {
+    if (sharedMouseSettleTimer) {
+      window.clearTimeout(sharedMouseSettleTimer);
+      sharedMouseSettleTimer = 0;
+    }
+  }
+
+  function stopSharedCursorSuppressionTimer() {
+    if (sharedCursorSuppressionTimer) {
+      window.clearTimeout(sharedCursorSuppressionTimer);
+      sharedCursorSuppressionTimer = 0;
+    }
+  }
+
+  function setSharedCursorSuppression(enabled, reason = "manual") {
+    if (!sharedInputBridge ||
+        typeof sharedInputBridge.setCursorSuppression !== "function") {
+      return false;
+    }
+    const wasArmed = sharedCursorSuppressionArmed;
+    if (!sharedInputBridge.setCursorSuppression(enabled)) return false;
+    sharedCursorSuppressionArmed = Boolean(enabled);
+    applyHostCursorMode();
+    updateProbeState();
+    if (wasArmed !== sharedCursorSuppressionArmed) {
+      log(`shared cursor suppression ${enabled ? "armed" : "disarmed"} (${reason})`);
+    }
+    return true;
+  }
+
+  function scheduleSharedCursorSuppression(reason = "pointer") {
+    if (sharedCursorSuppressionArmed || sharedCursorSuppressionTimer) return;
+    sharedCursorSuppressionTimer = window.setTimeout(() => {
+      sharedCursorSuppressionTimer = 0;
+      setSharedCursorSuppression(true, reason);
+    }, 180);
+  }
+
+  function sharedMouseSettlePoint() {
+    const geometry = activeGuestGeometry();
+    return {
+      x: Math.max(0, Math.min(geometry.width - 1, Math.floor(geometry.width / 2))),
+      y: Math.max(0, Math.min(geometry.height - 1, Math.floor(geometry.height / 2))),
+    };
+  }
+
+  function primeSharedMousePosition(reason = "settle") {
+    if (!useSharedInputBridge() ||
+        typeof sharedInputBridge.testPointer !== "function" ||
+        sharedPointerUserEvents > 0) {
+      return false;
+    }
+    const point = sharedMouseSettlePoint();
+    sharedInputBridge.testPointer(point.x, point.y, 0);
+    setMouseMetric(point.x, point.y);
+    if (sharedMouseSettleCount === 0) {
+      log(`shared mouse settle: ${point.x},${point.y} (${reason})`);
+    }
+    updateProbeState();
+    return true;
+  }
+
+  function scheduleSharedMouseSettle(reason = "timer") {
+    stopSharedMouseSettle();
+    if (!qemuStarted || hmpInputMode !== "shared" || sharedPointerUserEvents > 0) return;
+    sharedMouseSettleTimer = window.setTimeout(() => {
+      sharedMouseSettleTimer = 0;
+      if (!primeSharedMousePosition(reason)) return;
+      sharedMouseSettleCount += 1;
+      if (sharedMouseSettleCount < 60 && sharedPointerUserEvents === 0) {
+        scheduleSharedMouseSettle("startup-cursor-cleanup");
+      } else {
+        log(`shared mouse settle complete after ${sharedMouseSettleCount} samples`);
+      }
+    }, sharedMouseSettleCount === 0 ? 500 : 3000);
   }
 
   function createPtyShim(sharedInput) {
@@ -1916,6 +2391,7 @@
     uiPressureReliefActive = true;
     uiPressureLevel = nextLevel;
     document.documentElement.dataset.pressure = nextLevel >= 2 ? "critical" : "high";
+    updateVmVisualMode();
 
     const targetFps = nextLevel >= 2 ? 4 : 6;
     if (screenFpsLimit === 0 || screenFpsLimit > targetFps) {
@@ -1992,6 +2468,14 @@
       eventMetricTimer = 0;
       updateEventMetric();
     }, uiMetricMinMs);
+  }
+
+  function scheduleEventProbeStateUpdate() {
+    if (eventProbeStateTimer) return;
+    eventProbeStateTimer = window.setTimeout(() => {
+      eventProbeStateTimer = 0;
+      updateProbeState();
+    }, eventProbeStateMinMs);
   }
 
   function setMouseMetric(x, y) {
@@ -2119,8 +2603,8 @@
 
   function sampleFramebuffer() {
     try {
-      const sampleWidth = 144;
-      const sampleHeight = 109;
+      const sampleWidth = qemuStarted && lowOverheadUiEnabled ? 72 : 144;
+      const sampleHeight = qemuStarted && lowOverheadUiEnabled ? 54 : 109;
       framebufferProbeCanvas.width = sampleWidth;
       framebufferProbeCanvas.height = sampleHeight;
       framebufferProbeCtx.drawImage(canvas, 0, 0, sampleWidth, sampleHeight);
@@ -2184,7 +2668,7 @@
   function recordEvent(name) {
     eventCounters[name] += 1;
     scheduleEventMetricUpdate();
-    updateProbeState();
+    scheduleEventProbeStateUpdate();
   }
 
   function readProbeSnapshot() {
@@ -2250,16 +2734,21 @@
         probeMs: probeStateMinMs,
         instrumentMs: runtimeInstrumentIntervalMs,
         cursorMs: cursorProbeMinMs,
+        eventProbeMs: eventProbeStateMinMs,
         frameProbeMs: framebufferProbeIntervalMs,
         diskStatsMs: diskWorkerStatsRequestMs,
         logMirrorMs: browserLogMirrorMinMs,
         healthMs: healthWorkerIntervalMs,
         healthLagMs: healthWorkerLagMs,
         serialMs: serialRenderMinMs,
+        effectiveSerialMs: effectiveSerialRenderMinMs(),
+        mouseSettleCount: sharedMouseSettleCount,
+        pointerUserEvents: sharedPointerUserEvents,
+        cursorSuppressionArmed: sharedCursorSuppressionArmed,
         pressureRelief: pressureReliefEnabled,
         pressureReliefActive: uiPressureReliefActive,
         pressureLevel: uiPressureLevel,
-        pressureBackoff: uiPressureBackoff(),
+        workBackoff: uiWorkBackoff(),
         effectiveInstrumentMs: effectiveInstrumentInterval(runtimeInstrumentIntervalMs),
       },
       ptyDroppedBytes: qemuPty ? qemuPty.droppedBytes() : 0,
@@ -2276,6 +2765,15 @@
         contentWidth: contentBox ? Math.round(contentBox.width) : 0,
         contentHeight: contentBox ? Math.round(contentBox.height) : 0,
       },
+      hostCursor: {
+        mode: hostCursorMode,
+        active: Boolean(hostCursorLast),
+        scale: hostCursorScale,
+        hotspotOverride: cursorHotspotOverride,
+        render: hostCursorRenderInfo,
+        cacheSize: hostCursorCache.size,
+      },
+      alignment: lastAlignmentSample,
       framebuffer: framebufferProbe,
       renderer: {
         decoupled: Boolean(qemuScreenCtl),
@@ -2341,14 +2839,20 @@
         probeMs: probeStateMinMs,
         instrumentMs: runtimeInstrumentIntervalMs,
         cursorMs: cursorProbeMinMs,
+        eventProbeMs: eventProbeStateMinMs,
         frameProbeMs: framebufferProbeIntervalMs,
         diskStatsMs: diskWorkerStatsRequestMs,
         healthMs: healthWorkerIntervalMs,
         healthLagMs: healthWorkerLagMs,
+        serialMs: serialRenderMinMs,
+        effectiveSerialMs: effectiveSerialRenderMinMs(),
+        mouseSettleCount: sharedMouseSettleCount,
+        pointerUserEvents: sharedPointerUserEvents,
+        cursorSuppressionArmed: sharedCursorSuppressionArmed,
         pressureRelief: pressureReliefEnabled,
         pressureReliefActive: uiPressureReliefActive,
         pressureLevel: uiPressureLevel,
-        pressureBackoff: uiPressureBackoff(),
+        workBackoff: uiWorkBackoff(),
         effectiveInstrumentMs: effectiveInstrumentInterval(runtimeInstrumentIntervalMs),
       },
       events: { ...eventCounters },
@@ -2365,6 +2869,7 @@
         contentHeight: contentBox ? Math.round(contentBox.height) : 0,
       },
       framebuffer: framebufferProbe,
+      alignment: lastAlignmentSample,
       renderer: {
         decoupled: Boolean(qemuScreenCtl),
         active: Boolean(screenTimerId),
@@ -2435,6 +2940,8 @@
       hmpMonitorActive: snapshot.hmpMonitorActive,
       hmpInputMode: snapshot.hmpInputMode,
       sharedInputMotionMode: snapshot.sharedInputMotionMode,
+      hostCursor: snapshot.hostCursor,
+      alignment: snapshot.alignment,
       ptyQueuedBytes: snapshot.ptyQueuedBytes,
       ptyDroppedBytes: snapshot.ptyDroppedBytes,
       events: snapshot.events,
@@ -2460,6 +2967,11 @@
         lastAbsEvent: `${shared.lastAbsEventX},${shared.lastAbsEventY} ${shared.lastAbsEventW}x${shared.lastAbsEventH}`,
         cursor: `${shared.cursorHotspotX},${shared.cursorHotspotY} ${shared.cursorValid ? "valid" : "invalid"}`,
         buttons: `${shared.frontendButtons}/${shared.lastButtons}/${shared.lastAdbButtons}`,
+        adb: `${shared.adbPositionX},${shared.adbPositionY} p${shared.adbPendingDx},${shared.adbPendingDy}`,
+        adbButtons: `${shared.adbStateButtons}/${shared.adbLastButtonsState}/${shared.adbDesiredButtons} q${shared.adbQueueDepth}`,
+        adbLastPoll: `${shared.adbLastPollBeforeX},${shared.adbLastPollBeforeY}->${shared.adbLastPollAfterX},${shared.adbLastPollAfterY} d${shared.adbLastPollDx},${shared.adbLastPollDy} b${shared.adbLastPollButtons}`,
+        localQueue: `${shared.localButtonQueueDepth} target=${shared.targetPending ? "pending" : "ready"} press=${shared.buttonPressPending ? shared.pendingButtonMask : 0}@${shared.buttonPressPrimeMs || 0}ms hold=${shared.buttonReleaseHoldMs || 0}ms`,
+        cursorSuppression: `${shared.cursorSuppressionRequested ? "req" : "idle"}/${shared.cursorSuppressionActive ? "active" : "guest"} t${shared.cursorSuppressionTransitions || 0}`,
         backend: `${shared.backendKeys}k/${shared.backendMouse}m/${shared.backendButtons}b`,
         lastMouseDelta: `${shared.lastMouseDx},${shared.lastMouseDy}`,
       } : null,
@@ -2527,10 +3039,16 @@
   }
 
   function handleSharedKeyboardCapture(event, down) {
+    if (event.__c89SharedInputHandled) return true;
     if (!shouldUseSharedKeyboardCapture(event)) return false;
+    event.__c89SharedInputHandled = true;
+    event.preventDefault();
+    if (down && event.repeat) {
+      stopNativeInputPropagation(event);
+      return true;
+    }
     recordEvent(down ? "keydown" : "keyup");
     setLastKeyMetric(event.code || "");
-    event.preventDefault();
     if (useSharedInputBridge()) {
       sharedInputBridge.keyEvent(event, down);
     }
@@ -2551,6 +3069,12 @@
 
   function handleSharedPointerEvent(event) {
     if (!shouldUseSharedPointerCapture(event)) return false;
+    const firstPointerEvent = sharedPointerUserEvents === 0;
+    sharedPointerUserEvents += 1;
+    stopSharedMouseSettle();
+    if (firstPointerEvent) {
+      scheduleSharedCursorSuppression(event.type || "first-pointer");
+    }
     const eventName = event.type === "pointermove"
       ? "mousemove"
       : event.type === "pointerup" || event.type === "pointercancel"
@@ -2570,14 +3094,26 @@
     }
 
     event.preventDefault();
+    const clientPoint = {
+      clientX: event.clientX,
+      clientY: event.clientY,
+      type: event.type,
+    };
+    let point = null;
     if (event.type === "pointercancel") {
       if (sharedInputBridge && typeof sharedInputBridge.releaseMouse === "function") {
         sharedInputBridge.releaseMouse();
       }
     } else if (useSharedInputBridge()) {
-      updateSharedPointerMetric(sharedInputBridge.mouseEvent(event));
+      point = sharedInputBridge.mouseEvent(event);
+      updateSharedPointerMetric(point);
     } else {
-      updateSharedPointerMetric(canvasGuestPoint(event));
+      point = canvasGuestPoint(event);
+      updateSharedPointerMetric(point);
+    }
+    if (point) {
+      recordAlignmentSample(point, clientPoint, event.type);
+      scheduleAlignmentResample(point, clientPoint, `${event.type}:settled`);
     }
 
     if ((event.type === "pointerup" || event.type === "pointercancel") &&
@@ -2747,11 +3283,11 @@
     if (!viewport) return null;
     const x = Math.max(0, Math.min(
       viewport.guestWidth - 1,
-      Math.trunc((clientX - viewport.viewportLeft) * viewport.guestWidth / viewport.viewportWidth)
+      Math.round((clientX - viewport.viewportLeft) * viewport.guestWidth / viewport.viewportWidth)
     ));
     const y = Math.max(0, Math.min(
       viewport.guestHeight - 1,
-      Math.trunc((clientY - viewport.viewportTop) * viewport.guestHeight / viewport.viewportHeight)
+      Math.round((clientY - viewport.viewportTop) * viewport.guestHeight / viewport.viewportHeight)
     ));
     return { x, y };
   }
@@ -2762,8 +3298,8 @@
     const x = Math.max(0, Math.min(viewport.guestWidth - 1, Math.trunc(guestX || 0)));
     const y = Math.max(0, Math.min(viewport.guestHeight - 1, Math.trunc(guestY || 0)));
     return {
-      clientX: viewport.viewportLeft + (x + 0.5) * viewport.viewportWidth / viewport.guestWidth,
-      clientY: viewport.viewportTop + (y + 0.5) * viewport.viewportHeight / viewport.guestHeight,
+      clientX: viewport.viewportLeft + x * viewport.viewportWidth / viewport.guestWidth,
+      clientY: viewport.viewportTop + y * viewport.viewportHeight / viewport.guestHeight,
       guestX: x,
       guestY: y,
       viewportLeft: viewport.viewportLeft,
@@ -2783,6 +3319,260 @@
       canvasWidth: canvas.width,
       canvasHeight: canvas.height,
     };
+  }
+
+  function finitePoint(x, y) {
+    return Number.isFinite(Number(x)) && Number.isFinite(Number(y))
+      ? { x: Math.trunc(Number(x)), y: Math.trunc(Number(y)) }
+      : null;
+  }
+
+  function alignmentDelta(position, target) {
+    if (!position || !target) return null;
+    return {
+      dx: position.x - target.x,
+      dy: position.y - target.y,
+    };
+  }
+
+  function maxAlignmentDelta(deltas) {
+    let max = 0;
+    for (const delta of Object.values(deltas || {})) {
+      if (!delta) continue;
+      max = Math.max(max, Math.abs(delta.dx), Math.abs(delta.dy));
+    }
+    return max;
+  }
+
+  function readSharedAlignmentStats() {
+    try {
+      return sharedInputBridge && sharedInputBridge.isReady() ? sharedInputBridge.stats() : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function readAlignmentSample(targetPoint, clientPoint = null, phase = "sample") {
+    const shared = readSharedAlignmentStats();
+    const pointer = shared && shared.pointer ? shared.pointer : null;
+    const target = targetPoint ||
+      finitePoint(pointer && pointer.guestX, pointer && pointer.guestY) ||
+      finitePoint(shared && shared.absX, shared && shared.absY);
+    const hostRender = hostCursorRenderInfo || null;
+    const cursorBounds = hostRender && hostRender.bounds ? hostRender.bounds : null;
+    const cursorVisualTip = target && hostRender && cursorBounds ? {
+      x: target.x + cursorBounds.minX - (hostRender.hotspotX || 0),
+      y: target.y + cursorBounds.minY - (hostRender.hotspotY || 0),
+      offsetX: cursorBounds.minX - (hostRender.hotspotX || 0),
+      offsetY: cursorBounds.minY - (hostRender.hotspotY || 0),
+    } : null;
+    const positions = {
+      target,
+      abs: finitePoint(shared && shared.absX, shared && shared.absY),
+      macMouse: finitePoint(shared && shared.macMouseX, shared && shared.macMouseY),
+      macRaw: finitePoint(shared && shared.macRawX, shared && shared.macRawY),
+      adb: finitePoint(shared && shared.adbPositionX, shared && shared.adbPositionY),
+      adbPollAfter: finitePoint(shared && shared.adbLastPollAfterX, shared && shared.adbLastPollAfterY),
+    };
+    const deltas = {
+      abs: alignmentDelta(positions.abs, target),
+      macMouse: alignmentDelta(positions.macMouse, target),
+      macRaw: alignmentDelta(positions.macRaw, target),
+      adb: alignmentDelta(positions.adb, target),
+      adbPollAfter: alignmentDelta(positions.adbPollAfter, target),
+    };
+    const coreDeltas = {
+      abs: deltas.abs,
+      macMouse: deltas.macMouse,
+      adb: deltas.adb,
+    };
+    return {
+      sampledAt: Date.now(),
+      phase,
+      client: clientPoint ? {
+        x: Math.round(clientPoint.clientX || 0),
+        y: Math.round(clientPoint.clientY || 0),
+        type: clientPoint.type || "",
+      } : null,
+      positions,
+      deltas,
+      coreMaxDelta: maxAlignmentDelta(coreDeltas),
+      maxDelta: maxAlignmentDelta(deltas),
+      cursor: {
+        guestHotspotX: shared ? shared.cursorHotspotX : null,
+        guestHotspotY: shared ? shared.cursorHotspotY : null,
+        renderHotspotX: hostRender ? hostRender.hotspotX : null,
+        renderHotspotY: hostRender ? hostRender.hotspotY : null,
+        sourceHotspotX: hostRender ? hostRender.sourceHotspotX : null,
+        sourceHotspotY: hostRender ? hostRender.sourceHotspotY : null,
+        normalized: Boolean(hostRender && hostRender.hotspotNormalized),
+        reason: hostRender ? hostRender.hotspotReason || "" : "",
+        override: hostRender ? hostRender.hotspotOverride || "" : "",
+        cssHotspotX: hostRender ? hostRender.cssHotspotX : null,
+        cssHotspotY: hostRender ? hostRender.cssHotspotY : null,
+        scale: hostRender ? hostRender.scale : null,
+        bounds: cursorBounds,
+        visualTip: cursorVisualTip,
+      },
+      geometry: {
+        guest: activeGuestGeometry(),
+        viewport: (() => {
+          const viewport = guestViewportGeometry();
+          return viewport ? {
+            contentLeft: Math.round(viewport.box.left),
+            contentTop: Math.round(viewport.box.top),
+            contentWidth: Math.round(viewport.box.width),
+            contentHeight: Math.round(viewport.box.height),
+            viewportLeft: Math.round(viewport.viewportLeft),
+            viewportTop: Math.round(viewport.viewportTop),
+            viewportWidth: Math.round(viewport.viewportWidth),
+            viewportHeight: Math.round(viewport.viewportHeight),
+          } : null;
+        })(),
+      },
+    };
+  }
+
+  function alignmentOverlayPoint(point) {
+    if (!point || !alignmentOverlay) return null;
+    const geometry = activeGuestGeometry();
+    const w = Math.max(1, Number(geometry.width) || alignmentOverlay.width || 1);
+    const h = Math.max(1, Number(geometry.height) || alignmentOverlay.height || 1);
+    return {
+      x: point.x * alignmentOverlay.width / w,
+      y: point.y * alignmentOverlay.height / h,
+    };
+  }
+
+  function drawAlignmentCross(point, color, label) {
+    if (!alignmentCtx) return;
+    const p = alignmentOverlayPoint(point);
+    if (!p) return;
+    const x = Math.round(p.x) + 0.5;
+    const y = Math.round(p.y) + 0.5;
+    alignmentCtx.strokeStyle = color;
+    alignmentCtx.fillStyle = color;
+    alignmentCtx.lineWidth = 1;
+    alignmentCtx.beginPath();
+    alignmentCtx.moveTo(x - 8, y);
+    alignmentCtx.lineTo(x + 8, y);
+    alignmentCtx.moveTo(x, y - 8);
+    alignmentCtx.lineTo(x, y + 8);
+    alignmentCtx.stroke();
+    alignmentCtx.fillRect(x - 1.5, y - 1.5, 3, 3);
+    if (label) {
+      alignmentCtx.font = "9px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+      alignmentCtx.fillText(label, x + 5, y - 5);
+    }
+  }
+
+  function drawAlignmentLine(from, to, color) {
+    if (!alignmentCtx) return;
+    const a = alignmentOverlayPoint(from);
+    const b = alignmentOverlayPoint(to);
+    if (!a || !b || (Math.round(a.x) === Math.round(b.x) && Math.round(a.y) === Math.round(b.y))) return;
+    alignmentCtx.strokeStyle = color;
+    alignmentCtx.lineWidth = 1;
+    alignmentCtx.beginPath();
+    alignmentCtx.moveTo(Math.round(a.x) + 0.5, Math.round(a.y) + 0.5);
+    alignmentCtx.lineTo(Math.round(b.x) + 0.5, Math.round(b.y) + 0.5);
+    alignmentCtx.stroke();
+  }
+
+  function syncAlignmentOverlayGeometry() {
+    if (!alignmentOverlay || !displayPanel) return;
+    const shell = alignmentOverlay.parentElement;
+    if (!shell) return;
+    const canvasRect = canvas.getBoundingClientRect();
+    const shellRect = shell.getBoundingClientRect();
+    const width = Math.max(1, Math.round(canvasRect.width || canvasDisplayW || canvas.width));
+    const height = Math.max(1, Math.round(canvasRect.height || canvasDisplayH || canvas.height));
+    alignmentOverlay.style.left = `${Math.round(canvasRect.left - shellRect.left)}px`;
+    alignmentOverlay.style.top = `${Math.round(canvasRect.top - shellRect.top)}px`;
+    alignmentOverlay.style.width = `${width}px`;
+    alignmentOverlay.style.height = `${height}px`;
+    if (alignmentOverlay.width !== canvas.width) alignmentOverlay.width = canvas.width;
+    if (alignmentOverlay.height !== canvas.height) alignmentOverlay.height = canvas.height;
+  }
+
+  function renderAlignmentHud() {
+    if (!alignmentOverlay || !alignmentCtx) return;
+    syncAlignmentOverlayGeometry();
+    alignmentCtx.clearRect(0, 0, alignmentOverlay.width, alignmentOverlay.height);
+    if (!alignHudEnabled || !lastAlignmentSample || !lastAlignmentSample.positions.target) return;
+
+    const sample = lastAlignmentSample;
+    const positions = sample.positions || {};
+    alignmentCtx.save();
+    alignmentCtx.globalAlpha = 0.95;
+    drawAlignmentLine(positions.target, positions.macMouse, "rgba(255, 92, 200, 0.82)");
+    drawAlignmentLine(positions.target, positions.adb, "rgba(255, 209, 102, 0.82)");
+    drawAlignmentCross(positions.target, "#66f5da", "browser");
+    drawAlignmentCross(positions.macMouse, "#ff5cc8", "mac");
+    drawAlignmentCross(positions.adb, "#ffd166", "adb");
+    drawAlignmentCross(positions.abs, "#72f28f", "abs");
+    drawAlignmentCross(sample.cursor && sample.cursor.visualTip, "#ff8f40", "tip");
+
+    const tip = sample.cursor && sample.cursor.visualTip;
+    const lines = [
+      `phase ${sample.phase || "sample"}  core delta ${sample.coreMaxDelta ?? sample.maxDelta ?? 0}px`,
+      `target ${positions.target.x},${positions.target.y}`,
+      `mac ${positions.macMouse ? `${positions.macMouse.x},${positions.macMouse.y}` : "n/a"}  adb ${positions.adb ? `${positions.adb.x},${positions.adb.y}` : "n/a"}`,
+      `cursor src ${sample.cursor.sourceHotspotX},${sample.cursor.sourceHotspotY} -> css ${sample.cursor.renderHotspotX},${sample.cursor.renderHotspotY}${sample.cursor.override ? ` override ${sample.cursor.override}` : ""}`,
+      `visual tip ${tip ? `${tip.x},${tip.y} (${tip.offsetX},${tip.offsetY})` : "n/a"}`,
+    ];
+    const pad = 6;
+    const lineH = 13;
+    const boxW = 294;
+    const boxH = pad * 2 + lines.length * lineH;
+    alignmentCtx.fillStyle = "rgba(2, 3, 6, 0.82)";
+    alignmentCtx.fillRect(8, 8, boxW, boxH);
+    alignmentCtx.strokeStyle = (sample.coreMaxDelta ?? sample.maxDelta ?? 0) > 1 ? "rgba(255, 92, 200, 0.9)" : "rgba(102, 245, 218, 0.8)";
+    alignmentCtx.strokeRect(8.5, 8.5, boxW, boxH);
+    alignmentCtx.font = "10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+    alignmentCtx.fillStyle = "#dfe7ee";
+    lines.forEach((line, index) => {
+      alignmentCtx.fillText(line, 8 + pad, 8 + pad + 10 + index * lineH);
+    });
+    alignmentCtx.restore();
+  }
+
+  function updateAlignmentHudState() {
+    document.body.classList.toggle("align-hud", alignHudEnabled);
+    if (toggleAlignHudButton) {
+      toggleAlignHudButton.classList.toggle("active", alignHudEnabled);
+      toggleAlignHudButton.textContent = alignHudEnabled ? "Hide HUD" : "Align HUD";
+    }
+    renderAlignmentHud();
+  }
+
+  function recordAlignmentSample(targetPoint, clientPoint = null, phase = "pointer") {
+    lastAlignmentSample = readAlignmentSample(targetPoint, clientPoint, phase);
+    const maxDelta = lastAlignmentSample.coreMaxDelta ?? lastAlignmentSample.maxDelta ?? 0;
+    const target = lastAlignmentSample.positions.target;
+    if (target) {
+      setMouseMetric(target.x, target.y);
+    }
+    if (maxDelta > 1 && /settled/.test(phase) && (!qemuStartPaused || pulseRunActive)) {
+      log(`alignment drift ${maxDelta}px (${phase}): ` +
+        `target=${target ? `${target.x},${target.y}` : "n/a"} ` +
+        `mac=${lastAlignmentSample.positions.macMouse ? `${lastAlignmentSample.positions.macMouse.x},${lastAlignmentSample.positions.macMouse.y}` : "n/a"} ` +
+        `adb=${lastAlignmentSample.positions.adb ? `${lastAlignmentSample.positions.adb.x},${lastAlignmentSample.positions.adb.y}` : "n/a"}`);
+    }
+    renderAlignmentHud();
+    scheduleEventProbeStateUpdate();
+  }
+
+  function scheduleAlignmentResample(targetPoint, clientPoint, reason = "settled") {
+    if (alignmentResampleTimer) {
+      window.clearTimeout(alignmentResampleTimer);
+    }
+    const target = targetPoint ? { x: targetPoint.x, y: targetPoint.y } : null;
+    const client = clientPoint ? { ...clientPoint } : null;
+    alignmentResampleTimer = window.setTimeout(() => {
+      alignmentResampleTimer = 0;
+      recordAlignmentSample(target, client, reason);
+    }, 140);
   }
 
   function queueMouseMoveToEvent(event, immediate = false) {
@@ -2892,7 +3682,7 @@
         typeof sharedInputBridge.testKey === "function" &&
         typeof sharedInputBridge.testPointer === "function") {
       const sharedBefore = sharedInputBridge.stats();
-      const tapEvent = {
+      const holdEvent = {
         code: "KeyR",
         repeat: false,
         shiftKey: false,
@@ -2901,16 +3691,16 @@
         metaKey: false,
         getModifierState: () => false,
       };
-      const tapKey = sharedInputBridge.keyEvent(tapEvent, true);
-      const tapKeyUpIgnored = sharedInputBridge.keyEvent(tapEvent, false);
+      const holdKeyDown = sharedInputBridge.keyEvent(holdEvent, true);
       const repeatBefore = sharedInputBridge.stats();
-      const repeatTapSuppressed = sharedInputBridge.keyEvent(tapEvent, true);
+      const repeatKeyDownSuppressed = sharedInputBridge.keyEvent({ ...holdEvent, repeat: true }, true);
       const repeatAfter = sharedInputBridge.stats();
       const repeatSuppressionOk = Boolean(
-        repeatTapSuppressed &&
+        repeatKeyDownSuppressed &&
         repeatAfter.keyTapRepeatSuppressions >= repeatBefore.keyTapRepeatSuppressions + 1 &&
         repeatAfter.keyTaps === repeatBefore.keyTaps
       );
+      const holdKeyUp = sharedInputBridge.keyEvent(holdEvent, false);
       const lostKeyDown = sharedInputBridge.testKey("KeyC", true);
       await delay((sharedBefore.keyAutoReleaseMs || 350) + 120);
       const sharedAfterAutoRelease = sharedInputBridge.stats();
@@ -2918,6 +3708,12 @@
       const keyUp = sharedInputBridge.testKey("KeyX", false);
       const expectedGeometry = activeGuestGeometry();
       sharedInputBridge.releaseMouse();
+      const buttonPrime = sharedInputBridge.testPointer(0, 0, 0);
+      await delay(45);
+      const pointerDown = sharedInputBridge.testPointer(0, 0, 1);
+      await delay(45);
+      const pointerUp = sharedInputBridge.testPointer(0, 0, 0);
+      await delay(Math.max(140, (sharedBefore.buttonReleaseHoldMs || 60) + 90));
       const pointerEventTarget = { x: 123, y: 77 };
       let pointerEventOk = false;
       let pointerEventStats = null;
@@ -2945,14 +3741,6 @@
           ...pointerEventBase,
           buttons: 0,
         }));
-        dispatchCanvasInputEvent(new PointerEvent("pointerdown", {
-          ...pointerEventBase,
-          buttons: 1,
-        }));
-        dispatchCanvasInputEvent(new PointerEvent("pointerup", {
-          ...pointerEventBase,
-          buttons: 0,
-        }));
         pointerEventStats = sharedInputBridge.stats();
         pointerEventOk = Boolean(
           pointerEventStats.pointer &&
@@ -2965,18 +3753,25 @@
       sharedInputBridge.releaseMouse();
       const pointerPrime = sharedInputBridge.testPointer(392, 292, 0);
       await delay(45);
-      const pointerDown = sharedInputBridge.testPointer(400, 300, 1);
+      const pointerCenter = sharedInputBridge.testPointer(400, 300, 0);
       await delay(45);
-      const pointerUp = sharedInputBridge.testPointer(400, 300, 0);
-      await delay(Math.max(140, (sharedBefore.buttonReleaseHoldMs || 60) + 90));
       const sharedAfter = sharedInputBridge.stats();
       const expectMouseDelta = sharedAfter.motionMode === "hybrid";
+      const buttonEdgesConsumed = sharedAfter.backendButtons >= sharedBefore.backendButtons + 2;
+      const buttonEdgesDeferred = Boolean(
+        expectMouseDelta &&
+        sharedAfter.targetPending &&
+        sharedAfter.localButtonQueueDepth >= 2 &&
+        sharedAfter.frontendButtons === 0 &&
+        sharedAfter.lastButtons === 0
+      );
+      const buttonEdgesOk = buttonEdgesConsumed || buttonEdgesDeferred;
       shared = {
         before: sharedBefore,
         after: sharedAfter,
-        tapKey,
-        tapKeyUpIgnored,
-        repeatTapSuppressed,
+        holdKeyDown,
+        holdKeyUp,
+        repeatKeyDownSuppressed,
         repeatSuppressionOk,
         pointerEventOk,
         pointerEventTarget,
@@ -2990,20 +3785,28 @@
           sharedAfterAutoRelease.pressedKeys === 0
         ),
         afterAutoRelease: sharedAfterAutoRelease,
+        buttonPrime,
         pointerPrime,
         pointerDown,
         pointerUp,
+        pointerCenter,
+        buttonEdgesConsumed,
+        buttonEdgesDeferred,
+        buttonEdgesOk,
         ok: Boolean(
           lostKeyDown &&
-          tapKey &&
+          holdKeyDown &&
+          holdKeyUp &&
           repeatSuppressionOk &&
           pointerEventOk &&
           sharedAfterAutoRelease.autoKeyReleases >= sharedBefore.autoKeyReleases + 1 &&
           sharedAfterAutoRelease.pressedKeys === 0 &&
           keyDown &&
           keyUp &&
+          buttonPrime &&
           pointerDown &&
           pointerUp &&
+          pointerCenter &&
           sharedAfter.absX === 400 &&
           sharedAfter.absY === 300 &&
           sharedAfter.version >= 4 &&
@@ -3011,9 +3814,8 @@
           sharedAfter.absHeight === expectedGeometry.height &&
           sharedAfter.backendMouse >= sharedBefore.backendMouse + 1 &&
           (!expectMouseDelta || sharedAfter.lastMouseDx !== 0 || sharedAfter.lastMouseDy !== 0) &&
-          sharedAfter.backendButtons >= sharedBefore.backendButtons + 2 &&
+          buttonEdgesOk &&
           sharedAfter.backendKeys >= sharedBefore.backendKeys + 4 &&
-          sharedAfter.keyTaps >= sharedBefore.keyTaps + 1 &&
           sharedAfter.lastAdb === 0x07 &&
           sharedAfter.frontendButtons === 0 &&
           sharedAfter.lastButtons === 0
@@ -3046,6 +3848,14 @@
       backendKeys: shared && shared.after ? shared.after.backendKeys : null,
       backendMouse: shared && shared.after ? shared.after.backendMouse : null,
       backendButtons: shared && shared.after ? shared.after.backendButtons : null,
+      buttonEdgesConsumed: shared ? shared.buttonEdgesConsumed : false,
+      buttonEdgesDeferred: shared ? shared.buttonEdgesDeferred : false,
+      buttonEdgesOk: shared ? shared.buttonEdgesOk : false,
+      localButtonQueueDepth: shared && shared.after ? shared.after.localButtonQueueDepth : null,
+      targetPending: shared && shared.after ? shared.after.targetPending : null,
+      adbQueueDepth: shared && shared.after ? shared.after.adbQueueDepth : null,
+      adbPendingDx: shared && shared.after ? shared.after.adbPendingDx : null,
+      adbPendingDy: shared && shared.after ? shared.after.adbPendingDy : null,
       lastMouseDx: shared && shared.after ? shared.after.lastMouseDx : null,
       lastMouseDy: shared && shared.after ? shared.after.lastMouseDy : null,
       motionMode: shared && shared.after ? shared.after.motionMode : null,
@@ -3059,7 +3869,14 @@
       lastAdb: shared && shared.after ? shared.after.lastAdb : null,
       frontendButtons: shared && shared.after ? shared.after.frontendButtons : null,
       lastButtons: shared && shared.after ? shared.after.lastButtons : null,
-      tapKey: shared ? shared.tapKey : false,
+      buttonPressPrimeMs: shared && shared.after ? shared.after.buttonPressPrimeMs : null,
+      buttonReleaseHoldMs: shared && shared.after ? shared.after.buttonReleaseHoldMs : null,
+      buttonPressPending: shared && shared.after ? shared.after.buttonPressPending : null,
+      pendingButtonMask: shared && shared.after ? shared.after.pendingButtonMask : null,
+      heldKeyDown: shared ? shared.holdKeyDown : false,
+      heldKeyUp: shared ? shared.holdKeyUp : false,
+      repeatKeyDownSuppressed: shared ? shared.repeatKeyDownSuppressed : false,
+      tapNonModifierKeys: shared && shared.after ? shared.after.tapNonModifierKeys : null,
       keyTaps: shared && shared.after ? shared.after.keyTaps : null,
       keyTapRepeatSuppressions: shared && shared.after ? shared.after.keyTapRepeatSuppressions : null,
       repeatSuppressionOk: shared ? shared.repeatSuppressionOk : false,
@@ -3272,8 +4089,9 @@
 
   function normalizeSharedInputMotionMode(value) {
     const mode = String(value || "").trim().toLowerCase();
+    if (mode === "absolute" || mode === "abs" || mode === "lowmem") return "absolute";
     if (mode === "hybrid" || mode === "relative" || mode === "adb") return "hybrid";
-    return "absolute";
+    return "hybrid";
   }
 
   function initializeBootOptionsFromQuery() {
@@ -3481,6 +4299,7 @@
     qemuStarted = true;
     qemuSessionStartedAtMs = Date.now();
     sessionPausedByGuard = false;
+    updateVmVisualMode();
     postSessionState({ force: true, state: "starting" });
     updateHealthHeartbeat();
     const resetButton = document.getElementById("resetQemu");
@@ -3560,6 +4379,7 @@
         qemuStarted = false;
         qemuSessionStartedAtMs = 0;
         sessionPausedByGuard = false;
+        updateVmVisualMode();
         postSessionState({ force: true, state: "aborted" });
         updateHealthHeartbeat();
         qemuInstance = null;
@@ -3657,6 +4477,7 @@
         qemuStarted = false;
         qemuSessionStartedAtMs = 0;
         sessionPausedByGuard = false;
+        updateVmVisualMode();
         postSessionState({ force: true, state: "failed" });
         updateHealthHeartbeat();
         qemuInstance = null;
@@ -3682,6 +4503,7 @@
       qemuStarted = false;
       qemuSessionStartedAtMs = 0;
       sessionPausedByGuard = false;
+      updateVmVisualMode();
       postSessionState({ force: true, state: "failed" });
       updateHealthHeartbeat();
       qemuInstance = null;
@@ -4421,6 +5243,13 @@
     }
     displayPanel.requestFullscreen();
   });
+  if (toggleAlignHudButton) {
+    toggleAlignHudButton.addEventListener("click", () => {
+      alignHudEnabled = !alignHudEnabled;
+      updateAlignmentHudState();
+      log(`alignment HUD ${alignHudEnabled ? "on" : "off"}`);
+    });
+  }
 
   canvas.addEventListener("focus", updateCaptureState);
   canvas.addEventListener("blur", updateCaptureState);
@@ -4441,6 +5270,7 @@
   }, { capture: true });
 
   canvas.addEventListener("keydown", (event) => {
+    if (event.__c89SharedInputHandled) return;
     recordEvent("keydown");
     setLastKeyMetric(event.code);
     if (shouldCaptureEvent(event)) {
@@ -4459,6 +5289,7 @@
   });
 
   canvas.addEventListener("keyup", (event) => {
+    if (event.__c89SharedInputHandled) return;
     recordEvent("keyup");
     setLastKeyMetric(event.code);
     if (shouldCaptureEvent(event)) {
@@ -4601,7 +5432,17 @@
     log(document.pointerLockElement === canvas ? "pointer lock on" : "pointer lock off");
   });
 
-  document.addEventListener("fullscreenchange", updateCaptureState);
+  document.addEventListener("fullscreenchange", () => {
+    updateCaptureState();
+    syncDisplayToCanvasBacking("fullscreen change");
+    pollSharedCursor(true);
+    renderAlignmentHud();
+  });
+  window.addEventListener("resize", () => {
+    syncDisplayToCanvasBacking("window resize");
+    pollSharedCursor(true);
+    renderAlignmentHud();
+  });
   window.addEventListener("blur", () => {
     if (sharedInputBridge) sharedInputBridge.releaseAll();
   });
@@ -4618,6 +5459,8 @@
 
   initializeBootOptionsFromQuery();
   drawPlaceholder();
+  updateVmVisualMode();
+  updateAlignmentHudState();
   sampleFramebuffer();
   setStatus(
     isolationStatus,

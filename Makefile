@@ -16,7 +16,7 @@ PULSE_MS ?= 30000
 ICOUNT ?= shift=10,sleep=off
 MAX_ICOUNT_SHIFT ?= 15
 
-.PHONY: help fetch build-qemu build-qemu-responsive build-qemu-lean build-qemu-balanced build-qemu-grow build-qemu-balanced-esp-pdma-fifo512 build-qemu-balanced-esp-pdma-fifo512-adb-suppress build-qemu-balanced-esp-pdma-fifo512-exitpump build-qemu-balanced-esp-pdma-fifo512-exitpump-esp-pc-trace build-qemu-balanced-esp-pdma-fifo512-chainpump build-qemu-balanced-esp-pdma-fifo512-chainpump-esp-pc-trace build-qemu-balanced-esp-pdma-fifo512-mmio-backoff-esp-pc-trace build-qemu-balanced-esp-pdma-fifo512-icount-shift build-qemu-balanced-esp-pdma-fifo512-esp-pc-trace build-qemu-balanced-t2-pc-trace build-qemu-balanced-t2-esp-trace build-qemu-balanced-t2-esp-pc-trace build-qemu-balanced-pgtable-trace build-qemu-balanced-dyn-tb build-qemu-balanced-dyn-tb-pc-trace build-qemu-balanced-dyn-tb-exc-trace build-qemu-balanced-dyn-tb-full-trace build-qemu-balanced-dyn-tb-mmu-walk-trace build-qemu-balanced-dyn-tb-pgtable-trace build-qemu-balanced-dyn-tb-movec-flush-trace build-qemu-balanced-dyn-tb-no-fpcast build-qemu-balanced-no-via-t2-hack build-qemu-balanced-pc-trace build-qemu-balanced-via-trace build-qemu-balanced-adb-suppress build-qemu-balanced-t2-adb-suppress build-native-qemu-wasm sync-runtime package package-local package-smoke package-lazy refresh-stable-runtime serve disk-relay disk-promote browser browser-interactive browser-shared-input browser-stop browser-log browser-log-clear browser-doctor hmp hmp-help hmp-status hmp-cont hmp-stop hmp-run-for hmp-pulse-start hmp-yield-pulse-start hmp-sample-pulse-start hmp-pulse-stop hmp-step hmp-rom-probe hmp-info-block hmp-info-registers hmp-info-qtree hmp-info-via hmp-key hmp-text hmp-clear probe-rom-progress summarize-probes smoke-headless-browser smoke-shared-input watch-browser-boot watch-login-session smoke-headless-lazy-pulse smoke-headless-scsi smoke-headless-scsi-series smoke-headless-scsi-continuous smoke-headless-via-series smoke-headless-via-scsi-series smoke-headless-via-scsi-icount-series smoke-headless-via-scsi-built-icount-series smoke-headless-via-scsi-pc-trace-long smoke-headless-via-scsi-fifo512-pc-trace-long smoke-headless-via-scsi-exitpump-pc-trace-long smoke-headless-scsi-exitpump-continuous-long smoke-headless-via-scsi-chainpump-pc-trace-long smoke-headless-scsi-chainpump-continuous-long smoke-headless-scsi-mmio-backoff-continuous-long smoke-headless-scsi-esp-trace-long smoke-headless-scsi-pc-trace-long probe-native-qemu probe-native-qemu-wasm build-ui serve-ui clean
+.PHONY: help fetch build-qemu build-qemu-responsive build-qemu-lean build-qemu-balanced build-qemu-grow build-qemu-balanced-esp-pdma-fifo512 build-qemu-balanced-esp-pdma-fifo512-adb-suppress build-qemu-balanced-esp-pdma-fifo512-exitpump build-qemu-balanced-esp-pdma-fifo512-exitpump-esp-pc-trace build-qemu-balanced-esp-pdma-fifo512-chainpump build-qemu-balanced-esp-pdma-fifo512-chainpump-esp-pc-trace build-qemu-balanced-esp-pdma-fifo512-mmio-backoff-esp-pc-trace build-qemu-balanced-esp-pdma-fifo512-icount-shift build-qemu-balanced-esp-pdma-fifo512-esp-pc-trace build-qemu-balanced-t2-pc-trace build-qemu-balanced-t2-esp-trace build-qemu-balanced-t2-esp-pc-trace build-qemu-balanced-pgtable-trace build-qemu-balanced-dyn-tb build-qemu-balanced-dyn-tb-pc-trace build-qemu-balanced-dyn-tb-exc-trace build-qemu-balanced-dyn-tb-full-trace build-qemu-balanced-dyn-tb-mmu-walk-trace build-qemu-balanced-dyn-tb-pgtable-trace build-qemu-balanced-dyn-tb-movec-flush-trace build-qemu-balanced-dyn-tb-no-fpcast build-qemu-balanced-no-via-t2-hack build-qemu-balanced-pc-trace build-qemu-balanced-via-trace build-qemu-balanced-adb-suppress build-qemu-balanced-t2-adb-suppress build-native-qemu-wasm sync-runtime package package-local package-smoke package-lazy refresh-stable-runtime serve disk-relay disk-promote browser browser-preflight browser-interactive browser-classic browser-shared-input browser-stop browser-log browser-log-history browser-log-clear browser-doctor aux-classic-mode aux-classic-restore hmp hmp-help hmp-status hmp-cont hmp-stop hmp-run-for hmp-pulse-start hmp-yield-pulse-start hmp-sample-pulse-start hmp-pulse-stop hmp-step hmp-rom-probe hmp-info-block hmp-info-registers hmp-info-qtree hmp-info-via hmp-key hmp-text hmp-clear probe-rom-progress summarize-probes smoke-headless-browser smoke-shared-input watch-browser-boot watch-login-session smoke-headless-lazy-pulse smoke-headless-scsi smoke-headless-scsi-series smoke-headless-scsi-continuous smoke-headless-via-series smoke-headless-via-scsi-series smoke-headless-via-scsi-icount-series smoke-headless-via-scsi-built-icount-series smoke-headless-via-scsi-pc-trace-long smoke-headless-via-scsi-fifo512-pc-trace-long smoke-headless-via-scsi-exitpump-pc-trace-long smoke-headless-scsi-exitpump-continuous-long smoke-headless-via-scsi-chainpump-pc-trace-long smoke-headless-scsi-chainpump-continuous-long smoke-headless-scsi-mmio-backoff-continuous-long smoke-headless-scsi-esp-trace-long smoke-headless-scsi-pc-trace-long probe-native-qemu probe-native-qemu-wasm build-ui serve-ui clean
 
 help:
 	@printf '%s\n' \
@@ -63,10 +63,14 @@ help:
 		'  make serve-ui    Serve the React frontend on :8090 (open /?core=qemu for A/UX)' \
 		'  make disk-relay [BROWSER=1] Start the dialtone relay on a writable disk copy and print the admin write URL' \
 		'  make disk-promote [FORCE=1] Publish your disk edits to assets/AUX3.img (then make package-lazy)' \
-		'  make browser-interactive Launch responsive headed Chrome with pulse boot cadence, shared ADB input, 8 fps cap' \
-		'  make browser-shared-input Launch responsive headed Chrome with 68k_web-style shared input and pulse boot cadence' \
+		'  make browser-preflight Diagnose headed Chrome host pressure without launching Chrome' \
+		'  make browser-interactive Launch responsive headed Chrome with pulse boot cadence, shared ADB input, 6 fps cap' \
+		'  make browser-classic Launch browser-QEMU with networking pinned for Classic-only auxagent setup' \
+		'  make aux-classic-mode ZONE=codex-classic Suppress root X startup in the running snapshot guest' \
+		'  make browser-shared-input Launch responsive headed Chrome with 68k_web-style shared input and 6 fps cap' \
 		'  make browser-stop Stop temp-profile Chrome instances launched by browser-qemu' \
 		'  make browser-log Read mirrored browser serial/debug log from local dev server' \
+		'  make browser-log-history Read persistent browser serial/debug log history from local dev server' \
 		'  make browser-log-clear Clear mirrored browser serial/debug log on local dev server' \
 		'  make browser-doctor Show hot QEMU/Chrome/Codex processes plus mirrored browser-log tail' \
 		'  make hmp-help    Queue HMP help through public/control.local.json' \
@@ -93,6 +97,7 @@ help:
 		'  make smoke-headless-browser DURATION=5 Launch temp headless Chrome and run ROM probe' \
 		'  make smoke-shared-input Verify shared-input canvas geometry, mouse edge latching, and KeyX ADB mapping' \
 		'  make probe-click-alignment ARGS=--headless Boot to login and probe browser/client/guest mouse alignment' \
+		'  make probe-radio-click Boot to login and sweep Guest radio click timing/positions' \
 		'  make watch-browser-boot DURATION=600 INTERVAL=45 Boot lazy A/UX (128MB, pulse cadence) and record screenshots to build/boot-watch/' \
 		'  make watch-login-session LOGIN_DURATION=360 Boot, login as root, and watch headed post-login responsiveness' \
 		'  make smoke-headless-lazy-pulse DURATION=45 INTERVAL=15 PULSE_MS=30000 Smoke the visible Start lazy pulse path' \
@@ -254,11 +259,17 @@ serve-ui:
 browser:
 	./scripts/launch-aux-chrome.sh
 
+browser-preflight:
+	RES=640x480 INPUT=shared INPUT_MOTION=hybrid FPS=6 PACE=1 PTY_MIN=2 PTY_IDLE=16 AUTOSTART=lazy-pulse PULSE_MS=2000 PULSE_MODE=yield SERIAL_MS=500 SERIAL_VISIBLE_LINES=90 SERIAL_VISIBLE_CHARS=16000 PROBE_MS=12000 INSTRUMENT_MS=20000 DISK_STATS_MS=20000 FRAME_PROBE_MS=30000 CURSOR_MS=1000 BREADCRUMB_MS=15000 HEALTH_MS=5000 HEALTH_LAG_MS=1500 LOG_MIRROR_MS=5000 LIVE_CHARTS=0 CHART_MS=30000 HOST_PREFLIGHT_STRICT=1 PREFLIGHT_ONLY=1 ./scripts/launch-aux-chrome.sh
+
 browser-interactive:
-	RES=640x480 INPUT=shared FPS=8 PACE=1 PTY_MIN=2 PTY_IDLE=16 AUTOSTART=lazy-pulse PULSE_MS=2000 PULSE_MODE=yield ./scripts/launch-aux-chrome.sh
+	RES=640x480 INPUT=shared INPUT_MOTION=hybrid FPS=6 PACE=1 PTY_MIN=2 PTY_IDLE=16 AUTOSTART=lazy-pulse PULSE_MS=2000 PULSE_MODE=yield SERIAL_MS=500 SERIAL_VISIBLE_LINES=90 SERIAL_VISIBLE_CHARS=16000 PROBE_MS=12000 INSTRUMENT_MS=20000 DISK_STATS_MS=20000 FRAME_PROBE_MS=30000 CURSOR_MS=1000 BREADCRUMB_MS=15000 HEALTH_MS=5000 HEALTH_LAG_MS=1500 LOG_MIRROR_MS=5000 LIVE_CHARTS=0 CHART_MS=30000 HOST_PREFLIGHT_STRICT=1 ./scripts/launch-aux-chrome.sh
+
+browser-classic:
+	RES=640x480 INPUT=shared INPUT_MOTION=hybrid FPS=6 PACE=1 PTY_MIN=2 PTY_IDLE=16 AUTOSTART=lazy-pulse PULSE_MS=2000 PULSE_MODE=yield SERIAL_MS=500 SERIAL_VISIBLE_LINES=90 SERIAL_VISIBLE_CHARS=16000 PROBE_MS=12000 INSTRUMENT_MS=20000 DISK_STATS_MS=20000 FRAME_PROBE_MS=30000 CURSOR_MS=1000 BREADCRUMB_MS=15000 HEALTH_MS=5000 HEALTH_LAG_MS=1500 LOG_MIRROR_MS=5000 LIVE_CHARTS=0 CHART_MS=30000 HOST_PREFLIGHT_STRICT=1 NET=1 NET_ZONE=$${ZONE:-codex-classic} ./scripts/launch-aux-chrome.sh
 
 browser-shared-input:
-	RES=640x480 INPUT=shared FPS=8 PACE=1 PTY_MIN=2 PTY_IDLE=16 AUTOSTART=lazy-pulse PULSE_MS=2000 PULSE_MODE=yield ./scripts/launch-aux-chrome.sh
+	RES=640x480 INPUT=shared INPUT_MOTION=hybrid FPS=6 PACE=1 PTY_MIN=2 PTY_IDLE=16 AUTOSTART=lazy-pulse PULSE_MS=2000 PULSE_MODE=yield SERIAL_MS=500 SERIAL_VISIBLE_LINES=90 SERIAL_VISIBLE_CHARS=16000 PROBE_MS=12000 INSTRUMENT_MS=20000 DISK_STATS_MS=20000 FRAME_PROBE_MS=30000 CURSOR_MS=1000 BREADCRUMB_MS=15000 HEALTH_MS=5000 HEALTH_LAG_MS=1500 LOG_MIRROR_MS=5000 LIVE_CHARTS=0 CHART_MS=30000 HOST_PREFLIGHT_STRICT=1 ./scripts/launch-aux-chrome.sh
 
 browser-stop:
 	@pids="$$(pgrep -f 'c89-aux-chrome' || true)"; \
@@ -277,13 +288,22 @@ disk-promote:
 	./scripts/disk-promote.sh
 
 browser-log:
-	@curl -sS 'http://127.0.0.1:8088/__browser-log.json' | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const p=JSON.parse(s); for (const line of p.lines || []) console.log(line);})'
+	@curl -sS 'http://127.0.0.1:8088/__browser-log.json?tail=$(or $(TAIL),400)' | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const p=JSON.parse(s); for (const line of p.lines || []) console.log(line);})'
+
+browser-log-history:
+	@curl -sS 'http://127.0.0.1:8088/__browser-log-history.json?tail=$(or $(TAIL),800)' | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const p=JSON.parse(s); console.error(`history: $${p.path || "n/a"} ($${p.count || 0} lines$${p.truncated ? ", truncated" : ""})`); for (const line of p.lines || []) console.log(line);})'
 
 browser-log-clear:
 	@curl -sS 'http://127.0.0.1:8088/__browser-log.json?reset=1' | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const p=JSON.parse(s); console.log(`cleared browser log; $${p.count || 0} lines now stored`);})'
 
 browser-doctor:
-	@node ./scripts/browser-doctor.mjs
+	@node ./scripts/browser-doctor.mjs $(ARGS)
+
+aux-classic-mode:
+	./scripts/aux-classic-mode.sh "$${ZONE:-codex-classic}" apply
+
+aux-classic-restore:
+	./scripts/aux-classic-mode.sh "$${ZONE:-codex-classic}" restore
 
 hmp:
 	@if [[ -z "$${CMD:-}" ]]; then echo 'Usage: make hmp CMD="info registers"' >&2; exit 2; fi
@@ -390,8 +410,11 @@ smoke-shared-input:
 probe-click-alignment:
 	@node ./scripts/probe-click-alignment.mjs $${ARGS:-}
 
+probe-radio-click:
+	@node ./scripts/probe-click-alignment.mjs --headless --radio-sweep --ready-timeout 420 $${ARGS:-}
+
 watch-browser-boot:
-	@node ./scripts/watch-browser-boot.mjs --duration "$(DURATION)" --interval "$(INTERVAL)" --url "http://127.0.0.1:8088/?build=aux-login-watch&ram=128&heap=384&pace=1&input=shared&cursor=host&fps=8&res=640x480&autostart=lazy-pulse&pulseMode=yield&pulseMs=2000&ptyMin=2&ptyIdle=16"
+	@node ./scripts/watch-browser-boot.mjs --duration "$(DURATION)" --interval "$(INTERVAL)" --url "http://127.0.0.1:8088/?build=aux-login-watch&ram=128&heap=384&pace=1&input=shared&inputMotion=hybrid&cursor=host&fps=8&res=640x480&autostart=lazy-pulse&pulseMode=yield&pulseMs=2000&ptyMin=2&ptyIdle=16"
 
 watch-login-session:
 	@node ./scripts/watch-login-session.mjs --ready-timeout "$(READY_TIMEOUT)" --watch-secs "$(LOGIN_DURATION)" --snapshot-interval "$(SNAPSHOT_INTERVAL)"

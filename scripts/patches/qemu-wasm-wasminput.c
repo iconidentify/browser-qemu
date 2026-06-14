@@ -23,11 +23,15 @@
 #endif
 
 #define WI_MAGIC       0xC8917001u
-#define WI_VERSION     4
-#define WI_NCTRL       48
+#define WI_VERSION     6
+#define WI_NCTRL       70
 #define WI_KEY_SLOTS   128
 #define WI_KEY_STRIDE  4
 #define WI_CURSOR_BYTES 64
+#define WI_BUTTON_QUEUE_SLOTS 8
+#ifndef C89_WI_KEY_EVENTS_PER_POLL
+#define C89_WI_KEY_EVENTS_PER_POLL 1
+#endif
 #define WI_MAC_THECRSR  0x844
 #define WI_MAC_CRSR_VIS 0x8cc
 #define WI_MAC_CRSR_NEW 0x8ce
@@ -93,6 +97,28 @@ enum {
     WI_C_LAST_ABS_EVENT_Y,
     WI_C_LAST_ABS_EVENT_W,
     WI_C_LAST_ABS_EVENT_H,
+    WI_C_ADB_POS_X,
+    WI_C_ADB_POS_Y,
+    WI_C_ADB_PENDING_DX,
+    WI_C_ADB_PENDING_DY,
+    WI_C_ADB_STATE_BUTTONS,
+    WI_C_ADB_LAST_BUTTONS,
+    WI_C_ADB_DESIRED_BUTTONS,
+    WI_C_ADB_QUEUE_DEPTH,
+    WI_C_ADB_LAST_POLL_BEFORE_X,
+    WI_C_ADB_LAST_POLL_BEFORE_Y,
+    WI_C_ADB_LAST_POLL_AFTER_X,
+    WI_C_ADB_LAST_POLL_AFTER_Y,
+    WI_C_ADB_LAST_POLL_DX,
+    WI_C_ADB_LAST_POLL_DY,
+    WI_C_ADB_LAST_POLL_BUTTONS,
+    WI_C_ADB_POLL_COUNT,
+    WI_C_ADB_EMPTY_POLL_COUNT,
+    WI_C_LOCAL_BUTTON_QUEUE_DEPTH,
+    WI_C_TARGET_PENDING,
+    WI_C_CURSOR_SUPPRESS,
+    WI_C_CURSOR_SUPPRESS_ACTIVE,
+    WI_C_CURSOR_SUPPRESS_TRANSITIONS,
 };
 
 typedef struct WasmInputShared {
@@ -117,6 +143,14 @@ static int32_t g_wi_abs_x;
 static int32_t g_wi_abs_y;
 static int32_t g_wi_last_sync_x;
 static int32_t g_wi_last_sync_y;
+static bool g_wi_hybrid_motion_active;
+static bool g_wi_adb_pos_valid;
+static int32_t g_wi_adb_x;
+static int32_t g_wi_adb_y;
+static int g_wi_seen_adb_buttons;
+static int g_wi_button_queue[WI_BUTTON_QUEUE_SLOTS];
+static uint32_t g_wi_button_queue_read;
+static uint32_t g_wi_button_queue_write;
 
 EMSCRIPTEN_KEEPALIVE uint32_t c89_input_shared_ptr(void)
 {
@@ -213,6 +247,131 @@ static int32_t wi_clamp_adb_delta(int32_t value)
         return C89_WI_MAX_ADB_DELTA;
     }
     return value;
+}
+
+static bool wi_button_queue_empty(void)
+{
+    return g_wi_button_queue_read == g_wi_button_queue_write;
+}
+
+static void wi_queue_button_transition(int buttons)
+{
+    uint32_t next = (g_wi_button_queue_write + 1) % WI_BUTTON_QUEUE_SLOTS;
+
+    if (next == g_wi_button_queue_read) {
+        g_wi_button_queue_read =
+            (g_wi_button_queue_read + 1) % WI_BUTTON_QUEUE_SLOTS;
+    }
+
+    g_wi_button_queue[g_wi_button_queue_write] = buttons;
+    g_wi_button_queue_write = next;
+}
+
+static bool wi_dequeue_button_transition(int *buttons)
+{
+    if (wi_button_queue_empty()) {
+        return false;
+    }
+
+    *buttons = g_wi_button_queue[g_wi_button_queue_read];
+    g_wi_button_queue_read =
+        (g_wi_button_queue_read + 1) % WI_BUTTON_QUEUE_SLOTS;
+    return true;
+}
+
+static uint32_t wi_button_queue_depth(void)
+{
+    if (g_wi_button_queue_write >= g_wi_button_queue_read) {
+        return g_wi_button_queue_write - g_wi_button_queue_read;
+    }
+    return WI_BUTTON_QUEUE_SLOTS - g_wi_button_queue_read +
+           g_wi_button_queue_write;
+}
+
+static bool wi_read_mac_mouse_point(int32_t *x, int32_t *y)
+{
+    int32_t mouse_x = wi_read_mac_point_coord(0x832);
+    int32_t mouse_y = wi_read_mac_point_coord(0x830);
+
+    if (mouse_x == INT32_MIN || mouse_y == INT32_MIN) {
+        return false;
+    }
+
+    *x = mouse_x;
+    *y = mouse_y;
+    return true;
+}
+
+static void wi_refresh_adb_debug(int32_t *ctrl)
+{
+    C89ADBMouseDebug debug;
+
+    memset(&debug, 0, sizeof(debug));
+    if (c89_adb_mouse_get_debug(&debug)) {
+        ctrl[WI_C_ADB_POS_X] = debug.abs_x;
+        ctrl[WI_C_ADB_POS_Y] = debug.abs_y;
+        ctrl[WI_C_ADB_PENDING_DX] = debug.pending_dx;
+        ctrl[WI_C_ADB_PENDING_DY] = debug.pending_dy;
+        ctrl[WI_C_ADB_STATE_BUTTONS] = debug.buttons_state;
+        ctrl[WI_C_ADB_LAST_BUTTONS] = debug.last_buttons_state;
+        ctrl[WI_C_ADB_DESIRED_BUTTONS] = debug.desired_buttons;
+        ctrl[WI_C_ADB_QUEUE_DEPTH] = debug.queue_depth;
+        ctrl[WI_C_ADB_LAST_POLL_BEFORE_X] = debug.last_poll_before_x;
+        ctrl[WI_C_ADB_LAST_POLL_BEFORE_Y] = debug.last_poll_before_y;
+        ctrl[WI_C_ADB_LAST_POLL_AFTER_X] = debug.last_poll_after_x;
+        ctrl[WI_C_ADB_LAST_POLL_AFTER_Y] = debug.last_poll_after_y;
+        ctrl[WI_C_ADB_LAST_POLL_DX] = debug.last_poll_dx;
+        ctrl[WI_C_ADB_LAST_POLL_DY] = debug.last_poll_dy;
+        ctrl[WI_C_ADB_LAST_POLL_BUTTONS] = debug.last_poll_buttons;
+        ctrl[WI_C_ADB_POLL_COUNT] = (int32_t)debug.poll_count;
+        ctrl[WI_C_ADB_EMPTY_POLL_COUNT] = (int32_t)debug.empty_poll_count;
+    }
+
+    ctrl[WI_C_LOCAL_BUTTON_QUEUE_DEPTH] = (int32_t)wi_button_queue_depth();
+}
+
+static void wi_seed_adb_position_from_mac_mouse(void)
+{
+    int32_t mouse_x;
+    int32_t mouse_y;
+
+    if (g_wi_adb_pos_valid) {
+        return;
+    }
+
+    if (wi_read_mac_mouse_point(&mouse_x, &mouse_y)) {
+        g_wi_adb_x = mouse_x;
+        g_wi_adb_y = mouse_y;
+        g_wi_adb_pos_valid = true;
+        c89_adb_mouse_set_position(mouse_x, mouse_y);
+    }
+}
+
+static bool wi_refresh_adb_position(int32_t *pending_dx, int32_t *pending_dy)
+{
+    int x = 0;
+    int y = 0;
+    int pdx = 0;
+    int pdy = 0;
+
+    if (!g_wi_adb_pos_valid) {
+        wi_seed_adb_position_from_mac_mouse();
+    }
+
+    if (!c89_adb_mouse_get_position(&x, &y, &pdx, &pdy)) {
+        return false;
+    }
+
+    g_wi_adb_x = x;
+    g_wi_adb_y = y;
+    g_wi_adb_pos_valid = true;
+    if (pending_dx) {
+        *pending_dx = pdx;
+    }
+    if (pending_dy) {
+        *pending_dy = pdy;
+    }
+    return true;
 }
 
 static bool wi_guest_code_addr_is_plausible(uint32_t addr)
@@ -363,8 +522,19 @@ static void wi_poll_mouse(int32_t *ctrl)
     int32_t abs_h = wi_load_acq(&ctrl[WI_C_ABS_HEIGHT]);
     uint32_t buttons = (uint32_t)wi_load_acq(&ctrl[WI_C_BUTTONS]);
     int adb_buttons = 0;
+    int effective_adb_buttons;
+    int32_t target_dx = 0;
+    int32_t target_dy = 0;
+    int32_t pending_dx = 0;
+    int32_t pending_dy = 0;
+    bool target_pending = false;
+    bool relative_motion_requested = dx != 0 || dy != 0;
+    bool emit_adb_event;
 
     ctrl[WI_C_LAST_ABS_FLAGS] = abs_flags;
+    if (relative_motion_requested) {
+        g_wi_hybrid_motion_active = true;
+    }
 
     if (buttons & 0x01) {
         adb_buttons |= MOUSE_EVENT_LBUTTON;
@@ -377,6 +547,7 @@ static void wi_poll_mouse(int32_t *ctrl)
     }
 
     if (abs_flags) {
+        wi_seed_adb_position_from_mac_mouse();
         if (abs_w > 0 && abs_x >= abs_w) {
             abs_x = abs_w - 1;
         }
@@ -401,24 +572,58 @@ static void wi_poll_mouse(int32_t *ctrl)
 
     if (g_wi_abs_valid) {
         /*
-         * A/UX is split-brained here. The Classic Mac side needs the same
-         * low-memory absolute anchors as 68k_web (MTemp, RawMouse, Mouse), but
-         * the A/UX login/kernel path also consumes real ADB relative motion.
-         * Feed only the browser's bounded per-event delta through ADB, then
-         * reassert the absolute low-memory Points so Toolbox click coordinates
-         * do not fall back to a corner.
+         * Browser coordinates are the source of truth, so the Classic Mac
+         * low-memory Points are updated immediately. When the JS side has asked
+         * for hybrid motion, keep QEMU's ADB-relative cursor walking toward the
+         * same absolute target until the guest has actually polled the packets;
+         * do not clear pending deltas just because there was no new pointermove
+         * in this timer tick. That keeps the visible A/UX cursor and click
+         * target synchronized with the low-memory anchor.
          */
         wi_sync_mac_mouse_lowmem(g_wi_abs_x, g_wi_abs_y);
-        dx = wi_clamp_adb_delta(dx);
-        dy = wi_clamp_adb_delta(dy);
+        if (g_wi_hybrid_motion_active &&
+            wi_refresh_adb_position(&pending_dx, &pending_dy)) {
+            target_dx = wi_clamp_adb_delta(g_wi_abs_x - g_wi_adb_x);
+            target_dy = wi_clamp_adb_delta(g_wi_abs_y - g_wi_adb_y);
+            target_pending = (g_wi_adb_x != g_wi_abs_x) ||
+                             (g_wi_adb_y != g_wi_abs_y) ||
+                             pending_dx != 0 || pending_dy != 0;
+            dx = target_dx;
+            dy = target_dy;
+        } else {
+            dx = wi_clamp_adb_delta(dx);
+            dy = wi_clamp_adb_delta(dy);
+            c89_adb_mouse_set_position(g_wi_abs_x, g_wi_abs_y);
+            g_wi_adb_x = g_wi_abs_x;
+            g_wi_adb_y = g_wi_abs_y;
+            g_wi_adb_pos_valid = true;
+        }
     }
 
-    if (dx || dy || buttons != g_wi_last_buttons || abs_flags) {
+    if (adb_buttons != g_wi_seen_adb_buttons) {
+        wi_queue_button_transition(adb_buttons);
+        g_wi_seen_adb_buttons = adb_buttons;
+    }
+
+    effective_adb_buttons = (int)g_wi_last_buttons;
+    if (!g_wi_abs_valid || !target_pending) {
+        int queued_buttons;
+
+        if (wi_dequeue_button_transition(&queued_buttons)) {
+            effective_adb_buttons = queued_buttons;
+        }
+    }
+
+    emit_adb_event = dx || dy ||
+                     effective_adb_buttons != (int)g_wi_last_buttons ||
+                     (abs_flags && (!g_wi_hybrid_motion_active || !target_pending));
+
+    if (emit_adb_event) {
         if (g_wi_abs_valid) {
-            c89_adb_mouse_event(dx, dy, adb_buttons);
+            c89_adb_mouse_set_event(dx, dy, effective_adb_buttons);
             wi_sync_mac_mouse_lowmem(g_wi_abs_x, g_wi_abs_y);
         } else {
-            c89_adb_mouse_event(dx, dy, adb_buttons);
+            c89_adb_mouse_event(dx, dy, effective_adb_buttons);
         }
         if (dx || dy) {
             ctrl[WI_C_LAST_MOUSE_DX] = dx;
@@ -427,12 +632,15 @@ static void wi_poll_mouse(int32_t *ctrl)
         if (dx || dy || abs_flags) {
             ctrl[WI_C_MOUSE_EVENTS]++;
         }
-        if (buttons != g_wi_last_buttons) {
+        if (effective_adb_buttons != (int)g_wi_last_buttons) {
             ctrl[WI_C_BUTTON_EVENTS]++;
         }
-        g_wi_last_buttons = buttons;
+        g_wi_last_buttons = (uint32_t)effective_adb_buttons;
     }
-    ctrl[WI_C_LAST_ADB_BUTTONS] = adb_buttons;
+    wi_refresh_adb_position(NULL, NULL);
+    ctrl[WI_C_LAST_ADB_BUTTONS] = effective_adb_buttons;
+    ctrl[WI_C_TARGET_PENDING] = target_pending ? 1 : 0;
+    wi_refresh_adb_debug(ctrl);
     wi_refresh_mac_mouse_diag(ctrl);
     ctrl[WI_C_LAST_BUTTONS] = (int32_t)g_wi_last_buttons;
 }
@@ -443,7 +651,7 @@ static void wi_poll_keys(int32_t *ctrl)
     int32_t write = wi_load_acq(&ctrl[WI_C_KEY_WRITE]);
     int guard = 0;
 
-    while (read != write && guard++ < WI_KEY_SLOTS) {
+    while (read != write && guard++ < C89_WI_KEY_EVENTS_PER_POLL) {
         int32_t *slot = g_wi_shared.keys[(uint32_t)read % WI_KEY_SLOTS];
         int32_t qcode = wi_load_acq(&slot[0]);
         int32_t down = wi_load_acq(&slot[1]);
@@ -494,6 +702,7 @@ static void wi_poll_cursor(int32_t *ctrl)
     MemTxResult res;
     int hot_y;
     int hot_x;
+    bool suppress_requested = wi_load_acq(&ctrl[WI_C_CURSOR_SUPPRESS]) != 0;
     bool valid;
     bool changed;
 
@@ -521,10 +730,15 @@ static void wi_poll_cursor(int32_t *ctrl)
         hot_y = wi_clamp_cursor_hotspot(hot_y);
         hot_x = wi_clamp_cursor_hotspot(hot_x);
         valid = wi_cursor_has_content(cursor);
-        if (valid || g_wi_cursor_hardware_active) {
+        if (suppress_requested && (valid || g_wi_cursor_hardware_active)) {
+            bool was_active = g_wi_cursor_hardware_active;
             wi_suppress_mac_software_cursor();
+            if (!was_active && g_wi_cursor_hardware_active) {
+                ctrl[WI_C_CURSOR_SUPPRESS_TRANSITIONS]++;
+            }
         }
     }
+    ctrl[WI_C_CURSOR_SUPPRESS_ACTIVE] = g_wi_cursor_hardware_active ? 1 : 0;
 
     changed = valid != g_wi_last_cursor_valid ||
               hot_x != g_wi_last_cursor_hot_x ||
@@ -577,6 +791,14 @@ static void wi_reset_shared(void)
     g_wi_abs_y = 0;
     g_wi_last_sync_x = 0;
     g_wi_last_sync_y = 0;
+    g_wi_hybrid_motion_active = false;
+    g_wi_adb_pos_valid = false;
+    g_wi_adb_x = 0;
+    g_wi_adb_y = 0;
+    g_wi_seen_adb_buttons = 0;
+    memset(g_wi_button_queue, 0, sizeof(g_wi_button_queue));
+    g_wi_button_queue_read = 0;
+    g_wi_button_queue_write = 0;
     ctrl[WI_C_KEY_SLOTS] = WI_KEY_SLOTS;
     ctrl[WI_C_KEY_STRIDE] = WI_KEY_STRIDE;
     ctrl[WI_C_POLL_MS] = C89_WI_POLL_MS;

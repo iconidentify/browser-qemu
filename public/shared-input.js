@@ -9,8 +9,8 @@
   "use strict";
 
   var WI_MAGIC = 0xc8917001;
-  var WI_VERSION = 4;
-  var WI_NCTRL = 48;
+  var WI_VERSION = 6;
+  var WI_NCTRL = 70;
   var C_MAGIC = 0, C_READY = 1, C_VERSION = 2, C_REL_DX = 3, C_REL_DY = 4,
       C_ABS_X = 5, C_ABS_Y = 6, C_ABS_FLAGS = 7, C_BUTTONS = 8,
       C_KEY_WRITE = 9, C_KEY_READ = 10, C_KEY_DROP = 11,
@@ -28,16 +28,28 @@
       C_LAST_SYNC_X = 40, C_LAST_SYNC_Y = 41,
       C_LAST_ABS_FLAGS = 42, C_LAST_ADB_BUTTONS = 43,
       C_LAST_ABS_EVENT_X = 44, C_LAST_ABS_EVENT_Y = 45,
-      C_LAST_ABS_EVENT_W = 46, C_LAST_ABS_EVENT_H = 47;
+      C_LAST_ABS_EVENT_W = 46, C_LAST_ABS_EVENT_H = 47,
+      C_ADB_POS_X = 48, C_ADB_POS_Y = 49,
+      C_ADB_PENDING_DX = 50, C_ADB_PENDING_DY = 51,
+      C_ADB_STATE_BUTTONS = 52, C_ADB_LAST_BUTTONS = 53,
+      C_ADB_DESIRED_BUTTONS = 54, C_ADB_QUEUE_DEPTH = 55,
+      C_ADB_LAST_POLL_BEFORE_X = 56, C_ADB_LAST_POLL_BEFORE_Y = 57,
+      C_ADB_LAST_POLL_AFTER_X = 58, C_ADB_LAST_POLL_AFTER_Y = 59,
+      C_ADB_LAST_POLL_DX = 60, C_ADB_LAST_POLL_DY = 61,
+      C_ADB_LAST_POLL_BUTTONS = 62, C_ADB_POLL_COUNT = 63,
+      C_ADB_EMPTY_POLL_COUNT = 64, C_LOCAL_BUTTON_QUEUE_DEPTH = 65,
+      C_TARGET_PENDING = 66, C_CURSOR_SUPPRESS = 67,
+      C_CURSOR_SUPPRESS_ACTIVE = 68, C_CURSOR_SUPPRESS_TRANSITIONS = 69;
 
   var MOD_SHIFT = 0x0200;
   var MOD_CAPS = 0x0002;
   var MOD_CTRL = 0x1000;
   var MOD_ALT = 0x0800;
   var MOD_CMD = 0x0100;
-  var BUTTON_RELEASE_HOLD_MS = 60;
+  var BUTTON_RELEASE_HOLD_MS = 100;
+  var BUTTON_PRESS_PRIME_MS = 12;
   var KEY_AUTO_RELEASE_MS = 350;
-  var KEY_TAP_NON_MODIFIERS = true;
+  var KEY_TAP_NON_MODIFIERS = false;
   var KEY_TAP_REPEAT_SUPPRESS_MS = 80;
 
   var qkeyNames = [
@@ -140,6 +152,11 @@
 
   function clampInt(value, min, max) {
     value = Math.trunc(Number(value) || 0);
+    return Math.max(min, Math.min(max, value));
+  }
+
+  function clampRoundedInt(value, min, max) {
+    value = Math.round(Number(value) || 0);
     return Math.max(min, Math.min(max, value));
   }
 
@@ -256,8 +273,8 @@
       };
     }
     return {
-      x: clampInt((event.clientX - scale.rect.left) * scale.x, 0, scale.guest.width - 1),
-      y: clampInt((event.clientY - scale.rect.top) * scale.y, 0, scale.guest.height - 1),
+      x: clampRoundedInt((event.clientX - scale.rect.left) * scale.x, 0, scale.guest.width - 1),
+      y: clampRoundedInt((event.clientY - scale.rect.top) * scale.y, 0, scale.guest.height - 1),
     };
   }
 
@@ -276,6 +293,8 @@
     var cursorSeq = 0;
     var lastPoint = null;
     var lastButtonMask = 0;
+    var pendingButtonMask = null;
+    var buttonPressTimer = 0;
     var buttonReleaseTimer = 0;
     var keyReleaseTimers = new Map();
     var lastTapTimes = new Map();
@@ -442,12 +461,37 @@
       stats.buttons++;
     }
 
+    function clearButtonPressTimer() {
+      if (buttonPressTimer) {
+        root.clearTimeout(buttonPressTimer);
+        buttonPressTimer = 0;
+      }
+    }
+
+    function flushPendingButtonPress() {
+      if (pendingButtonMask === null) return false;
+      var mask = pendingButtonMask;
+      pendingButtonMask = null;
+      clearButtonPressTimer();
+      writeButtonMask(mask);
+      return true;
+    }
+
     function queueButtonMask(mask) {
-      if (mask === lastButtonMask) return;
+      if (mask === lastButtonMask && pendingButtonMask === null) return;
       if (mask) {
         clearButtonReleaseTimer();
-        writeButtonMask(mask);
+        pendingButtonMask = mask;
+        if (!buttonPressTimer) {
+          buttonPressTimer = root.setTimeout(function () {
+            buttonPressTimer = 0;
+            flushPendingButtonPress();
+          }, BUTTON_PRESS_PRIME_MS);
+        }
         return;
+      }
+      if (pendingButtonMask !== null) {
+        flushPendingButtonPress();
       }
       if (lastButtonMask && !buttonReleaseTimer) {
         buttonReleaseTimer = root.setTimeout(function () {
@@ -473,6 +517,8 @@
       stop: function () {
         ready = false;
         lastPoint = null;
+        pendingButtonMask = null;
+        clearButtonPressTimer();
         clearButtonReleaseTimer();
         clearAllKeyReleaseTimers();
         lastButtonMask = 0;
@@ -601,9 +647,17 @@
       },
       releaseMouse: function () {
         if (!ready) return;
+        pendingButtonMask = null;
+        clearButtonPressTimer();
         clearButtonReleaseTimer();
         writeButtonMask(0);
         lastPoint = null;
+      },
+      setCursorSuppression: function (enabled) {
+        if (!ready) return false;
+        refreshViews();
+        Atomics.store(ctrl, ctrlBase + C_CURSOR_SUPPRESS, enabled ? 1 : 0);
+        return true;
       },
       readCursor: function () {
         var seq, offset, bytes, cursorBase;
@@ -683,7 +737,32 @@
           macCrsrCouple: ready ? Atomics.load(ctrl, ctrlBase + C_MAC_CRSR_COUPLE) : 0,
           macMouseDeltaX: ready ? absX - macMouseX : 0,
           macMouseDeltaY: ready ? absY - macMouseY : 0,
+          adbPositionX: ready ? Atomics.load(ctrl, ctrlBase + C_ADB_POS_X) : 0,
+          adbPositionY: ready ? Atomics.load(ctrl, ctrlBase + C_ADB_POS_Y) : 0,
+          adbPendingDx: ready ? Atomics.load(ctrl, ctrlBase + C_ADB_PENDING_DX) : 0,
+          adbPendingDy: ready ? Atomics.load(ctrl, ctrlBase + C_ADB_PENDING_DY) : 0,
+          adbStateButtons: ready ? Atomics.load(ctrl, ctrlBase + C_ADB_STATE_BUTTONS) : 0,
+          adbLastButtonsState: ready ? Atomics.load(ctrl, ctrlBase + C_ADB_LAST_BUTTONS) : 0,
+          adbDesiredButtons: ready ? Atomics.load(ctrl, ctrlBase + C_ADB_DESIRED_BUTTONS) : 0,
+          adbQueueDepth: ready ? Atomics.load(ctrl, ctrlBase + C_ADB_QUEUE_DEPTH) : 0,
+          adbLastPollBeforeX: ready ? Atomics.load(ctrl, ctrlBase + C_ADB_LAST_POLL_BEFORE_X) : 0,
+          adbLastPollBeforeY: ready ? Atomics.load(ctrl, ctrlBase + C_ADB_LAST_POLL_BEFORE_Y) : 0,
+          adbLastPollAfterX: ready ? Atomics.load(ctrl, ctrlBase + C_ADB_LAST_POLL_AFTER_X) : 0,
+          adbLastPollAfterY: ready ? Atomics.load(ctrl, ctrlBase + C_ADB_LAST_POLL_AFTER_Y) : 0,
+          adbLastPollDx: ready ? Atomics.load(ctrl, ctrlBase + C_ADB_LAST_POLL_DX) : 0,
+          adbLastPollDy: ready ? Atomics.load(ctrl, ctrlBase + C_ADB_LAST_POLL_DY) : 0,
+          adbLastPollButtons: ready ? Atomics.load(ctrl, ctrlBase + C_ADB_LAST_POLL_BUTTONS) : 0,
+          adbPollCount: ready ? Atomics.load(ctrl, ctrlBase + C_ADB_POLL_COUNT) : 0,
+          adbEmptyPollCount: ready ? Atomics.load(ctrl, ctrlBase + C_ADB_EMPTY_POLL_COUNT) : 0,
+          localButtonQueueDepth: ready ? Atomics.load(ctrl, ctrlBase + C_LOCAL_BUTTON_QUEUE_DEPTH) : 0,
+          targetPending: ready ? Boolean(Atomics.load(ctrl, ctrlBase + C_TARGET_PENDING)) : false,
+          cursorSuppressionRequested: ready ? Boolean(Atomics.load(ctrl, ctrlBase + C_CURSOR_SUPPRESS)) : false,
+          cursorSuppressionActive: ready ? Boolean(Atomics.load(ctrl, ctrlBase + C_CURSOR_SUPPRESS_ACTIVE)) : false,
+          cursorSuppressionTransitions: ready ? Atomics.load(ctrl, ctrlBase + C_CURSOR_SUPPRESS_TRANSITIONS) : 0,
+          buttonPressPrimeMs: BUTTON_PRESS_PRIME_MS,
           buttonReleaseHoldMs: BUTTON_RELEASE_HOLD_MS,
+          pendingButtonMask: pendingButtonMask === null ? 0 : pendingButtonMask,
+          buttonPressPending: Boolean(buttonPressTimer),
         };
       },
     };

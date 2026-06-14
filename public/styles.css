@@ -317,6 +317,25 @@ code {
   background-size: 18px 18px;
 }
 
+#alignmentOverlay {
+  position: absolute;
+  z-index: 4;
+  display: none;
+  width: var(--guest-width, 640px);
+  height: var(--guest-height, 480px);
+  pointer-events: none;
+  image-rendering: crisp-edges;
+  image-rendering: pixelated;
+}
+
+body.align-hud #alignmentOverlay {
+  display: block;
+}
+
+body.align-hud #canvas {
+  --canvas-ring: var(--amber);
+}
+
 .display-instruments {
   min-width: calc(var(--guest-width, 640px) + 16px);
   padding: 6px 8px 7px;
@@ -777,6 +796,93 @@ dd {
   margin-bottom: 8px;
   color: var(--muted);
   font-size: 11px;
+}
+
+body.vm-active {
+  background-attachment: scroll, scroll, scroll, scroll;
+}
+
+body.vm-active::before {
+  opacity: 0.28;
+  background-size: 88px 88px, 88px 88px, 100% 360px;
+}
+
+body.vm-active .topbar,
+body.vm-active .telemetry-card,
+body.vm-active .module {
+  backdrop-filter: none;
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.24);
+  contain: layout paint;
+}
+
+body.vm-active .brand-sticker {
+  box-shadow: 0 0 0 1px rgba(102, 245, 218, 0.22);
+}
+
+body.vm-active .telemetry-card::after {
+  opacity: 0.5;
+}
+
+body.vm-active .telemetry-card canvas {
+  height: 24px;
+}
+
+body.vm-active .control-panel {
+  gap: 8px;
+}
+
+body.vm-active .module-head {
+  padding-top: 5px;
+  padding-bottom: 5px;
+}
+
+body.vm-active #serialLog {
+  min-height: 104px;
+  max-height: 126px;
+}
+
+body.vm-active .module-agent .button-row,
+body.vm-active .boot-strip {
+  margin-bottom: 6px;
+}
+
+body.vm-active .agent-out {
+  min-height: 64px;
+  max-height: 86px;
+}
+
+body.vm-active .module-probe {
+  display: none;
+}
+
+body.vm-active #canvas {
+  box-shadow:
+    0 0 0 1px var(--canvas-ring),
+    0 0 0 3px rgba(8, 9, 13, 0.96);
+}
+
+body.vm-active .led-tile,
+body.vm-active #serialLog,
+body.vm-active .probe-log,
+body.vm-active .agent-out {
+  background: rgba(5, 7, 11, 0.86);
+}
+
+body.vm-active .led-tile::before,
+body.vm-active .led-tile[data-led="ok"]::before,
+body.vm-active .led-tile[data-led="warn"]::before,
+body.vm-active .led-tile[data-led="hot"]::before,
+body.vm-active .led-tile[data-led="error"]::before {
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+body.vm-pressure .telemetry-card:not(.telemetry-card-wide) canvas {
+  height: 18px;
+}
+
+body.vm-critical .probe-log,
+body.vm-critical .agent-out {
+  max-height: 110px;
 }
 
 @media (max-width: 1260px) {

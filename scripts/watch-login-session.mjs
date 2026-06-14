@@ -20,6 +20,9 @@ const opts = {
   watchSecs: 360,
   snapshotIntervalSec: 30,
   stock: true,
+  loginMode: "root",
+  username: "root",
+  password: "31337leet",
 };
 
 const argv = process.argv.slice(2);
@@ -33,10 +36,19 @@ for (let i = 0; i < argv.length; i += 1) {
   else if (arg === "--watch-secs") opts.watchSecs = Number.parseInt(argv[++i] || "", 10);
   else if (arg === "--snapshot-interval") opts.snapshotIntervalSec = Number.parseInt(argv[++i] || "", 10);
   else if (arg === "--headless") opts.stock = false;
+  else if (arg === "--guest") opts.loginMode = "guest";
+  else if (arg === "--login-mode") opts.loginMode = String(argv[++i] || "root").toLowerCase();
+  else if (arg === "--user") opts.username = argv[++i] || opts.username;
+  else if (arg === "--password") opts.password = argv[++i] || opts.password;
   else {
     console.error(`unknown argument: ${arg}`);
     process.exit(2);
   }
+}
+
+if (!["root", "registered", "guest"].includes(opts.loginMode)) {
+  console.error("--login-mode must be root, registered, or guest");
+  process.exit(2);
 }
 
 if (!opts.url) {
@@ -470,6 +482,7 @@ async function waitForSettledLogin(cdp) {
         checksum: framebuffer.checksum,
         nonBlack: framebuffer.nonBlack,
         loginDialog: dialog.present ? `${dialog.dialog.x0},${dialog.dialog.y0} ${dialog.dialog.width}x${dialog.dialog.height}` : "not-present",
+        auxLoginDialog: isAuxLoginDialog(dialog),
         heartbeat: probe.heartbeat,
       });
       const elapsedSec = Math.round((now - started) / 1000);
@@ -477,7 +490,7 @@ async function waitForSettledLogin(cdp) {
         await screenshot(cdp, `login-wait-${String(elapsedSec).padStart(4, "0")}s.png`);
         nextSnapshotAt = elapsedSec + opts.snapshotIntervalSec;
       }
-      if (dialog.present &&
+      if (isAuxLoginDialog(dialog) &&
           (stableSamples >= 4 || repeatedSamples >= 4) &&
           now - started >= opts.minLoginSec * 1000) {
         probe.loginDialog = dialog;
@@ -487,6 +500,36 @@ async function waitForSettledLogin(cdp) {
     await delay(3000);
   }
   throw new Error("login framebuffer did not settle before timeout");
+}
+
+function isAuxLoginDialog(dialogState) {
+  const dialog = dialogState && dialogState.dialog;
+  if (!dialog) return false;
+  return (
+    dialog.width >= 300 &&
+    dialog.width <= 380 &&
+    dialog.height >= 130 &&
+    dialog.height <= 180 &&
+    dialog.x0 >= 120 &&
+    dialog.x1 <= 520 &&
+    dialog.y0 >= 80 &&
+    dialog.y0 <= 130
+  );
+}
+
+function summarizeLoginDialogState(dialogState) {
+  const dialog = dialogState && dialogState.dialog;
+  return {
+    present: Boolean(dialogState && dialogState.present),
+    auxLoginDialog: isAuxLoginDialog(dialogState),
+    dialog: dialog ? {
+      x0: dialog.x0,
+      y0: dialog.y0,
+      width: dialog.width,
+      height: dialog.height,
+    } : null,
+    error: dialogState && dialogState.error ? String(dialogState.error) : "",
+  };
 }
 
 fs.mkdirSync(opts.outDir, { recursive: true });
@@ -561,20 +604,37 @@ try {
   });
   await screenshot(cdp, "login.png");
 
-  await clickGuest(cdp, 360, 252);
-  await typeText(cdp, "root");
-  await sendKey(cdp, "\t");
-  await typeText(cdp, "31337leet");
+  if (opts.loginMode === "guest") {
+    await clickGuest(cdp, 243, 201);
+    await delay(250);
+  } else {
+    await clickGuest(cdp, 360, 252);
+    await typeText(cdp, opts.username);
+    await sendKey(cdp, "\t");
+    await typeText(cdp, opts.password);
+  }
   await sendKey(cdp, "\r");
-  stamp({ event: "credentials-dispatched" });
+  stamp({ event: "credentials-dispatched", loginMode: opts.loginMode });
 
   await delay(5000);
   await screenshot(cdp, "after-login-dispatch.png");
+  const afterLoginDialog = await sampleLoginDialogState(cdp).catch((error) => ({
+    present: false,
+    error: String(error && error.message ? error.message : error),
+  }));
+  stamp({
+    event: "after-login-dialog",
+    loginMode: opts.loginMode,
+    ...summarizeLoginDialogState(afterLoginDialog),
+  });
 
   const start = Date.now();
+  let sawLeftLoginDialog = !isAuxLoginDialog(afterLoginDialog);
+  let sawAuxLoginDialogAfterDispatch = isAuxLoginDialog(afterLoginDialog);
   const report = {
     startedAt: new Date().toISOString(),
     options: opts,
+    afterLoginDialog: summarizeLoginDialogState(afterLoginDialog),
     samples: [],
     screenshots: ["login.png", "after-login-dispatch.png"],
   };
@@ -605,6 +665,15 @@ try {
     const canvasState = await sampleCanvasState(cdp).catch((error) => ({
       error: String(error && error.message ? error.message : error),
     }));
+    const loginDialog = await sampleLoginDialogState(cdp).catch((error) => ({
+      present: false,
+      error: String(error && error.message ? error.message : error),
+    }));
+    if (isAuxLoginDialog(loginDialog)) {
+      sawAuxLoginDialogAfterDispatch = true;
+    } else if (!loginDialog.error) {
+      sawLeftLoginDialog = true;
+    }
     const snapshotDue = opts.snapshotIntervalSec > 0 && elapsed >= nextSnapshotAt;
     if (snapshotDue) {
       const name = `post-login-${String(elapsed).padStart(4, "0")}s.png`;
@@ -630,6 +699,7 @@ try {
         diskIo: lastProbe ? lastProbe.diskIo : null,
         cpu: lastProbe ? lastProbe.cpu : null,
         canvasState,
+        loginDialog: summarizeLoginDialogState(loginDialog),
       };
       report.samples.push(sample);
       lastSampleAt = Date.now();
@@ -651,9 +721,13 @@ try {
 
   await screenshot(cdp, "session-end.png");
   report.screenshots.push("session-end.png");
+  const pageResponsive = evalTimeouts === 0 && maxEvalMs < 1500;
   report.verdict = {
     event: "session-verdict",
-    responsive: evalTimeouts === 0 && maxEvalMs < 1500,
+    responsive: pageResponsive,
+    leftLoginDialog: sawLeftLoginDialog,
+    sawAuxLoginDialogAfterDispatch,
+    success: pageResponsive && sawLeftLoginDialog,
     maxEvalMs,
     evalTimeouts,
     maxLagMs,
@@ -664,6 +738,7 @@ try {
   report.finishedAt = new Date().toISOString();
   fs.writeFileSync(path.join(opts.outDir, "report.json"), `${JSON.stringify(report, null, 2)}\n`);
   stamp(report.verdict);
+  if (!report.verdict.success) process.exitCode = 1;
 } catch (error) {
   const fatal = { event: "fatal", message: String(error && error.stack ? error.stack : error) };
   try {

@@ -5,10 +5,11 @@
 // built-in input self-test, then verifies the shared-memory path without
 // waiting for A/UX to boot:
 //   - the bridge writes exact 800x600 geometry into QEMU shared memory
-//   - a center pointer press/release reaches QEMU with both button edges
-//   - absolute mouse mode does not require synthetic relative deltas
+//   - a center pointer press/release is either consumed by QEMU or safely
+//     deferred behind hybrid ADB cursor catch-up while the VM is paused
+//   - the configured absolute/hybrid mouse-motion mode is internally consistent
 //   - a KeyX press/release reaches QEMU as Mac ADB keycode 0x07
-//   - a normal browser keydown is emitted as an immediate guest tap
+//   - a normal browser keydown/keyup is held and released without repeat spam
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -32,7 +33,7 @@ function usage() {
   node scripts/smoke-shared-input.mjs [--url url] [--server url] [--ready-timeout ms]
 
 Default URL:
-  :8088/?build=shared-input-smoke&ram=128&heap=384&pace=1&input=shared&cursor=host&fps=8&res=800x600&autostart=lazy-paused&inputSelfTest=1&ptyMin=2&ptyIdle=16`);
+  :8088/?build=shared-input-smoke&ram=128&heap=384&pace=1&input=shared&inputMotion=hybrid&cursor=host&fps=8&res=800x600&autostart=lazy-paused&inputSelfTest=1&ptyMin=2&ptyIdle=16`);
 }
 
 const args = process.argv.slice(2);
@@ -56,7 +57,7 @@ for (let index = 0; index < args.length; index += 1) {
 }
 
 if (!options.url) {
-  options.url = `${options.server}/?build=shared-input-smoke&ram=128&heap=384&pace=1&input=shared&cursor=host&fps=8&res=800x600&autostart=lazy-paused&inputSelfTest=1&ptyMin=2&ptyIdle=16`;
+  options.url = `${options.server}/?build=shared-input-smoke&ram=128&heap=384&pace=1&input=shared&inputMotion=hybrid&cursor=host&fps=8&res=800x600&autostart=lazy-paused&inputSelfTest=1&ptyMin=2&ptyIdle=16`;
 }
 if (!Number.isFinite(options.readyTimeout) || options.readyTimeout < 1000) {
   console.error("--ready-timeout must be at least 1000 ms");
@@ -96,6 +97,29 @@ async function resetServerState() {
   fs.rmSync(sequencePath, { force: true });
   await fetch(`${options.server}/__browser-log.json?reset=1&ts=${Date.now()}`, { cache: "no-store" }).catch(() => {});
   await fetch(`${options.server}/__range-stats.json?reset=1&ts=${Date.now()}`, { cache: "no-store" }).catch(() => {});
+}
+
+async function closeServerSession(sessionId) {
+  if (!sessionId) return;
+  await fetch(`${options.server}/__session`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    cache: "no-store",
+    body: JSON.stringify({
+      id: sessionId,
+      href: options.url,
+      title: "shared-input-smoke",
+      state: "closed",
+      qemuStarted: false,
+      visible: false,
+      pulseRunActive: false,
+      pausedByGuard: false,
+      heartbeat: 0,
+      framesRendered: 0,
+      startedAtMs: 0,
+      userAgent: "smoke-shared-input",
+    }),
+  }).catch(() => {});
 }
 
 async function readBrowserLog() {
@@ -223,6 +247,7 @@ chrome.stderr.on("data", (chunk) => {
 if (typeof chrome.stderr.unref === "function") chrome.stderr.unref();
 
 let cdp = null;
+let pageSessionId = "";
 try {
   const targets = await waitForJson(`http://127.0.0.1:${port}/json/list`, 15000);
   const page = targets.find((target) => target.type === "page") || targets[0];
@@ -235,14 +260,37 @@ try {
   await cdp.send("Page.navigate", { url: options.url }, 10000);
 
   const selfTest = await waitForInputSelfTestResult(options.readyTimeout);
+  pageSessionId = await evaluate(cdp, `(() => {
+    try {
+      return window.AuxQemuProbe && typeof window.AuxQemuProbe.snapshot === "function"
+        ? (window.AuxQemuProbe.snapshot().session || {}).id || ""
+        : "";
+    } catch {
+      return "";
+    }
+  })()`).catch(() => "");
   const result = selfTest.result || {};
   const checks = [];
   addCheck(checks, "self-test-ok", result.ok === true, { result });
-  addCheck(checks, "shared-input-version-4", result.version >= 4, { result });
+  addCheck(checks, "shared-input-version-6", result.version >= 6, { result });
   addCheck(checks, "shared-dimensions-800x600", result.absWidth === 800 && result.absHeight === 600, { result });
   addCheck(checks, "mouse-abs-center", result.absX === 400 && result.absY === 300, { result });
   addCheck(checks, "mouse-pointer-event-off-center", result.pointerEventOk === true && result.pointerEventX === 123 && result.pointerEventY === 77, { result });
-  addCheck(checks, "mouse-backend-saw-button-edges", result.backendButtons >= 2, { result });
+  addCheck(
+    checks,
+    "mouse-button-edges-consumed-or-deferred",
+    result.buttonEdgesOk === true &&
+      (
+        result.buttonEdgesConsumed === true ||
+        (
+          result.motionMode === "hybrid" &&
+          result.buttonEdgesDeferred === true &&
+          result.targetPending === true &&
+          result.localButtonQueueDepth >= 2
+        )
+      ),
+    { result },
+  );
   addCheck(
     checks,
     "mouse-motion-mode-consistent",
@@ -252,8 +300,16 @@ try {
   );
   addCheck(checks, "mouse-released", result.frontendButtons === 0 && result.lastButtons === 0, { result });
   addCheck(checks, "keyboard-backend-saw-keyx", result.backendKeys >= 2 && result.lastAdb === 0x07, { result });
-  addCheck(checks, "keyboard-browser-key-tap", result.tapKey === true && result.keyTaps >= 1, { result });
-  addCheck(checks, "keyboard-repeat-suppressed", result.repeatSuppressionOk === true && result.keyTapRepeatSuppressions >= 1, { result });
+  addCheck(checks, "keyboard-held-key-down-up", result.heldKeyDown === true && result.heldKeyUp === true, { result });
+  addCheck(
+    checks,
+    "keyboard-held-repeat-suppressed",
+    result.repeatSuppressionOk === true &&
+      result.repeatKeyDownSuppressed === true &&
+      result.tapNonModifierKeys === false &&
+      result.keyTapRepeatSuppressions >= 1,
+    { result },
+  );
   addCheck(checks, "keyboard-missing-keyup-auto-release", result.autoReleaseOk === true && result.autoKeyReleases >= 1 && result.pressedKeys === 0, { result });
 
   const ok = checks.every((check) => check.pass);
@@ -276,6 +332,7 @@ try {
   }, null, 2));
   process.exitCode = 1;
 } finally {
+  await closeServerSession(pageSessionId);
   try { cdp?.ws.close(); } catch {}
   try { chrome.stderr.destroy(); } catch {}
   try { chrome.kill("SIGKILL"); } catch {}

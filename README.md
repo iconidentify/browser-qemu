@@ -26,25 +26,42 @@ WASM heap plus 200 MB of disk cache. New default launches use
 881 MB WASM heap and 128 MB disk cache with no page stalls. Use `&tb=500` or
 `&diskCacheMb=384` only for old-baseline comparisons.
 The rebuilt cursor/runtime package was re-validated at 640x480 on June 14:
-`make smoke-shared-input` passed, and `make watch-login-session LOGIN_DURATION=75`
-reached login around 135 s, dispatched credentials, opened the classic Mac/A/UX
-environment, and stayed responsive (`maxEvalMs=1`, `maxLagMs=58`, no stalls).
-During the user's manual Chrome burn, process sampling showed a separate
-contention source: native desktop `qemu-system-m68k` was already using about one
-CPU core, and a Codex renderer was also hot. Use `make browser-doctor` when a
-tab feels too slow to click; it prints hot QEMU/Chrome/Codex processes and the
-server-mirrored browser log tail.
+`make smoke-shared-input` passed in the default hybrid mouse mode, and
+`make watch-login-session LOGIN_DURATION=75` reached login around 135 s,
+dispatched credentials, opened the classic Mac/A/UX environment, and stayed
+responsive (`maxEvalMs=1`, `maxLagMs=58`, no stalls). Manual Chrome burn reports
+have correlated with host pressure rather than a recorded page-thread wedge:
+native desktop QEMU was hot in one run, and later postmortems showed hot Codex /
+mediaanalysisd / WindowServer pressure plus a 97% full data volume while the
+server-mirrored page heartbeat still reported ~20-30 ms samples. Use
+`make browser-doctor` when a tab feels too slow to click; it prints hot
+QEMU/Chrome/Codex/macOS processes and the server-mirrored browser log tail.
 The click path now has a focused guardrail: `make probe-click-alignment
 ARGS=--headless` boots to the A/UX login, clicks real login-screen targets, and
 verifies browser client coordinates, shared-input absolute registers, and
-Classic Mac low-memory mouse globals agree within one guest pixel. After the
-probe was added, shared mouse input was hardened to accept only `pointer*`
-events; legacy `mouse*` compatibility events are swallowed so they cannot double
-feed the guest in headed Chrome.
+Classic Mac low-memory mouse globals agree within one guest pixel. The current
+default hybrid run (`build/click-alignment-hybrid-default`) passed with zero
+drift and clean ADB button edges across the login targets. After the probe was
+added, shared mouse input was hardened to accept only `pointer*` events; legacy
+`mouse*` compatibility events are swallowed so they cannot double feed the guest
+in headed Chrome.
+The latest growable-memory package also includes persistent hybrid ADB motion:
+if the guest has not consumed the relative cursor deltas yet, the native bridge
+keeps walking toward the browser absolute target instead of clearing the pending
+movement on the next timer tick. The stay-paused smoke now records this
+explicitly: click transitions either reach the backend immediately or remain
+queued behind `targetPending` until the ADB cursor catches up. On June 14 the
+smoke passed with `buttonEdgesDeferred=true`, `localButtonQueueDepth=2`, and
+`adbPendingDx/adbPendingDy=63/63`, which is the expected paused hybrid state.
+Root/Registered login on the current disk is wired to start the X11/XmacII
+session. For Classic-only browser tuning, use the networked snapshot helper:
+`make browser-classic`, wait for the A/UX login/auxagent, then run
+`make aux-classic-mode`. That backs up the guest's root startup files and
+suppresses X for that snapshot before you log in as root.
 
 Reliable headed recipe: `make serve`, then run `make browser-interactive` or
 open
-`http://127.0.0.1:8088/?ram=128&heap=384&pace=1&input=shared&cursor=host&fps=8&res=800x600&autostart=lazy-pulse&pulseMode=yield&pulseMs=2000&ptyMin=2&ptyIdle=16`.
+`http://127.0.0.1:8088/?ram=128&heap=384&pace=1&input=shared&inputMotion=hybrid&cursor=host&fps=6&res=640x480&autostart=lazy-pulse&pulseMode=yield&pulseMs=2000&ptyMin=2&ptyIdle=16&lowOverheadUi=1`.
 Leave the lightweight yield pulse running during hands-on login with root /
 31337leet; it gives qemu-wasm tiny stop/continue scheduling windows without the
 heavy register/block diagnostic dump. The visible **Start lazy pulse** button
@@ -52,11 +69,11 @@ uses this same lightweight interactive cadence. `input=shared` writes browser
 mouse/keyboard events into wasm memory and QEMU drains them directly into the
 q800 ADB devices; `input=hmp`, `input=hybrid`, and `input=sdl` are diagnostic
 escape hatches.
-The shared mouse path now defaults to `inputMotion=absolute`, matching the
-68k_web-style low-memory cursor approach. `inputMotion=hybrid` is retained only
-for diagnosing whether A/UX's kernel-side login path still needs relative ADB
-deltas.
-`fps=8` caps page-side framebuffer repaint work so X11 does not bury Chrome;
+The shared mouse path now defaults to `inputMotion=hybrid`: it still writes the
+exact 68k_web-style absolute low-memory mouse point, and also forwards bounded
+ADB-relative deltas for the A/UX kernel/login path where pure low-memory
+anchoring can leave clicks landing at the wrong guest-side point.
+`fps=6` caps page-side framebuffer repaint work so X11 does not bury Chrome;
 if the page detects a large main-thread stall, pressure relief automatically
 lowers the live framebuffer cap to 6 fps and records a breadcrumb in
 `make browser-log` / `make browser-doctor`.
@@ -76,6 +93,11 @@ performance while native desktop QEMU or another browser-QEMU tab is already
 burning a full CPU core.
 For networking, start/keep Dialtone on `:8080`, add `&net=1&netZone=<zone>`,
 and drive auxagent with `node scripts/auxctl-zone.mjs --zone <zone> ...`.
+For the Classic-only helper, use the pinned default zone:
+`make browser-classic` and, once auxagent is up,
+`make aux-classic-mode ZONE=codex-classic`. These guest changes are lost on a
+normal `-snapshot` reload; if you use the writable disk relay, restore with
+`make aux-classic-restore ZONE=codex-classic` before promoting the disk.
 See ROADMAP.md for the plan to production and VENDOR.md for how the vendor
 tree and large artifacts are managed.
 
@@ -573,9 +595,9 @@ Current input/display status:
 - `make smoke-shared-input` is the fast guardrail for this path. It launches a
   temporary headless Chrome against paused `qemu-lazy`, runs the page's
   structured shared-input self-test, verifies the 800x600 shared geometry,
-  confirms a center pointer press/release reaches QEMU with both button edges,
-  confirms the configured absolute/hybrid mouse-motion mode is internally
-  consistent,
+  confirms a center pointer press/release is either consumed by QEMU or safely
+  queued behind pending hybrid ADB cursor catch-up, confirms the configured
+  absolute/hybrid mouse-motion mode is internally consistent,
   checks both the browser key-tap path and `KeyX` as ADB `0x07`, and verifies
   the missing-keyup auto-release guard for headed typing stalls.
 - `make probe-click-alignment ARGS=--headless` is the heavier guardrail for
