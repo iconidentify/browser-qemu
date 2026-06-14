@@ -183,6 +183,7 @@
   let lastControlId = 0;
   let hmpMonitorActive = false;
   let hmpInputMode = "shared";
+  let sharedInputMotionMode = "absolute";
   let mouseButtons = 0;
   let guestMouseX = 0;
   let guestMouseY = 0;
@@ -209,7 +210,7 @@
   let serialFrozen = false; // pause serial re-render while the user selects text
   const maxSerialLines = 1500;
   const maxSerialChars = 220000;
-  const serialRenderMinMs = 100;
+  const serialRenderMinMs = queryIntParam("serialMs", 150, 50, 1000);
   let serialRenderTimer = 0;
   let serialRenderDirty = false;
   let lastSerialRenderAt = 0;
@@ -220,6 +221,7 @@
   const diskWorkerStatsRequestMs = queryIntParam("diskStatsMs", 5000, 1000, 30000);
   const breadcrumbIntervalMs = queryIntParam("breadcrumbMs", 15000, 5000, 60000);
   const qemuTbSizeMb = queryIntParam("tb", 128, 32, 500);
+  const pressureReliefEnabled = !/^(0|false|off)$/i.test(new URLSearchParams(window.location.search).get("pressureRelief") || "");
   let probeStateTimer = 0;
   let probeStateDirty = false;
   let lastRuntimeInstrumentAt = 0;
@@ -295,6 +297,7 @@
   let telemetryLastDiskRanges = 0;
   let telemetryLastInputTotal = 0;
   let telemetryLastNetFrames = 0;
+  let uiPressureReliefActive = false;
 
   function startButtons() {
     return ["startSmoke", "startLazy", "startLazyPaused", "startQemu"].map((id) => document.getElementById(id));
@@ -1435,6 +1438,7 @@
         canvas,
         log,
         getGuestGeometry: activeGuestGeometry,
+        motionMode: sharedInputMotionMode,
       });
       sharedInputBridge.start();
       if (sharedInputRetryTimer) {
@@ -1443,7 +1447,7 @@
       }
       sharedInputRetryCount = 0;
       setStatus(qemuStatus, qemuStartPaused ? "QEMU paused" : "QEMU running", "ready");
-      log("input mode active: shared memory (68k_web-style)");
+      log(`input mode active: shared memory (68k_web-style, ${sharedInputMotionMode} mouse)`);
       if (runInputSelfTestAfterQemuReady) {
         runInputSelfTestAfterQemuReady = false;
         window.setTimeout(runInputSelfTest, 0);
@@ -1720,6 +1724,19 @@
     );
   }
 
+  function applyUiPressureRelief(lag) {
+    if (!pressureReliefEnabled || uiPressureReliefActive || !qemuStarted) return;
+    uiPressureReliefActive = true;
+    document.documentElement.dataset.pressure = "high";
+    if (screenFpsLimit === 0 || screenFpsLimit > 6) {
+      screenFpsLimit = 6;
+      log(`ui pressure relief: lowered framebuffer cap to ${screenFpsLimit} fps after ${lag}ms lag`);
+    } else {
+      log(`ui pressure relief: lag=${lag}ms with framebuffer cap already at ${screenFpsLimit} fps`);
+    }
+    logRuntimeBreadcrumb("pressure-relief");
+  }
+
   function logRuntimeBreadcrumb(reason = "periodic") {
     if (!qemuStarted) return;
     let shared = null;
@@ -1759,6 +1776,9 @@
     if (lag >= responsivenessLongTaskMs) {
       responsivenessLongTasks += 1;
       responsivenessLastLongTaskAt = Date.now();
+      if (lag >= 1000) {
+        applyUiPressureRelief(lag);
+      }
       if (lag >= 1000 && Date.now() - responsivenessLastLogAt > 15000) {
         responsivenessLastLogAt = Date.now();
         logPressureSnapshot(lag);
@@ -1987,6 +2007,7 @@
       lastControlId,
       hmpMonitorActive,
       hmpInputMode,
+      sharedInputMotionMode,
       responsiveness: {
         intervalMs: responsivenessIntervalMs,
         longTaskMs: responsivenessLongTaskMs,
@@ -2027,6 +2048,9 @@
         frameProbeMs: framebufferProbeIntervalMs,
         diskStatsMs: diskWorkerStatsRequestMs,
         logMirrorMs: browserLogMirrorMinMs,
+        serialMs: serialRenderMinMs,
+        pressureRelief: pressureReliefEnabled,
+        pressureReliefActive: uiPressureReliefActive,
       },
       ptyDroppedBytes: qemuPty ? qemuPty.droppedBytes() : 0,
       events: { ...eventCounters },
@@ -2085,6 +2109,8 @@
       qemuStartPaused: snapshot.qemuStartPaused,
       qemuStatus: snapshot.qemuStatus,
       hmpMonitorActive: snapshot.hmpMonitorActive,
+      hmpInputMode: snapshot.hmpInputMode,
+      sharedInputMotionMode: snapshot.sharedInputMotionMode,
       ptyQueuedBytes: snapshot.ptyQueuedBytes,
       ptyDroppedBytes: snapshot.ptyDroppedBytes,
       events: snapshot.events,
@@ -2546,6 +2572,7 @@
       const pointerUp = sharedInputBridge.testPointer(400, 300, 0);
       await delay(Math.max(140, (sharedBefore.buttonReleaseHoldMs || 60) + 90));
       const sharedAfter = sharedInputBridge.stats();
+      const expectMouseDelta = sharedAfter.motionMode === "hybrid";
       shared = {
         before: sharedBefore,
         after: sharedAfter,
@@ -2584,7 +2611,7 @@
           sharedAfter.absWidth === expectedGeometry.width &&
           sharedAfter.absHeight === expectedGeometry.height &&
           sharedAfter.backendMouse >= sharedBefore.backendMouse + 1 &&
-          (sharedAfter.lastMouseDx !== 0 || sharedAfter.lastMouseDy !== 0) &&
+          (!expectMouseDelta || sharedAfter.lastMouseDx !== 0 || sharedAfter.lastMouseDy !== 0) &&
           sharedAfter.backendButtons >= sharedBefore.backendButtons + 2 &&
           sharedAfter.backendKeys >= sharedBefore.backendKeys + 4 &&
           sharedAfter.keyTaps >= sharedBefore.keyTaps + 1 &&
@@ -2622,6 +2649,7 @@
       backendButtons: shared && shared.after ? shared.after.backendButtons : null,
       lastMouseDx: shared && shared.after ? shared.after.lastMouseDx : null,
       lastMouseDy: shared && shared.after ? shared.after.lastMouseDy : null,
+      motionMode: shared && shared.after ? shared.after.motionMode : null,
       lastAdb: shared && shared.after ? shared.after.lastAdb : null,
       frontendButtons: shared && shared.after ? shared.after.frontendButtons : null,
       lastButtons: shared && shared.after ? shared.after.lastButtons : null,
@@ -2635,6 +2663,7 @@
       autoKeyReleases: shared && shared.after ? shared.after.autoKeyReleases : null,
       keyAutoReleaseMs: shared && shared.after ? shared.after.keyAutoReleaseMs : null,
       pressedKeys: shared && shared.after ? shared.after.pressedKeys : null,
+      tapAwaitingKeyups: shared && shared.after ? shared.after.tapAwaitingKeyups : null,
       autoReleaseOk: shared ? shared.autoReleaseOk : false,
     })}`);
     renderProbeLog("input self-test");
@@ -2835,6 +2864,12 @@
     return "shared";
   }
 
+  function normalizeSharedInputMotionMode(value) {
+    const mode = String(value || "").trim().toLowerCase();
+    if (mode === "hybrid" || mode === "relative" || mode === "adb") return "hybrid";
+    return "absolute";
+  }
+
   function initializeBootOptionsFromQuery() {
     const params = new URLSearchParams(window.location.search);
     if (ramSizeSelect && params.has("ram")) {
@@ -2856,6 +2891,9 @@
       });
     }
     hmpInputMode = normalizeInputMode(params.get("input") || params.get("inputMode") || "shared");
+    sharedInputMotionMode = normalizeSharedInputMotionMode(
+      params.get("inputMotion") || params.get("mouseMotion") || params.get("adbMotion")
+    );
     hostCursorMode = normalizeCursorMode(params.get("cursor") || params.get("cursorMode") || "host");
     applyHostCursorMode();
     screenFpsLimit = normalizeFpsLimit(params.get("fps"));
@@ -3825,7 +3863,11 @@
   document.getElementById("planBoot").addEventListener("click", buildLaunchPlan);
   document.getElementById("loadRuntime").addEventListener("click", () => checkBundles(false));
   document.getElementById("startSmoke").addEventListener("click", () => startQemu("qemu-smoke"));
-  document.getElementById("startLazy").addEventListener("click", () => startQemu("qemu-lazy", { startPaused: true, autoPulseMs: 30000 }));
+  document.getElementById("startLazy").addEventListener("click", () => startQemu("qemu-lazy", {
+    startPaused: true,
+    autoPulseMs: 2000,
+    autoPulseMode: "yield",
+  }));
   document.getElementById("startLazyPaused").addEventListener("click", () => startQemu("qemu-lazy", { startPaused: true }));
   document.getElementById("startQemu").addEventListener("click", () => startQemu("qemu"));
   document.getElementById("connectNet").addEventListener("click", connectNetwork);

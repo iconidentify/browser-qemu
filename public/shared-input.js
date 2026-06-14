@@ -270,9 +270,11 @@
     var buttonReleaseTimer = 0;
     var keyReleaseTimers = new Map();
     var lastTapTimes = new Map();
+    var tapAwaitingKeyup = new Set();
     var lastPointerDiag = null;
     var capsLockState = false;
     var pressedCodes = new Set();
+    var motionMode = options.motionMode === "hybrid" ? "hybrid" : "absolute";
     var ready = false;
     var stats = {
       keys: 0,
@@ -359,14 +361,18 @@
       Atomics.store(ctrl, ctrlBase + C_ABS_HEIGHT, guest.height);
       Atomics.store(ctrl, ctrlBase + C_ABS_FLAGS, 1);
 
-      var movement = event ? movementForEvent(canvas, event, geometry) : null;
-      if (movement && (movement.dx || movement.dy)) {
-        Atomics.add(ctrl, ctrlBase + C_REL_DX, movement.dx);
-        Atomics.add(ctrl, ctrlBase + C_REL_DY, movement.dy);
-        stats.mouseMoves++;
-      } else if (lastPoint) {
-        Atomics.add(ctrl, ctrlBase + C_REL_DX, clampInt(point.x - lastPoint.x, -2048, 2048));
-        Atomics.add(ctrl, ctrlBase + C_REL_DY, clampInt(point.y - lastPoint.y, -2048, 2048));
+      if (motionMode === "hybrid") {
+        var movement = event ? movementForEvent(canvas, event, geometry) : null;
+        if (movement && (movement.dx || movement.dy)) {
+          Atomics.add(ctrl, ctrlBase + C_REL_DX, movement.dx);
+          Atomics.add(ctrl, ctrlBase + C_REL_DY, movement.dy);
+          stats.mouseMoves++;
+        } else if (lastPoint) {
+          Atomics.add(ctrl, ctrlBase + C_REL_DX, clampInt(point.x - lastPoint.x, -2048, 2048));
+          Atomics.add(ctrl, ctrlBase + C_REL_DY, clampInt(point.y - lastPoint.y, -2048, 2048));
+          stats.mouseMoves++;
+        }
+      } else {
         stats.mouseMoves++;
       }
       lastPoint = point;
@@ -459,6 +465,7 @@
         lastButtonMask = 0;
         pressedCodes.clear();
         lastTapTimes.clear();
+        tapAwaitingKeyup.clear();
       },
       isReady: function () {
         return ready;
@@ -479,13 +486,17 @@
         }
         var isModifier = Boolean(modifierCodes[event.code]);
         if (down) {
-          if (event.repeat || pressedCodes.has(event.code)) return true;
+          if (event.repeat || pressedCodes.has(event.code) || tapAwaitingKeyup.has(event.code)) {
+            stats.keyTapRepeatSuppressions++;
+            return true;
+          }
           if (KEY_TAP_NON_MODIFIERS && !isModifier) {
             var tapTime = acceptedTapTime(event.code);
             if (tapTime === null) return true;
             if (!queueKey(qcode, true, adbKeyCodes[event.code], modifierMask(event, capsLockState))) return false;
             queueKey(qcode, false, adbKeyCodes[event.code], modifierMask(event, capsLockState));
             lastTapTimes.set(event.code, tapTime);
+            tapAwaitingKeyup.add(event.code);
             stats.keyTaps++;
             return true;
           }
@@ -497,6 +508,7 @@
           pressedCodes.delete(event.code);
           return false;
         } else {
+          tapAwaitingKeyup.delete(event.code);
           if (!isModifier && !pressedCodes.has(event.code)) return true;
           releaseCode(event.code, modifierMask(event, capsLockState));
           if (event.code === "MetaLeft" || event.code === "MetaRight") {
@@ -512,6 +524,7 @@
         clearAllKeyReleaseTimers();
         pressedCodes.clear();
         lastTapTimes.clear();
+        tapAwaitingKeyup.clear();
       },
       mouseEvent: function (event) {
         var geometry = activeGuestGeometry();
@@ -609,7 +622,9 @@
           tapNonModifierKeys: KEY_TAP_NON_MODIFIERS,
           keyTaps: stats.keyTaps,
           keyTapRepeatSuppressions: stats.keyTapRepeatSuppressions,
+          tapAwaitingKeyups: tapAwaitingKeyup.size,
           pressedKeys: pressedCodes.size,
+          motionMode: motionMode,
           pointer: lastPointerDiag,
           mouseMoves: stats.mouseMoves,
           buttons: stats.buttons,

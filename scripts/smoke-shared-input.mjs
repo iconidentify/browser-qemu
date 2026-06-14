@@ -6,7 +6,7 @@
 // waiting for A/UX to boot:
 //   - the bridge writes exact 800x600 geometry into QEMU shared memory
 //   - a center pointer press/release reaches QEMU with both button edges
-//   - the backend sees nonzero ADB mouse delta while absolute mode is active
+//   - absolute mouse mode does not require synthetic relative deltas
 //   - a KeyX press/release reaches QEMU as Mac ADB keycode 0x07
 //   - a normal browser keydown is emitted as an immediate guest tap
 import fs from "node:fs";
@@ -242,7 +242,13 @@ try {
   addCheck(checks, "mouse-abs-center", result.absX === 400 && result.absY === 300, { result });
   addCheck(checks, "mouse-pointer-event-off-center", result.pointerEventOk === true && result.pointerEventX === 123 && result.pointerEventY === 77, { result });
   addCheck(checks, "mouse-backend-saw-button-edges", result.backendButtons >= 2, { result });
-  addCheck(checks, "mouse-backend-saw-adb-delta", result.lastMouseDx !== 0 || result.lastMouseDy !== 0, { result });
+  addCheck(
+    checks,
+    "mouse-motion-mode-consistent",
+    result.motionMode === "absolute" ||
+      (result.motionMode === "hybrid" && (result.lastMouseDx !== 0 || result.lastMouseDy !== 0)),
+    { result },
+  );
   addCheck(checks, "mouse-released", result.frontendButtons === 0 && result.lastButtons === 0, { result });
   addCheck(checks, "keyboard-backend-saw-keyx", result.backendKeys >= 2 && result.lastAdb === 0x07, { result });
   addCheck(checks, "keyboard-browser-key-tap", result.tapKey === true && result.keyTaps >= 1, { result });

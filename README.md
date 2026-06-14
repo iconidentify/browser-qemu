@@ -40,10 +40,19 @@ open
 `http://127.0.0.1:8088/?ram=128&heap=384&pace=1&input=shared&cursor=host&fps=8&res=800x600&autostart=lazy-pulse&pulseMode=yield&pulseMs=2000&ptyMin=2&ptyIdle=16`.
 Leave the lightweight yield pulse running during hands-on login with root /
 31337leet; it gives qemu-wasm tiny stop/continue scheduling windows without the
-heavy register/block diagnostic dump. `input=shared` writes browser mouse/keyboard
-events into wasm memory and QEMU drains them directly into the q800 ADB devices;
-`input=hmp`, `input=hybrid`, and `input=sdl` are diagnostic escape hatches.
+heavy register/block diagnostic dump. The visible **Start lazy pulse** button
+uses this same lightweight interactive cadence. `input=shared` writes browser
+mouse/keyboard events into wasm memory and QEMU drains them directly into the
+q800 ADB devices; `input=hmp`, `input=hybrid`, and `input=sdl` are diagnostic
+escape hatches.
+The shared mouse path now defaults to `inputMotion=absolute`, matching the
+68k_web-style low-memory cursor approach. `inputMotion=hybrid` is retained only
+for diagnosing whether A/UX's kernel-side login path still needs relative ADB
+deltas.
 `fps=8` caps page-side framebuffer repaint work so X11 does not bury Chrome;
+if the page detects a large main-thread stall, pressure relief automatically
+lowers the live framebuffer cap to 6 fps and records a breadcrumb in
+`make browser-log` / `make browser-doctor`.
 `autostart=lazy-pulse&pulseMode=yield` uses the worker-backed `stop; cont`
 cadence instead of leaving the emulator hot forever. The heavier
 `pulseMode=sample` cadence is for diagnostics. The older headed
@@ -557,7 +566,8 @@ Current input/display status:
   temporary headless Chrome against paused `qemu-lazy`, runs the page's
   structured shared-input self-test, verifies the 800x600 shared geometry,
   confirms a center pointer press/release reaches QEMU with both button edges,
-  confirms QEMU saw a nonzero ADB mouse delta while absolute mode was active,
+  confirms the configured absolute/hybrid mouse-motion mode is internally
+  consistent,
   checks both the browser key-tap path and `KeyX` as ADB `0x07`, and verifies
   the missing-keyup auto-release guard for headed typing stalls.
 - The page's `Yield 2s` button and `make hmp-yield-pulse-start INTERVAL=2` run the current interactive cadence: every two seconds the control worker queues only `stop; cont`, giving Chrome/QEMU a scheduling window with minimal HMP output. The `Pulse 30s` button and `make hmp-sample-pulse-start INTERVAL=30` keep the diagnostic stop/status/register/block/continue cadence. Do not switch to full pulse-off for normal interaction yet; pair pulse-off with `make hmp-stop` only before screenshots or page inspection.

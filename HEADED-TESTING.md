@@ -230,7 +230,8 @@ http://127.0.0.1:8088/?ram=128&heap=384&pace=1&input=shared&cursor=host&fps=8&re
   then uses a lightweight worker-backed `stop; cont` cadence every 2s. This is
   the current headed default because full continuous guest CPU still pegs a
   browser renderer.
-- Leave yield pulse running for login and X11 interaction. Use the heavier
+- The visible **Start lazy pulse** button uses the same lightweight yield pulse
+  for interactive manual runs. Use the heavier
   `pulseMode=sample` / `Pulse 30s` path only for diagnostics, and use pulse-off
   only together with `make hmp-stop` before screenshots or page inspection.
 - `pace=1` is the current headed default because it adds `-icount
@@ -240,7 +241,10 @@ http://127.0.0.1:8088/?ram=128&heap=384&pace=1&input=shared&cursor=host&fps=8&re
   pulse stop is serviced.
 - `input=shared` is the active path: browser events are translated to Mac ADB
   codes in `public/shared-input.js`, written to wasm memory, and drained by a
-  QEMU timer into the q800 ADB keyboard/mouse devices. `input=hmp`,
+  QEMU timer into the q800 ADB keyboard/mouse devices. Mouse motion defaults to
+  `inputMotion=absolute`, mirroring 68k_web's low-memory cursor/click model;
+  `inputMotion=hybrid` is a diagnostic knob if we need to prove A/UX kernel
+  login still needs relative ADB deltas. `input=hmp`,
   `input=hybrid`, and `input=sdl` are diagnostic-only escape hatches.
   `#probeState.sharedInput` exposes the latest absolute pointer coordinate,
   frontend button mask, button-release hold time, and backend key/mouse/button
@@ -253,16 +257,20 @@ http://127.0.0.1:8088/?ram=128&heap=384&pace=1&input=shared&cursor=host&fps=8&re
   it starts paused `qemu-lazy` in a temp headless Chrome, runs the page's
   structured shared-input self-test, asserts exact 800x600 shared geometry,
   checks a center pointer press/release reaches QEMU with both button edges,
-  confirms the backend saw a nonzero ADB mouse delta while absolute mode was
-  active,
+  confirms the configured absolute/hybrid mouse-motion mode is internally
+  consistent,
   verifies `KeyX` arrives as Mac ADB `0x07`, and confirms the missing-keyup
   auto-release guard is active.
+- If the page detects a large main-thread stall, pressure relief automatically
+  lowers the framebuffer cap to 6 fps and logs a breadcrumb so
+  `make browser-doctor` still has useful evidence when the tab is too busy to
+  click.
 - `cursor=host` uses the Classic Mac CSS cursor path copied from 68k_web. It is
   instant host-side feedback, and the served wasm now exports guest cursor bytes
-  while suppressing the guest software cursor. The QEMU-side bridge now sends
-  bounded ADB-relative mouse deltas in absolute mode too, which specifically
-  targets the "cursor works before A/UX, then clicks in a corner at login"
-  failure. Retest headed cursor drift/click alignment here.
+  while suppressing the guest software cursor. The default shared input path now
+  writes absolute low-memory mouse points without synthetic relative deltas,
+  which specifically targets the observed cursor/click drift after the A/UX
+  kernel takes over. Retest headed cursor drift/click alignment here.
 - `fps=8` caps the page-side framebuffer loop. Use `fps=20` for smoother
   screen updates or `fps=0` only for display benchmarks; X11 can peg Chrome
   hard when uncapped.
