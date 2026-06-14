@@ -520,6 +520,9 @@ Current input/display status:
 - The active browser input path is shared ADB input. Early headed verification
   shows mouse and keyboard counters moving through `sharedInput`, with `KeyX`
   reaching QEMU as ADB `0x07`; HMP/hybrid/SDL modes remain diagnostic-only.
+  `#probeState.sharedInput` includes the latest absolute `absX/absY`, guest
+  dimensions, frontend button mask, button-release hold time, and backend
+  mouse/key/button counters.
 - The page's `Yield 2s` button and `make hmp-yield-pulse-start INTERVAL=2` run the current interactive cadence: every two seconds the control worker queues only `stop; cont`, giving Chrome/QEMU a scheduling window with minimal HMP output. The `Pulse 30s` button and `make hmp-sample-pulse-start INTERVAL=30` keep the diagnostic stop/status/register/block/continue cadence. Do not switch to full pulse-off for normal interaction yet; pair pulse-off with `make hmp-stop` only before screenshots or page inspection.
 - `make browser-interactive` and `make browser-shared-input` add `ptyMin=2&ptyIdle=16`, lowering the generated runtime's bounded monitor wait for headed interaction. Use `ptyMin=8&ptyIdle=32` for the conservative default profile, and compare boot/input behavior before changing the checked-in launcher again.
 - The diagnostic `Input self-test` button and `?inputSelfTest=1` path exercise canvas focus, keyboard counters, mouse counters, and worker-backed HMP input without letting the paused VM run.

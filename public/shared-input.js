@@ -25,6 +25,7 @@
   var MOD_CTRL = 0x1000;
   var MOD_ALT = 0x0800;
   var MOD_CMD = 0x0100;
+  var BUTTON_RELEASE_HOLD_MS = 60;
 
   var qkeyNames = [
     "unmapped", "shift", "shift_r", "alt", "alt_r", "ctrl", "ctrl_r",
@@ -223,6 +224,8 @@
     var keyStride = 0;
     var cursorSeq = 0;
     var lastPoint = null;
+    var lastButtonMask = 0;
+    var buttonReleaseTimer = 0;
     var capsLockState = false;
     var pressedCodes = new Set();
     var ready = false;
@@ -316,6 +319,36 @@
       pressedCodes.delete(code);
     }
 
+    function writeButtonMask(mask) {
+      if (!ready) return;
+      refreshViews();
+      Atomics.store(ctrl, ctrlBase + C_BUTTONS, mask);
+      lastButtonMask = mask;
+      stats.buttons++;
+    }
+
+    function queueButtonMask(mask) {
+      if (mask === lastButtonMask) return;
+      if (mask) {
+        clearButtonReleaseTimer();
+        writeButtonMask(mask);
+        return;
+      }
+      if (lastButtonMask && !buttonReleaseTimer) {
+        buttonReleaseTimer = root.setTimeout(function () {
+          buttonReleaseTimer = 0;
+          writeButtonMask(0);
+        }, BUTTON_RELEASE_HOLD_MS);
+      }
+    }
+
+    function clearButtonReleaseTimer() {
+      if (buttonReleaseTimer) {
+        root.clearTimeout(buttonReleaseTimer);
+        buttonReleaseTimer = 0;
+      }
+    }
+
     return {
       start: function () {
         locate();
@@ -325,6 +358,8 @@
       stop: function () {
         ready = false;
         lastPoint = null;
+        clearButtonReleaseTimer();
+        lastButtonMask = 0;
         pressedCodes.clear();
       },
       isReady: function () {
@@ -370,17 +405,14 @@
       mouseEvent: function (event) {
         var point = pointForEvent(canvas, event, lastPoint);
         writePoint(point, event);
-        refreshViews();
-        Atomics.store(ctrl, ctrlBase + C_BUTTONS, buttonMaskFromEvent(event));
-        stats.buttons++;
+        queueButtonMask(buttonMaskFromEvent(event));
         return point;
       },
       releaseMouse: function () {
         if (!ready) return;
-        refreshViews();
-        Atomics.store(ctrl, ctrlBase + C_BUTTONS, 0);
+        clearButtonReleaseTimer();
+        writeButtonMask(0);
         lastPoint = null;
-        stats.buttons++;
       },
       readCursor: function () {
         var seq, offset, bytes, cursorBase;
@@ -414,12 +446,18 @@
           lastQcode: ready ? Atomics.load(ctrl, ctrlBase + C_LAST_QCODE) : 0,
           lastAdb: ready ? Atomics.load(ctrl, ctrlBase + C_LAST_ADB) : -1,
           lastButtons: ready ? Atomics.load(ctrl, ctrlBase + C_LAST_BUTTONS) : 0,
+          absX: ready ? Atomics.load(ctrl, ctrlBase + C_ABS_X) : 0,
+          absY: ready ? Atomics.load(ctrl, ctrlBase + C_ABS_Y) : 0,
+          absWidth: ready ? Atomics.load(ctrl, ctrlBase + C_ABS_WIDTH) : 0,
+          absHeight: ready ? Atomics.load(ctrl, ctrlBase + C_ABS_HEIGHT) : 0,
+          frontendButtons: ready ? Atomics.load(ctrl, ctrlBase + C_BUTTONS) : 0,
           version: ready ? Atomics.load(ctrl, ctrlBase + C_VERSION) : 0,
           cursorSeq: ready ? Atomics.load(ctrl, ctrlBase + C_CURSOR_SEQ) : 0,
           cursorValid: ready ? Boolean(Atomics.load(ctrl, ctrlBase + C_CURSOR_VALID)) : false,
           cursorHotspotX: ready ? Atomics.load(ctrl, ctrlBase + C_CURSOR_HOT_X) : 0,
           cursorHotspotY: ready ? Atomics.load(ctrl, ctrlBase + C_CURSOR_HOT_Y) : 0,
           mouseAbsSyncs: ready ? Atomics.load(ctrl, ctrlBase + C_MOUSE_ABS_SYNCS) : 0,
+          buttonReleaseHoldMs: BUTTON_RELEASE_HOLD_MS,
         };
       },
     };

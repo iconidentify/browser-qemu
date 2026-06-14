@@ -201,6 +201,9 @@ http://127.0.0.1:8088/?ram=128&heap=384&pace=1&input=shared&cursor=host&fps=8&re
   codes in `public/shared-input.js`, written to wasm memory, and drained by a
   QEMU timer into the q800 ADB keyboard/mouse devices. `input=hmp`,
   `input=hybrid`, and `input=sdl` are diagnostic-only escape hatches.
+  `#probeState.sharedInput` exposes the latest absolute pointer coordinate,
+  frontend button mask, button-release hold time, and backend key/mouse/button
+  counters for drift reports.
 - `cursor=host` uses the Classic Mac CSS cursor path copied from 68k_web. It is
   instant host-side feedback, and the served wasm now exports guest cursor bytes
   while suppressing the guest software cursor. Retest headed cursor drift/click
