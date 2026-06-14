@@ -23,7 +23,7 @@
 #endif
 
 #define WI_MAGIC       0xC8917001u
-#define WI_VERSION     2
+#define WI_VERSION     3
 #define WI_NCTRL       32
 #define WI_KEY_SLOTS   128
 #define WI_KEY_STRIDE  4
@@ -38,6 +38,9 @@
 #define WI_MAC_ROM_SCAN_BYTES 0x00100000u
 #ifndef C89_WI_POLL_MS
 #define C89_WI_POLL_MS 15
+#endif
+#ifndef C89_WI_MAX_ADB_DELTA
+#define C89_WI_MAX_ADB_DELTA 63
 #endif
 
 enum {
@@ -71,6 +74,8 @@ enum {
     WI_C_CURSOR_OFFSET,
     WI_C_CURSOR_BYTES,
     WI_C_MOUSE_ABS_SYNCS,
+    WI_C_LAST_MOUSE_DX,
+    WI_C_LAST_MOUSE_DY,
 };
 
 typedef struct WasmInputShared {
@@ -137,6 +142,17 @@ static void wi_sync_mac_mouse_lowmem(int x, int y)
                          MEMTXATTRS_UNSPECIFIED, &res);
     address_space_stw_be(&address_space_memory, 0x830, y,
                          MEMTXATTRS_UNSPECIFIED, &res);
+}
+
+static int32_t wi_clamp_adb_delta(int32_t value)
+{
+    if (value < -C89_WI_MAX_ADB_DELTA) {
+        return -C89_WI_MAX_ADB_DELTA;
+    }
+    if (value > C89_WI_MAX_ADB_DELTA) {
+        return C89_WI_MAX_ADB_DELTA;
+    }
+    return value;
 }
 
 static bool wi_guest_code_addr_is_plausible(uint32_t addr)
@@ -319,26 +335,28 @@ static void wi_poll_mouse(int32_t *ctrl)
 
     if (g_wi_abs_valid) {
         /*
-         * Absolute browser input should behave like 68k_web: the source of
-         * truth is the Mac low-memory mouse Points, not a large residual ADB
-         * relative delta. The previous path queued a big dx/dy into QEMU's ADB
-         * mouse, then immediately rewrote low memory to the target coordinate;
-         * ADB would keep draining that stale delta in 63px chunks and the VM
-         * cursor/click target drifted away from the host cursor. In absolute
-         * mode we now anchor low memory every poll and use ADB only to report
-         * button-state changes.
+         * A/UX is split-brained here. The Classic Mac side needs the same
+         * low-memory absolute anchors as 68k_web (MTemp, RawMouse, Mouse), but
+         * the A/UX login/kernel path also consumes real ADB relative motion.
+         * Feed only the browser's bounded per-event delta through ADB, then
+         * reassert the absolute low-memory Points so Toolbox click coordinates
+         * do not fall back to a corner.
          */
         wi_sync_mac_mouse_lowmem(g_wi_abs_x, g_wi_abs_y);
-        dx = 0;
-        dy = 0;
+        dx = wi_clamp_adb_delta(dx);
+        dy = wi_clamp_adb_delta(dy);
     }
 
     if (dx || dy || buttons != g_wi_last_buttons || abs_flags) {
         if (g_wi_abs_valid) {
-            c89_adb_mouse_set_event(0, 0, adb_buttons);
+            c89_adb_mouse_event(dx, dy, adb_buttons);
             wi_sync_mac_mouse_lowmem(g_wi_abs_x, g_wi_abs_y);
         } else {
             c89_adb_mouse_event(dx, dy, adb_buttons);
+        }
+        if (dx || dy) {
+            ctrl[WI_C_LAST_MOUSE_DX] = dx;
+            ctrl[WI_C_LAST_MOUSE_DY] = dy;
         }
         if (dx || dy || abs_flags) {
             ctrl[WI_C_MOUSE_EVENTS]++;

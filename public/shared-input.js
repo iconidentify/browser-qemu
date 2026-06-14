@@ -18,7 +18,8 @@
       C_LAST_QCODE = 18, C_LAST_ADB = 19, C_LAST_BUTTONS = 20,
       C_ABS_WIDTH = 21, C_ABS_HEIGHT = 22, C_CURSOR_SEQ = 23,
       C_CURSOR_HOT_X = 24, C_CURSOR_HOT_Y = 25, C_CURSOR_VALID = 26,
-      C_CURSOR_OFFSET = 27, C_CURSOR_BYTES = 28, C_MOUSE_ABS_SYNCS = 29;
+      C_CURSOR_OFFSET = 27, C_CURSOR_BYTES = 28, C_MOUSE_ABS_SYNCS = 29,
+      C_LAST_MOUSE_DX = 30, C_LAST_MOUSE_DY = 31;
 
   var MOD_SHIFT = 0x0200;
   var MOD_CAPS = 0x0002;
@@ -601,6 +602,8 @@
           cursorHotspotX: ready ? Atomics.load(ctrl, ctrlBase + C_CURSOR_HOT_X) : 0,
           cursorHotspotY: ready ? Atomics.load(ctrl, ctrlBase + C_CURSOR_HOT_Y) : 0,
           mouseAbsSyncs: ready ? Atomics.load(ctrl, ctrlBase + C_MOUSE_ABS_SYNCS) : 0,
+          lastMouseDx: ready ? Atomics.load(ctrl, ctrlBase + C_LAST_MOUSE_DX) : 0,
+          lastMouseDy: ready ? Atomics.load(ctrl, ctrlBase + C_LAST_MOUSE_DY) : 0,
           buttonReleaseHoldMs: BUTTON_RELEASE_HOLD_MS,
         };
       },

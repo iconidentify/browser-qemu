@@ -14,7 +14,8 @@ ran inside A/UX as root.
 The current served wasm also includes the native cursor/click-alignment patch:
 guest `TheCrsr` is exported to the host CSS cursor, Mac software cursor drawing
 is suppressed, and absolute mouse input anchors Classic Mac low-memory
-`MTemp`/`RawMouse`/`Mouse` rather than draining stale ADB relative deltas.
+`MTemp`/`RawMouse`/`Mouse` while still forwarding bounded ADB-relative mouse
+deltas for the A/UX kernel/login path.
 
 Reliable headed recipe: `make serve`, then run `make browser-interactive` or
 open
@@ -532,6 +533,7 @@ Current input/display status:
   temporary headless Chrome against paused `qemu-lazy`, runs the page's
   structured shared-input self-test, verifies the 800x600 shared geometry,
   confirms a center pointer press/release reaches QEMU with both button edges,
+  confirms QEMU saw a nonzero ADB mouse delta while absolute mode was active,
   checks both the browser key-tap path and `KeyX` as ADB `0x07`, and verifies
   the missing-keyup auto-release guard for headed typing stalls.
 - The page's `Yield 2s` button and `make hmp-yield-pulse-start INTERVAL=2` run the current interactive cadence: every two seconds the control worker queues only `stop; cont`, giving Chrome/QEMU a scheduling window with minimal HMP output. The `Pulse 30s` button and `make hmp-sample-pulse-start INTERVAL=30` keep the diagnostic stop/status/register/block/continue cadence. Do not switch to full pulse-off for normal interaction yet; pair pulse-off with `make hmp-stop` only before screenshots or page inspection.
@@ -546,9 +548,13 @@ Current input/display status:
 - Heavy browser screenshot capture can still time out while the guest is running. Prefer `#probeState.framebuffer` while running, then pause with `make hmp-stop` before taking screenshots.
 - The host cursor is instant CSS copied from the 68k_web approach. The served
   wasm now exports `TheCrsr`, suppresses Mac software cursor vectors in the
-  68k_web style, and anchors absolute mouse input through low-memory
-  `MTemp`/`RawMouse`/`Mouse` instead of stale ADB relative deltas. The next work
-  is headed cursor/click validation and any remaining drift tuning.
+  68k_web style, anchors absolute mouse input through low-memory
+  `MTemp`/`RawMouse`/`Mouse`, and also forwards bounded per-poll ADB relative
+  deltas. This hybrid path matters because the ROM/Classic Mac side can look
+  alive from low-memory anchors while the A/UX login/kernel path still needs
+  real ADB movement; a stuck-corner cursor after kernel boot is the regression
+  this build is meant to fix. The next work is headed cursor/click validation
+  and any remaining drift tuning.
 - The browser shell now includes a generic HMP command box plus `make hmp CMD="..."`; use those for disassembly and memory probes instead of adding temporary buttons.
 
 ## Known-Good Desktop A/UX Launch Shape

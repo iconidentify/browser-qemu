@@ -1964,6 +1964,9 @@
       const keyDown = sharedInputBridge.testKey("KeyX", true);
       const keyUp = sharedInputBridge.testKey("KeyX", false);
       const expectedGeometry = activeGuestGeometry();
+      sharedInputBridge.releaseMouse();
+      const pointerPrime = sharedInputBridge.testPointer(392, 292, 0);
+      await delay(45);
       const pointerDown = sharedInputBridge.testPointer(400, 300, 1);
       await delay(45);
       const pointerUp = sharedInputBridge.testPointer(400, 300, 0);
@@ -1983,6 +1986,7 @@
           sharedAfterAutoRelease.pressedKeys === 0
         ),
         afterAutoRelease: sharedAfterAutoRelease,
+        pointerPrime,
         pointerDown,
         pointerUp,
         ok: Boolean(
@@ -1999,6 +2003,7 @@
           sharedAfter.absWidth === expectedGeometry.width &&
           sharedAfter.absHeight === expectedGeometry.height &&
           sharedAfter.backendMouse >= sharedBefore.backendMouse + 1 &&
+          (sharedAfter.lastMouseDx !== 0 || sharedAfter.lastMouseDy !== 0) &&
           sharedAfter.backendButtons >= sharedBefore.backendButtons + 2 &&
           sharedAfter.backendKeys >= sharedBefore.backendKeys + 4 &&
           sharedAfter.keyTaps >= sharedBefore.keyTaps + 1 &&
@@ -2034,6 +2039,8 @@
       backendKeys: shared && shared.after ? shared.after.backendKeys : null,
       backendMouse: shared && shared.after ? shared.after.backendMouse : null,
       backendButtons: shared && shared.after ? shared.after.backendButtons : null,
+      lastMouseDx: shared && shared.after ? shared.after.lastMouseDx : null,
+      lastMouseDy: shared && shared.after ? shared.after.lastMouseDy : null,
       lastAdb: shared && shared.after ? shared.after.lastAdb : null,
       frontendButtons: shared && shared.after ? shared.after.frontendButtons : null,
       lastButtons: shared && shared.after ? shared.after.lastButtons : null,
