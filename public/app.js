@@ -190,6 +190,7 @@
   let diagnosticRunId = 0;
   let diagnosticLive = false;
   let pulseRunTimer = 0;
+  let pulseRunTransitionTimer = 0;
   let controlWorkerPollCount = 0;
   let controlWorkerPollAt = 0;
   let controlWorkerPollOkCount = 0;
@@ -248,6 +249,10 @@
   };
   let diskWorkerStats = null;
   let lastDiskIoCounters = null;
+  const diskStatsLogIntervalMs = 30000;
+  let diskStatsLastLogAt = 0;
+  let diskStatsLastErrorCount = 0;
+  let diskStatsLastWriteCount = 0;
   let lastCpuRegister = {
     pc: "",
     sr: "",
@@ -732,6 +737,30 @@
     setSignalText(diskIoRateValue, `${formatRate(callsPerSec)} r/s`, title);
     setSignalText(diskIoByteRateValue, `${wireMbPerSec.toFixed(2)} MB/s wire`, title);
     lastDiskIoCounters = counters;
+  }
+
+  function formatDiskWorkerStats(stats) {
+    return `disk worker stats: ${stats.requests} reqs ${(stats.servedBytes / 1048576).toFixed(1)}MB served, ` +
+      `${stats.fetches} fetches ${(stats.fetchedBytes / 1048576).toFixed(1)}MB wire, ` +
+      `${stats.cacheHitRequests} cache-hit reqs, cache ${(stats.cacheBytes / 1048576).toFixed(1)}MB/${stats.cacheChunks} chunks, ` +
+      `${stats.writes} writes ${(stats.writtenBytes / 1048576).toFixed(1)}MB, ` +
+      `${stats.errors} errors`;
+  }
+
+  function shouldLogDiskWorkerStats(stats) {
+    const now = Date.now();
+    const errors = Number(stats.errors) || 0;
+    const writes = Number(stats.writes) || 0;
+    const important = errors > diskStatsLastErrorCount || writes > diskStatsLastWriteCount;
+
+    if (!important && now - diskStatsLastLogAt < diskStatsLogIntervalMs) {
+      return false;
+    }
+
+    diskStatsLastLogAt = now;
+    diskStatsLastErrorCount = errors;
+    diskStatsLastWriteCount = writes;
+    return true;
   }
 
   function delay(ms) {
@@ -1291,12 +1320,9 @@
       } else if (message.type === "stats" && message.stats) {
         window.AuxDiskStats = message.stats;
         diskWorkerStats = message.stats;
-        const s = message.stats;
-        log(`disk worker stats: ${s.requests} reqs ${(s.servedBytes / 1048576).toFixed(1)}MB served, ` +
-          `${s.fetches} fetches ${(s.fetchedBytes / 1048576).toFixed(1)}MB wire, ` +
-          `${s.cacheHitRequests} cache-hit reqs, cache ${(s.cacheBytes / 1048576).toFixed(1)}MB/${s.cacheChunks} chunks, ` +
-          `${s.writes} writes ${(s.writtenBytes / 1048576).toFixed(1)}MB, ` +
-          `${s.errors} errors`);
+        if (shouldLogDiskWorkerStats(message.stats)) {
+          log(formatDiskWorkerStats(message.stats));
+        }
       }
     };
     worker.onerror = (event) => {
@@ -3319,7 +3345,21 @@
       window.clearInterval(pulseRunTimer);
       pulseRunTimer = 0;
     }
+    if (pulseRunTransitionTimer) {
+      window.clearTimeout(pulseRunTransitionTimer);
+      pulseRunTransitionTimer = 0;
+    }
     pulseRunActive = false;
+  }
+
+  function selectedPulseReliefOptions() {
+    const params = new URLSearchParams(window.location.search);
+    const rawSampleMs = params.get("pulseSampleMs") || params.get("pulseReliefMs");
+    const sampleMs = rawSampleMs === null
+      ? 90000
+      : Math.max(0, Math.min(600000, Number.parseInt(rawSampleMs, 10) || 0));
+    const yieldMs = normalizePulseIntervalMs(params.get("pulseYieldMs"), 1000) || 10000;
+    return { sampleMs, yieldMs };
   }
 
   function setPulseRunState(active, intervalMs = 30000, mode = pulseRunMode) {
@@ -3351,7 +3391,7 @@
     sendHmp("cont", true);
   }
 
-  function startPulseRun(intervalMs = 30000, mode = "sample") {
+  function startPulseRun(intervalMs = 30000, mode = "sample", options = {}) {
     const normalizedMode = mode === "yield" ? "yield" : "sample";
     const minMs = normalizedMode === "yield" ? 1000 : 5000;
     const fallbackMs = normalizedMode === "yield" ? 2000 : 30000;
@@ -3374,6 +3414,20 @@
     hmpMonitorActive = false;
     setPulseRunState(true, boundedMs, normalizedMode);
     log(`${normalizedMode} pulse run started: ${(boundedMs / 1000).toFixed(1)}s cadence`);
+
+    if (normalizedMode === "sample" && options.autoRelief !== false) {
+      const relief = selectedPulseReliefOptions();
+      if (relief.sampleMs > 0) {
+        pulseRunTransitionTimer = window.setTimeout(() => {
+          pulseRunTransitionTimer = 0;
+          if (!pulseRunActive || pulseRunMode !== "sample") return;
+          log(`sample pulse relief: switching to yield pulse after ${(relief.sampleMs / 1000).toFixed(1)}s`);
+          startPulseRun(relief.yieldMs, "yield", { autoRelief: false });
+        }, relief.sampleMs);
+        log(`sample pulse relief armed: yield pulse in ${(relief.sampleMs / 1000).toFixed(1)}s`);
+      }
+    }
+
     updateProbeState();
   }
 
