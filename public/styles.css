@@ -123,6 +123,7 @@ h2 {
 }
 
 #canvas {
+  --canvas-ring: var(--line);
   box-sizing: content-box;
   display: block;
   width: var(--guest-width, 1152px);
@@ -130,10 +131,10 @@ h2 {
   max-width: none;
   max-height: none;
   margin: 0 auto;
-  border: 1px solid var(--line);
+  border: 0;
   border-radius: 8px;
   background: #05070a;
-  box-shadow: 0 18px 36px var(--shadow);
+  box-shadow: 0 0 0 1px var(--canvas-ring), 0 18px 36px var(--shadow);
   outline: none;
   cursor: var(--mac-arrow-cursor);
   touch-action: none;
@@ -151,7 +152,7 @@ h2 {
 #canvas:focus,
 .display-panel.capturing #canvas,
 .display-panel.runtime-active #canvas {
-  border-color: var(--accent);
+  --canvas-ring: var(--accent);
 }
 
 .display-panel:fullscreen {

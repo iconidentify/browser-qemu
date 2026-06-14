@@ -27,9 +27,10 @@ Current state:
   reproducible build pipeline (`scripts/patch-qemu-out-js-display.mjs`).
   Verify with `#probeState.renderer.framesRendered > 0`; if it stays `0`, the
   browser is still on stock SDL blits.
-- The `res=` URL parameter now locks the visible native canvas size. The app no
-  longer adopts Emscripten/SDL's bordered 802x602 framebuffer reports as a new
-  guest mode; `#probeState.canvas` reports both client and content-box sizes.
+- The `res=` URL parameter now locks the visible native canvas size. The canvas
+  visual frame is drawn with a shadow ring instead of a DOM border, so
+  Emscripten/SDL sees the exact guest pixel plane; `#probeState.canvas` reports
+  client and content-box sizes for verification.
 - The served `out.js` has a tunable bounded PTY wait. Defaults remain
   conservative (`ptyMin=8`, `ptyIdle=32`), while the headed interactive profile
   uses `ptyMin=2&ptyIdle=16` for lower input latency.
@@ -156,10 +157,10 @@ All verified with headless smoke/watch runs unless noted.
    `hw/display/macfb.c` + a wasm rebuild. Override per-session with `&res=1152x870`.
 
 5. **Query-locked canvas geometry and content-box input mapping.** With
-   `res=800x600`, the visible canvas and backing stay 800x600 even if SDL reports
-   802x602 after its border math. Mouse/click coordinates now use the canvas
-   content box in both `public/app.js` and `public/shared-input.js`, matching the
-   guest pixel plane instead of the bordered DOM rectangle.
+   `res=800x600`, the visible canvas, backing, and SDL-reported framebuffer stay
+   800x600. The visual ring is CSS shadow, not a DOM border, and mouse/click
+   coordinates use the canvas content box in both `public/app.js` and
+   `public/shared-input.js`.
 
 6. **Native cursor/click path packaged.** The served wasm includes the
    `wasminput` patch that exports guest cursor bytes, suppresses Mac software

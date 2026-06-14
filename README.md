@@ -514,10 +514,9 @@ Current input/display status:
 - The SDL canvas attaches, QEMU/HMP are controllable, and the framebuffer is proven alive: paused prelaunch clears to black, then after `make hmp-cont` QEMU mode-sets the canvas back to 1152x870 and the framebuffer checksum changes.
 - The display surface was previously distorted by the host page's `max-height` rule. The canvas CSS now preserves the Quadra 1152x870 aspect ratio instead of squashing the framebuffer vertically.
 - With `res=800x600`, the visible canvas and backing stay locked to 800x600.
-  The app reports bordered DOM size separately from content size in
-  `#probeState.canvas`, and both the shared input bridge and HMP fallback map
-  mouse coordinates through the content box rather than the 802x602 bordered
-  rectangle.
+  The canvas visual frame is a CSS shadow ring instead of a DOM border, so SDL
+  sees the exact guest pixel plane. Both the shared input bridge and HMP fallback
+  map mouse coordinates through the content box.
 - The active browser input path is shared ADB input. Early headed verification
   shows mouse and keyboard counters moving through `sharedInput`, with `KeyX`
   reaching QEMU as ADB `0x07`; HMP/hybrid/SDL modes remain diagnostic-only.
