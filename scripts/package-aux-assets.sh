@@ -112,7 +112,7 @@ cat > "${PUBLIC_QEMU}/module.js" <<'EOF'
 var args = [
   "-M", "q800",
   "-m", "128",
-  "-accel", "tcg,tb-size=500",
+  "-accel", "tcg,tb-size=128",
   "-L", "/pack/",
   "-bios", "/pack/Quadra800.rom",
   "-display", "sdl,gl=off,show-cursor=off",

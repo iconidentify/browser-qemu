@@ -213,17 +213,20 @@
   let serialRenderTimer = 0;
   let serialRenderDirty = false;
   let lastSerialRenderAt = 0;
-  const probeStateMinMs = queryIntParam("probeMs", 1500, 250, 10000);
-  const runtimeInstrumentIntervalMs = queryIntParam("instrumentMs", 2000, 500, 10000);
+  const probeStateMinMs = queryIntParam("probeMs", 2500, 500, 15000);
+  const runtimeInstrumentIntervalMs = queryIntParam("instrumentMs", 5000, 1000, 30000);
   const cursorProbeMinMs = queryIntParam("cursorMs", 250, 33, 5000);
   const framebufferProbeIntervalMs = queryIntParam("frameProbeMs", 5000, 1000, 30000);
-  const diskWorkerStatsRequestMs = queryIntParam("diskStatsMs", 2000, 500, 30000);
+  const diskWorkerStatsRequestMs = queryIntParam("diskStatsMs", 5000, 1000, 30000);
+  const breadcrumbIntervalMs = queryIntParam("breadcrumbMs", 15000, 5000, 60000);
+  const qemuTbSizeMb = queryIntParam("tb", 128, 32, 500);
   let probeStateTimer = 0;
   let probeStateDirty = false;
   let lastRuntimeInstrumentAt = 0;
   let lastCursorProbeAt = 0;
   let lastFramebufferProbeAt = 0;
   let lastDiskWorkerStatsRequestAt = 0;
+  let lastBreadcrumbAt = 0;
   const uiMetricMinMs = 80;
   let eventMetricTimer = 0;
   let mouseMetricTimer = 0;
@@ -1315,7 +1318,7 @@
       transport = "dialtone";
     }
     const chunkKb = Number(params.get("diskChunkKb")) || 128;
-    const cacheMb = Number(params.get("diskCacheMb")) || 384;
+    const cacheMb = queryIntParam("diskCacheMb", 128, 32, 1024);
     const token = params.get("diskToken") || "";
     const tabId = `c89-${Math.random().toString(36).slice(2, 10)}`;
     const control = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 16);
@@ -1714,6 +1717,36 @@
       `disk=${formatCount(disk.guestCalls)}r/${(disk.guestBytes / 1048576).toFixed(1)}MB ` +
       `input=${formatCount(inputEvents)}ev adb=${formatCount(adbKeys)}k/${formatCount(adbMouse)}m ` +
       `pty=${formatCount(ptyQueued)}q/${formatCount(ptyDropped)}d`,
+    );
+  }
+
+  function logRuntimeBreadcrumb(reason = "periodic") {
+    if (!qemuStarted) return;
+    let shared = null;
+    try {
+      shared = sharedInputBridge && sharedInputBridge.isReady() ? sharedInputBridge.stats() : null;
+    } catch {
+      shared = null;
+    }
+
+    const disk = currentDiskIoCounters();
+    const wasmMb = (qemuInstance && qemuInstance.HEAPU8) ? Math.round(qemuInstance.HEAPU8.length / 1048576) : 0;
+    const cacheMb = (window.AuxDiskStats && window.AuxDiskStats.cacheBytes) ? Math.round(window.AuxDiskStats.cacheBytes / 1048576) : 0;
+    const jsHeapMb = (performance && performance.memory) ? Math.round(performance.memory.usedJSHeapSize / 1048576) : -1;
+    const adbMouse = shared ? Number(shared.backendMouse) || 0 : 0;
+    const adbKeys = shared ? Number(shared.backendKeys) || 0 : 0;
+    const pointer = shared && shared.pointer ? `${shared.pointer.guestX},${shared.pointer.guestY}` : "none";
+    const generation = qemuScreenCtl ? Atomics.load(qemuScreenCtl, 4) : -1;
+    const diskMb = disk.guestBytes / 1048576;
+
+    log(
+      `breadcrumb ${reason}: lag=${responsivenessLastLagMs}/${responsivenessMaxLagMs}ms ` +
+      `stalls=${responsivenessLongTasks} hb=${heartbeat} ` +
+      `frames=${formatCount(framesRendered)} gen=${generation} ` +
+      `mem=${wasmMb}/${cacheMb}/${jsHeapMb}MB wasm/disk/js ` +
+      `disk=${formatCount(disk.guestCalls)}r/${diskMb.toFixed(1)}MB ` +
+      `input=${formatCount(totalInputEvents(eventCounters))}ev ` +
+      `adb=${formatCount(adbKeys)}k/${formatCount(adbMouse)}m ptr=${pointer}`,
     );
   }
 
@@ -2312,8 +2345,19 @@
   function canvasGuestPoint(event) {
     const box = canvasContentBox();
     if (!box) return null;
-    const x = Math.max(0, Math.min(canvas.width - 1, Math.round((event.clientX - box.left) * box.scaleX)));
-    const y = Math.max(0, Math.min(canvas.height - 1, Math.round((event.clientY - box.top) * box.scaleY)));
+    const geometry = activeGuestGeometry();
+    const backingWidth = Math.max(1, Math.trunc(geometry.backingWidth || canvas.width || 1));
+    const backingHeight = Math.max(1, Math.trunc(geometry.backingHeight || canvas.height || 1));
+    const guestWidth = Math.max(1, Math.trunc(geometry.width || backingWidth));
+    const guestHeight = Math.max(1, Math.trunc(geometry.height || backingHeight));
+    const offsetX = Math.max(0, Math.trunc(geometry.offsetX || 0));
+    const offsetY = Math.max(0, Math.trunc(geometry.offsetY || 0));
+    const viewportLeft = box.left + box.width * offsetX / backingWidth;
+    const viewportTop = box.top + box.height * offsetY / backingHeight;
+    const viewportWidth = Math.max(1, box.width * guestWidth / backingWidth);
+    const viewportHeight = Math.max(1, box.height * guestHeight / backingHeight);
+    const x = Math.max(0, Math.min(guestWidth - 1, Math.trunc((event.clientX - viewportLeft) * guestWidth / viewportWidth)));
+    const y = Math.max(0, Math.min(guestHeight - 1, Math.trunc((event.clientY - viewportTop) * guestHeight / viewportHeight)));
     return { x, y };
   }
 
@@ -2450,6 +2494,51 @@
       const keyUp = sharedInputBridge.testKey("KeyX", false);
       const expectedGeometry = activeGuestGeometry();
       sharedInputBridge.releaseMouse();
+      const pointerEventTarget = { x: 123, y: 77 };
+      let pointerEventOk = false;
+      let pointerEventStats = null;
+      const pointerBox = canvasContentBox();
+      if (pointerBox && typeof PointerEvent === "function") {
+        const backingWidth = Math.max(1, expectedGeometry.backingWidth || canvas.width || 1);
+        const backingHeight = Math.max(1, expectedGeometry.backingHeight || canvas.height || 1);
+        const viewportLeft = pointerBox.left + pointerBox.width * (expectedGeometry.offsetX || 0) / backingWidth;
+        const viewportTop = pointerBox.top + pointerBox.height * (expectedGeometry.offsetY || 0) / backingHeight;
+        const viewportWidth = Math.max(1, pointerBox.width * expectedGeometry.width / backingWidth);
+        const viewportHeight = Math.max(1, pointerBox.height * expectedGeometry.height / backingHeight);
+        const clientX = viewportLeft + (pointerEventTarget.x + 0.25) * viewportWidth / expectedGeometry.width;
+        const clientY = viewportTop + (pointerEventTarget.y + 0.25) * viewportHeight / expectedGeometry.height;
+        const pointerEventBase = {
+          bubbles: true,
+          cancelable: true,
+          pointerId: 31,
+          pointerType: "mouse",
+          isPrimary: true,
+          clientX,
+          clientY,
+          button: 0,
+        };
+        dispatchCanvasInputEvent(new PointerEvent("pointermove", {
+          ...pointerEventBase,
+          buttons: 0,
+        }));
+        dispatchCanvasInputEvent(new PointerEvent("pointerdown", {
+          ...pointerEventBase,
+          buttons: 1,
+        }));
+        dispatchCanvasInputEvent(new PointerEvent("pointerup", {
+          ...pointerEventBase,
+          buttons: 0,
+        }));
+        pointerEventStats = sharedInputBridge.stats();
+        pointerEventOk = Boolean(
+          pointerEventStats.pointer &&
+          pointerEventStats.pointer.guestX === pointerEventTarget.x &&
+          pointerEventStats.pointer.guestY === pointerEventTarget.y &&
+          pointerEventStats.absX === pointerEventTarget.x &&
+          pointerEventStats.absY === pointerEventTarget.y
+        );
+      }
+      sharedInputBridge.releaseMouse();
       const pointerPrime = sharedInputBridge.testPointer(392, 292, 0);
       await delay(45);
       const pointerDown = sharedInputBridge.testPointer(400, 300, 1);
@@ -2464,6 +2553,9 @@
         tapKeyUpIgnored,
         repeatTapSuppressed,
         repeatSuppressionOk,
+        pointerEventOk,
+        pointerEventTarget,
+        pointerEventStats,
         keyDown,
         keyUp,
         lostKeyDown,
@@ -2480,6 +2572,7 @@
           lostKeyDown &&
           tapKey &&
           repeatSuppressionOk &&
+          pointerEventOk &&
           sharedAfterAutoRelease.autoKeyReleases >= sharedBefore.autoKeyReleases + 1 &&
           sharedAfterAutoRelease.pressedKeys === 0 &&
           keyDown &&
@@ -2536,6 +2629,9 @@
       keyTaps: shared && shared.after ? shared.after.keyTaps : null,
       keyTapRepeatSuppressions: shared && shared.after ? shared.after.keyTapRepeatSuppressions : null,
       repeatSuppressionOk: shared ? shared.repeatSuppressionOk : false,
+      pointerEventOk: shared ? shared.pointerEventOk : false,
+      pointerEventX: shared && shared.pointerEventStats ? shared.pointerEventStats.absX : null,
+      pointerEventY: shared && shared.pointerEventStats ? shared.pointerEventStats.absY : null,
       autoKeyReleases: shared && shared.after ? shared.after.autoKeyReleases : null,
       keyAutoReleaseMs: shared && shared.after ? shared.after.keyAutoReleaseMs : null,
       pressedKeys: shared && shared.after ? shared.after.pressedKeys : null,
@@ -2557,6 +2653,24 @@
     const accelIndex = next.indexOf("-accel");
     const insertAt = accelIndex === -1 ? 0 : Math.min(next.length, accelIndex + 2);
     next.splice(insertAt, 0, "-icount", icount);
+    return next;
+  }
+
+  function applyTbSize(args) {
+    const next = [...args];
+    const accelIndex = next.indexOf("-accel");
+    if (accelIndex === -1 || !next[accelIndex + 1]) return next;
+
+    const parts = String(next[accelIndex + 1]).split(",").filter(Boolean);
+    let replaced = false;
+    for (let index = 0; index < parts.length; index += 1) {
+      if (parts[index].startsWith("tb-size=")) {
+        parts[index] = `tb-size=${qemuTbSizeMb}`;
+        replaced = true;
+      }
+    }
+    if (!replaced) parts.push(`tb-size=${qemuTbSizeMb}`);
+    next[accelIndex + 1] = parts.join(",");
     return next;
   }
 
@@ -2802,11 +2916,11 @@
     const disk = files.disk ? files.disk.name : "aux-3.1.1-disk.img";
     const disk2 = files.disk2 ? files.disk2.name : null;
     const pram = files.pram ? files.pram.name : "pram.img";
-    const args = applyCpuPacing([
+    const args = applyCpuPacing(applyTbSize([
       "qemu-system-m68k",
       "-M", "q800",
       "-m", String(selectedRamMb()),
-      "-accel", "tcg,tb-size=500",
+      "-accel", `tcg,tb-size=${qemuTbSizeMb}`,
       "-L", "/pack/",
       "-bios", `/pack/${rom}`,
       "-display", "sdl,gl=off,show-cursor=off",
@@ -2823,7 +2937,7 @@
         : []),
       "-monitor", "stdio",
       "-serial", "none",
-    ]);
+    ]));
 
     const planNetMode = new URLSearchParams(window.location.search).get("net");
     if (planNetMode === "1" || planNetMode === "relay") {
@@ -3028,7 +3142,7 @@
       }
       window.Module.arguments = applyNetMode(applyResolution(applyDiskWriteMode(applyDisplayMode(
         applyTraceOptions(
-          applyCpuPacing(applyRamSize(window.AuxQemuModuleArguments || window.Module.arguments || []))
+          applyCpuPacing(applyTbSize(applyRamSize(window.AuxQemuModuleArguments || window.Module.arguments || [])))
         )
       ))));
       log(`RAM configured: ${selectedRamMb()} MB`);
@@ -4003,6 +4117,16 @@
   window.addEventListener("blur", () => {
     if (sharedInputBridge) sharedInputBridge.releaseAll();
   });
+  window.addEventListener("pagehide", () => {
+    logRuntimeBreadcrumb("pagehide");
+    flushBrowserLogMirror();
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") {
+      logRuntimeBreadcrumb("hidden");
+      flushBrowserLogMirror();
+    }
+  });
 
   initializeBootOptionsFromQuery();
   drawPlaceholder();
@@ -4042,6 +4166,10 @@
       lastRuntimeInstrumentAt = now;
       pollDiskIoStats();
       updateTelemetry();
+    }
+    if (now - lastBreadcrumbAt >= breadcrumbIntervalMs) {
+      lastBreadcrumbAt = now;
+      logRuntimeBreadcrumb();
     }
     updateProbeState();
   }, 1000);

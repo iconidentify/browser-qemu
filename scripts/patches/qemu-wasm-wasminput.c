@@ -31,6 +31,7 @@
 #define WI_MAC_THECRSR  0x844
 #define WI_MAC_CRSR_VIS 0x8cc
 #define WI_MAC_CRSR_NEW 0x8ce
+#define WI_MAC_CRSR_COUPLE 0x8cf
 #define WI_MAC_CRSR_STATE 0x8d0
 #define WI_MAC_DRAW_CRSR_VECTOR 0x1fb8
 #define WI_MAC_ERASE_CRSR_VECTOR 0x1fbc
@@ -122,6 +123,7 @@ static inline int32_t wi_exchange_i32(int32_t *p, int32_t v)
 static void wi_sync_mac_mouse_lowmem(int x, int y)
 {
     MemTxResult res;
+    uint8_t crsr_couple;
 
     /*
      * Classic Mac low-memory mouse globals are Points stored as (v,h).
@@ -142,6 +144,18 @@ static void wi_sync_mac_mouse_lowmem(int x, int y)
                          MEMTXATTRS_UNSPECIFIED, &res);
     address_space_stw_be(&address_space_memory, 0x830, y,
                          MEMTXATTRS_UNSPECIFIED, &res);
+
+    /*
+     * Match 68k_web/BasiliskII's absolute-mouse fix: after updating the mouse
+     * Points, ask the Mac cursor machinery to reconcile against the fresh raw
+     * position. Without this, the Event Manager and cursor bookkeeping can get
+     * one update out of phase in hardware-cursor mode.
+     */
+    crsr_couple = address_space_ldub(&address_space_memory,
+                                     WI_MAC_CRSR_COUPLE,
+                                     MEMTXATTRS_UNSPECIFIED, &res);
+    address_space_stb(&address_space_memory, WI_MAC_CRSR_NEW, crsr_couple,
+                      MEMTXATTRS_UNSPECIFIED, &res);
 }
 
 static int32_t wi_clamp_adb_delta(int32_t value)

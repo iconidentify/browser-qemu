@@ -3,7 +3,7 @@ var runtimeDir = "qemu-lazy";
 var args = [
   "-M", "q800",
   "-m", "128",
-  "-accel", "tcg,tb-size=500",
+  "-accel", "tcg,tb-size=128",
   "-snapshot",
   "-L", "/pack/",
   "-bios", "/pack/Quadra800.rom",

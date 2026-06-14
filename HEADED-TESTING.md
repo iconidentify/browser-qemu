@@ -54,6 +54,28 @@ Current state:
   headed sessions with `heap=384`, finish headed cursor/click validation, and
   continue CPU/perf tuning.
 
+## June 14 checkpoint
+
+- A headed post-login watcher now exists: `make watch-login-session`
+  (`scripts/watch-login-session.mjs`). It starts stock headed Chrome, waits at
+  least 90 seconds for the real A/UX login framebuffer to settle, clicks the
+  Name field, types `root`, tabs, types `31337leet`, presses Return, captures
+  screenshots, and watches page responsiveness after login.
+- The manual Chrome burn was not reproduced by automation: a real login +
+  three-minute post-login watch stayed responsive (`maxEvalMs=2`, no long
+  tasks). The run did expose memory pressure: the old default
+  `tcg,tb-size=500` grew the WASM heap to about 1188 MB by login and the disk
+  worker cache climbed toward 200 MB.
+- New default browser launches lower avoidable memory pressure:
+  `tb=128` (`-accel tcg,tb-size=128`) and `diskCacheMb=128`. A valid real-login
+  comparison reached login around 123 s, stayed responsive, and peaked at about
+  881 MB WASM heap plus 128 MB disk cache. Use `&tb=500&diskCacheMb=384` only
+  when intentionally comparing against the old profile.
+- The page now emits periodic `breadcrumb` lines to the server-mirrored browser
+  log with UI lag, frame generation, memory, disk, and input counters. If the
+  visible tab is too busy to click Copy log, run `make browser-log` after
+  closing or while it is still open.
+
 ---
 
 ## Codex: start here

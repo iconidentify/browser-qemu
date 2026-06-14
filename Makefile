@@ -1,5 +1,6 @@
 SHELL := /bin/bash
 DURATION ?= 5
+LOGIN_DURATION ?= 360
 INTERVAL ?= 5
 RAM ?= 16
 NATIVE_ARGS ?=
@@ -13,7 +14,7 @@ PULSE_MS ?= 30000
 ICOUNT ?= shift=10,sleep=off
 MAX_ICOUNT_SHIFT ?= 15
 
-.PHONY: help fetch build-qemu build-qemu-responsive build-qemu-lean build-qemu-balanced build-qemu-grow build-qemu-balanced-esp-pdma-fifo512 build-qemu-balanced-esp-pdma-fifo512-adb-suppress build-qemu-balanced-esp-pdma-fifo512-exitpump build-qemu-balanced-esp-pdma-fifo512-exitpump-esp-pc-trace build-qemu-balanced-esp-pdma-fifo512-chainpump build-qemu-balanced-esp-pdma-fifo512-chainpump-esp-pc-trace build-qemu-balanced-esp-pdma-fifo512-mmio-backoff-esp-pc-trace build-qemu-balanced-esp-pdma-fifo512-icount-shift build-qemu-balanced-esp-pdma-fifo512-esp-pc-trace build-qemu-balanced-t2-pc-trace build-qemu-balanced-t2-esp-trace build-qemu-balanced-t2-esp-pc-trace build-qemu-balanced-pgtable-trace build-qemu-balanced-dyn-tb build-qemu-balanced-dyn-tb-pc-trace build-qemu-balanced-dyn-tb-exc-trace build-qemu-balanced-dyn-tb-full-trace build-qemu-balanced-dyn-tb-mmu-walk-trace build-qemu-balanced-dyn-tb-pgtable-trace build-qemu-balanced-dyn-tb-movec-flush-trace build-qemu-balanced-dyn-tb-no-fpcast build-qemu-balanced-no-via-t2-hack build-qemu-balanced-pc-trace build-qemu-balanced-via-trace build-qemu-balanced-adb-suppress build-qemu-balanced-t2-adb-suppress build-native-qemu-wasm sync-runtime package package-local package-smoke package-lazy refresh-stable-runtime serve disk-relay disk-promote browser browser-interactive browser-shared-input browser-stop browser-log browser-log-clear hmp hmp-help hmp-status hmp-cont hmp-stop hmp-run-for hmp-pulse-start hmp-yield-pulse-start hmp-sample-pulse-start hmp-pulse-stop hmp-step hmp-rom-probe hmp-info-block hmp-info-registers hmp-info-qtree hmp-info-via hmp-key hmp-text hmp-clear probe-rom-progress summarize-probes smoke-headless-browser smoke-shared-input watch-browser-boot smoke-headless-lazy-pulse smoke-headless-scsi smoke-headless-scsi-series smoke-headless-scsi-continuous smoke-headless-via-series smoke-headless-via-scsi-series smoke-headless-via-scsi-icount-series smoke-headless-via-scsi-built-icount-series smoke-headless-via-scsi-pc-trace-long smoke-headless-via-scsi-fifo512-pc-trace-long smoke-headless-via-scsi-exitpump-pc-trace-long smoke-headless-scsi-exitpump-continuous-long smoke-headless-via-scsi-chainpump-pc-trace-long smoke-headless-scsi-chainpump-continuous-long smoke-headless-scsi-mmio-backoff-continuous-long smoke-headless-scsi-esp-trace-long smoke-headless-scsi-pc-trace-long probe-native-qemu probe-native-qemu-wasm build-ui serve-ui clean
+.PHONY: help fetch build-qemu build-qemu-responsive build-qemu-lean build-qemu-balanced build-qemu-grow build-qemu-balanced-esp-pdma-fifo512 build-qemu-balanced-esp-pdma-fifo512-adb-suppress build-qemu-balanced-esp-pdma-fifo512-exitpump build-qemu-balanced-esp-pdma-fifo512-exitpump-esp-pc-trace build-qemu-balanced-esp-pdma-fifo512-chainpump build-qemu-balanced-esp-pdma-fifo512-chainpump-esp-pc-trace build-qemu-balanced-esp-pdma-fifo512-mmio-backoff-esp-pc-trace build-qemu-balanced-esp-pdma-fifo512-icount-shift build-qemu-balanced-esp-pdma-fifo512-esp-pc-trace build-qemu-balanced-t2-pc-trace build-qemu-balanced-t2-esp-trace build-qemu-balanced-t2-esp-pc-trace build-qemu-balanced-pgtable-trace build-qemu-balanced-dyn-tb build-qemu-balanced-dyn-tb-pc-trace build-qemu-balanced-dyn-tb-exc-trace build-qemu-balanced-dyn-tb-full-trace build-qemu-balanced-dyn-tb-mmu-walk-trace build-qemu-balanced-dyn-tb-pgtable-trace build-qemu-balanced-dyn-tb-movec-flush-trace build-qemu-balanced-dyn-tb-no-fpcast build-qemu-balanced-no-via-t2-hack build-qemu-balanced-pc-trace build-qemu-balanced-via-trace build-qemu-balanced-adb-suppress build-qemu-balanced-t2-adb-suppress build-native-qemu-wasm sync-runtime package package-local package-smoke package-lazy refresh-stable-runtime serve disk-relay disk-promote browser browser-interactive browser-shared-input browser-stop browser-log browser-log-clear hmp hmp-help hmp-status hmp-cont hmp-stop hmp-run-for hmp-pulse-start hmp-yield-pulse-start hmp-sample-pulse-start hmp-pulse-stop hmp-step hmp-rom-probe hmp-info-block hmp-info-registers hmp-info-qtree hmp-info-via hmp-key hmp-text hmp-clear probe-rom-progress summarize-probes smoke-headless-browser smoke-shared-input watch-browser-boot watch-login-session smoke-headless-lazy-pulse smoke-headless-scsi smoke-headless-scsi-series smoke-headless-scsi-continuous smoke-headless-via-series smoke-headless-via-scsi-series smoke-headless-via-scsi-icount-series smoke-headless-via-scsi-built-icount-series smoke-headless-via-scsi-pc-trace-long smoke-headless-via-scsi-fifo512-pc-trace-long smoke-headless-via-scsi-exitpump-pc-trace-long smoke-headless-scsi-exitpump-continuous-long smoke-headless-via-scsi-chainpump-pc-trace-long smoke-headless-scsi-chainpump-continuous-long smoke-headless-scsi-mmio-backoff-continuous-long smoke-headless-scsi-esp-trace-long smoke-headless-scsi-pc-trace-long probe-native-qemu probe-native-qemu-wasm build-ui serve-ui clean
 
 help:
 	@printf '%s\n' \
@@ -89,6 +90,7 @@ help:
 		'  make smoke-headless-browser DURATION=5 Launch temp headless Chrome and run ROM probe' \
 		'  make smoke-shared-input Verify shared-input canvas geometry, mouse edge latching, and KeyX ADB mapping' \
 		'  make watch-browser-boot DURATION=600 INTERVAL=45 Boot lazy A/UX (128MB, pulse cadence) and record screenshots to build/boot-watch/' \
+		'  make watch-login-session LOGIN_DURATION=360 Boot, login as root, and watch headed post-login responsiveness' \
 		'  make smoke-headless-lazy-pulse DURATION=45 INTERVAL=15 PULSE_MS=30000 Smoke the visible Start lazy pulse path' \
 		'  make smoke-headless-scsi DURATION=20 Launch headless probe with narrow ESP/SCSI trace' \
 		'  make smoke-headless-scsi-series DURATION=600 INTERVAL=30 Sample stable browser SCSI progress with proven pulse cadence' \
@@ -379,7 +381,10 @@ smoke-shared-input:
 	@node ./scripts/smoke-shared-input.mjs
 
 watch-browser-boot:
-	@node ./scripts/watch-browser-boot.mjs --duration "$(DURATION)" --interval "$(INTERVAL)" --url "http://127.0.0.1:8088/?build=aux-login-watch&ram=128&heap=1280&pace=0&autostart=lazy-pulse&pulseMs=30000"
+	@node ./scripts/watch-browser-boot.mjs --duration "$(DURATION)" --interval "$(INTERVAL)" --url "http://127.0.0.1:8088/?build=aux-login-watch&ram=128&heap=384&pace=1&input=shared&cursor=host&fps=8&res=640x480&autostart=lazy-pulse&pulseMode=yield&pulseMs=2000&ptyMin=2&ptyIdle=16"
+
+watch-login-session:
+	@node ./scripts/watch-login-session.mjs --watch-secs "$(LOGIN_DURATION)"
 
 smoke-headless-lazy-pulse:
 	@node ./scripts/smoke-headless-browser.mjs --url "http://127.0.0.1:8088/?build=headless-lazy-pulse&ram=16&heap=1280&pace=0&autostart=lazy-pulse&pulseMs=$(PULSE_MS)" --probe-duration "$(DURATION)" --probe-interval "$(INTERVAL)"

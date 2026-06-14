@@ -240,11 +240,13 @@ try {
   addCheck(checks, "self-test-ok", result.ok === true, { result });
   addCheck(checks, "shared-dimensions-800x600", result.absWidth === 800 && result.absHeight === 600, { result });
   addCheck(checks, "mouse-abs-center", result.absX === 400 && result.absY === 300, { result });
+  addCheck(checks, "mouse-pointer-event-off-center", result.pointerEventOk === true && result.pointerEventX === 123 && result.pointerEventY === 77, { result });
   addCheck(checks, "mouse-backend-saw-button-edges", result.backendButtons >= 2, { result });
   addCheck(checks, "mouse-backend-saw-adb-delta", result.lastMouseDx !== 0 || result.lastMouseDy !== 0, { result });
   addCheck(checks, "mouse-released", result.frontendButtons === 0 && result.lastButtons === 0, { result });
   addCheck(checks, "keyboard-backend-saw-keyx", result.backendKeys >= 2 && result.lastAdb === 0x07, { result });
   addCheck(checks, "keyboard-browser-key-tap", result.tapKey === true && result.keyTaps >= 1, { result });
+  addCheck(checks, "keyboard-repeat-suppressed", result.repeatSuppressionOk === true && result.keyTapRepeatSuppressions >= 1, { result });
   addCheck(checks, "keyboard-missing-keyup-auto-release", result.autoReleaseOk === true && result.autoKeyReleases >= 1 && result.pressedKeys === 0, { result });
 
   const ok = checks.every((check) => check.pass);

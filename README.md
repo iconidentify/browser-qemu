@@ -17,6 +17,15 @@ is suppressed, and absolute mouse input anchors Classic Mac low-memory
 `MTemp`/`RawMouse`/`Mouse` while still forwarding bounded ADB-relative mouse
 deltas for the A/UX kernel/login path.
 
+CHECKPOINT, June 14, 2026: post-login headed Chrome burn was investigated with
+`scripts/watch-login-session.mjs`, which boots to the A/UX login, types
+`root` / `31337leet` through real browser key events, and watches UI latency
+after login. The old profile stayed responsive but grew to about 1188 MB of
+WASM heap plus 200 MB of disk cache. New default launches use
+`tb-size=128` and `diskCacheMb=128`, cutting the valid login run to about
+881 MB WASM heap and 128 MB disk cache with no page stalls. Use `&tb=500` or
+`&diskCacheMb=384` only for old-baseline comparisons.
+
 Reliable headed recipe: `make serve`, then run `make browser-interactive` or
 open
 `http://127.0.0.1:8088/?ram=128&heap=384&pace=1&input=shared&cursor=host&fps=8&res=800x600&autostart=lazy-pulse&pulseMode=yield&pulseMs=2000&ptyMin=2&ptyIdle=16`.
@@ -33,6 +42,9 @@ cadence instead of leaving the emulator hot forever. The heavier
 is serviced; keep it for headless or instrumented ROM/SCSI probes. Use
 continuous `autostart=lazy` only for focused debugging, then close or pause the
 tab before interacting for long.
+If a tab is too busy to click Copy log, run `make browser-log`; the page now
+mirrors periodic breadcrumbs with lag, memory, framebuffer, disk, and input
+counts to the dev server.
 For networking, start/keep Dialtone on `:8080`, add `&net=1&netZone=<zone>`,
 and drive auxagent with `node scripts/auxctl-zone.mjs --zone <zone> ...`.
 See ROADMAP.md for the plan to production and VENDOR.md for how the vendor
