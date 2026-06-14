@@ -13,6 +13,7 @@
   const mouseMetric = document.getElementById("mouseMetric");
   const captureMetric = document.getElementById("captureMetric");
   const heartbeatMetric = document.getElementById("heartbeatMetric");
+  const uiLagMetric = document.getElementById("uiLagMetric");
   const eventMetric = document.getElementById("eventMetric");
   const diskMetric = document.getElementById("diskMetric");
   const diskIoMetric = document.getElementById("diskIoMetric");
@@ -148,6 +149,15 @@
   const AUX_NET_MAC = "08:00:07:0a:0b:0c";
   let heartbeat = 0;
   let lastHeartbeatAt = performance.now();
+  const responsivenessIntervalMs = 500;
+  const responsivenessLongTaskMs = 250;
+  let responsivenessExpectedAt = performance.now() + responsivenessIntervalMs;
+  let responsivenessLastLagMs = 0;
+  let responsivenessMaxLagMs = 0;
+  let responsivenessSamples = 0;
+  let responsivenessLongTasks = 0;
+  let responsivenessLastLongTaskAt = 0;
+  let responsivenessLastLogAt = 0;
   let lastControlId = 0;
   let hmpMonitorActive = false;
   let hmpInputMode = "shared";
@@ -1223,6 +1233,31 @@
     eventMetric.textContent = `${eventCounters.keydown + eventCounters.keyup} key / ${eventCounters.mousemove + eventCounters.mousedown + eventCounters.mouseup + eventCounters.wheel} mouse`;
   }
 
+  function updateResponsivenessMetric() {
+    if (!uiLagMetric) return;
+    uiLagMetric.textContent = `${responsivenessLastLagMs} ms last / ${responsivenessMaxLagMs} ms max / ${responsivenessLongTasks} stalls`;
+  }
+
+  function sampleResponsiveness() {
+    const now = performance.now();
+    const lag = Math.max(0, Math.round(now - responsivenessExpectedAt));
+    responsivenessLastLagMs = lag;
+    responsivenessMaxLagMs = Math.max(responsivenessMaxLagMs, lag);
+    responsivenessSamples += 1;
+    if (lag >= responsivenessLongTaskMs) {
+      responsivenessLongTasks += 1;
+      responsivenessLastLongTaskAt = Date.now();
+      if (lag >= 1000 && Date.now() - responsivenessLastLogAt > 15000) {
+        responsivenessLastLogAt = Date.now();
+        log(`ui lag: ${lag}ms timer drift (${responsivenessLongTasks} stalls)`);
+      }
+    }
+    responsivenessExpectedAt = now + responsivenessIntervalMs;
+    updateResponsivenessMetric();
+    updateProbeState();
+    window.setTimeout(sampleResponsiveness, responsivenessIntervalMs);
+  }
+
   function scheduleEventMetricUpdate() {
     if (eventMetricTimer) return;
     eventMetricTimer = window.setTimeout(() => {
@@ -1424,6 +1459,15 @@
       lastControlId,
       hmpMonitorActive,
       hmpInputMode,
+      responsiveness: {
+        intervalMs: responsivenessIntervalMs,
+        longTaskMs: responsivenessLongTaskMs,
+        lastLagMs: responsivenessLastLagMs,
+        maxLagMs: responsivenessMaxLagMs,
+        samples: responsivenessSamples,
+        longTasks: responsivenessLongTasks,
+        lastLongTaskAt: responsivenessLastLongTaskAt,
+      },
       sharedInput: sharedInputBridge ? sharedInputBridge.stats() : null,
       inputSelfTest: lastInputSelfTest,
       qemuStatus: qemuStatus.textContent,
@@ -1508,6 +1552,7 @@
       ptyDroppedBytes: snapshot.ptyDroppedBytes,
       events: snapshot.events,
       capture: snapshot.capture,
+      responsiveness: snapshot.responsiveness,
       canvas: snapshot.canvas,
       framebuffer: snapshot.framebuffer,
       renderer: snapshot.renderer,
@@ -3380,10 +3425,12 @@
   setStatus(netStatus, "Network offline", "");
   updateCaptureState();
   updateEventMetric();
+  updateResponsivenessMetric();
   setHmpButtonsDisabled(true);
   pollDiskIoStats();
   renderProbeLog("initial");
   updateProbeState();
+  window.setTimeout(sampleResponsiveness, responsivenessIntervalMs);
   window.setInterval(() => {
     heartbeat += 1;
     lastHeartbeatAt = performance.now();

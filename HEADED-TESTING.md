@@ -216,6 +216,10 @@ http://127.0.0.1:8088/?ram=128&heap=384&pace=1&input=shared&cursor=host&fps=8&re
 - `fps=8` caps the page-side framebuffer loop. Use `fps=20` for smoother
   screen updates or `fps=0` only for display benchmarks; X11 can peg Chrome
   hard when uncapped.
+- The Input panel now includes `UI lag`, and `#probeState.responsiveness`
+  mirrors the same timer-drift data. During headed runs, spikes over 1000 ms are
+  the signal that the page thread itself is stalling, separate from guest CPU or
+  disk progress.
 - Use `heap=384` with the current growable-memory build. Older fixed-memory
   packages required `heap=1280`; that note is historical.
 - Default resolution is 800x600; append `&res=1152x870` for full size.
