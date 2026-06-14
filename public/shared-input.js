@@ -129,6 +129,29 @@
     return Math.max(min, Math.min(max, value));
   }
 
+  function cssPixelNumber(value) {
+    var n = Number.parseFloat(value || "0");
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  function canvasContentBox(canvas) {
+    var rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    var style = root.getComputedStyle ? root.getComputedStyle(canvas) : null;
+    var borderLeft = style ? cssPixelNumber(style.borderLeftWidth) : 0;
+    var borderRight = style ? cssPixelNumber(style.borderRightWidth) : 0;
+    var borderTop = style ? cssPixelNumber(style.borderTopWidth) : 0;
+    var borderBottom = style ? cssPixelNumber(style.borderBottomWidth) : 0;
+    var width = Math.max(1, rect.width - borderLeft - borderRight);
+    var height = Math.max(1, rect.height - borderTop - borderBottom);
+    return {
+      left: rect.left + borderLeft,
+      top: rect.top + borderTop,
+      width: width,
+      height: height,
+    };
+  }
+
   function buttonMaskFromEvent(event) {
     var buttons = event.buttons || 0;
     var mask = 0;
@@ -154,8 +177,8 @@
   }
 
   function canvasScale(canvas) {
-    var rect = canvas.getBoundingClientRect();
-    if (!rect.width || !rect.height) return null;
+    var rect = canvasContentBox(canvas);
+    if (!rect) return null;
     return {
       rect: rect,
       x: canvas.width / rect.width,

@@ -115,7 +115,6 @@
   // that keeps a throttled tab from wedging. Slots: [0]=MAGIC [1]=W [2]=H
   // [3]=PTR(bytes) [4]=GENERATION. Mirror of patch-qemu-out-js-display.mjs.
   const C89_SCREEN_MAGIC = 0x53435231; // "SCR1"
-  const FRAMEBUFFER_RELOCK_DELTA = 16;
   let qemuScreenShared = null; // SharedArrayBuffer | null
   let qemuScreenCtl = null;    // Int32Array over qemuScreenShared
   let screenTimerId = 0;
@@ -127,6 +126,7 @@
   let canvasDisplayW = canvas.width;
   let canvasDisplayH = canvas.height;
   let canvasDisplayLocked = false;
+  let canvasQueryDisplayLocked = false;
   let canvasNativeFrameSeen = false;
   let canvasDisplayMismatchLogged = false;
   let canvasBackingMismatchLogged = false;
@@ -402,11 +402,41 @@
     return { width, height, depth };
   }
 
+  function cssPixelNumber(value) {
+    const n = Number.parseFloat(value || "0");
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  function canvasContentBox() {
+    const rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    const style = getComputedStyle(canvas);
+    const borderLeft = cssPixelNumber(style.borderLeftWidth);
+    const borderRight = cssPixelNumber(style.borderRightWidth);
+    const borderTop = cssPixelNumber(style.borderTopWidth);
+    const borderBottom = cssPixelNumber(style.borderBottomWidth);
+    const width = Math.max(1, rect.width - borderLeft - borderRight);
+    const height = Math.max(1, rect.height - borderTop - borderBottom);
+    return {
+      left: rect.left + borderLeft,
+      top: rect.top + borderTop,
+      width,
+      height,
+      scaleX: canvas.width / width,
+      scaleY: canvas.height / height,
+    };
+  }
+
   function setCanvasDisplaySize(width, height, options = {}) {
     const w = Math.max(1, Math.trunc(width));
     const h = Math.max(1, Math.trunc(height));
     canvasDisplayW = w;
     canvasDisplayH = h;
+    if (options.queryLock) {
+      canvasQueryDisplayLocked = true;
+    } else if (!options.lock) {
+      canvasQueryDisplayLocked = false;
+    }
     if (options.lock) {
       canvasDisplayLocked = true;
     }
@@ -625,16 +655,6 @@
 
     if (w !== screenW || h !== screenH || !screenImage) {
       if (canvasDisplayLocked) {
-        const deltaW = Math.abs(w - canvasDisplayW);
-        const deltaH = Math.abs(h - canvasDisplayH);
-        if ((deltaW > FRAMEBUFFER_RELOCK_DELTA || deltaH > FRAMEBUFFER_RELOCK_DELTA) &&
-            (w !== canvasDisplayW || h !== canvasDisplayH)) {
-          setCanvasDisplaySize(w, h, {
-            lock: true,
-            resizeBacking: true,
-            reason: canvasNativeFrameSeen ? "framebuffer mode change" : "framebuffer native size",
-          });
-        }
         canvasNativeFrameSeen = true;
       }
 
@@ -647,7 +667,8 @@
       } else if (canvasNativeFrameSeen && (w !== canvasDisplayW || h !== canvasDisplayH)) {
         if (!canvasDisplayMismatchLogged) {
           canvasDisplayMismatchLogged = true;
-          log(`framebuffer ${w}x${h} differs from locked canvas ${canvasDisplayW}x${canvasDisplayH}; drawing clipped to locked native size`);
+          const lock = canvasQueryDisplayLocked ? "query-locked" : "locked";
+          log(`framebuffer ${w}x${h} differs from ${lock} canvas ${canvasDisplayW}x${canvasDisplayH}; drawing clipped to locked native size`);
         }
       }
       screenImage = ctx.createImageData(w, h);
@@ -1383,6 +1404,7 @@
   }
 
   function readProbeSnapshot() {
+    const contentBox = canvasContentBox();
     return {
       heartbeat,
       heartbeatAgeMs: Math.round(performance.now() - lastHeartbeatAt),
@@ -1428,8 +1450,11 @@
         displayWidth: canvasDisplayW,
         displayHeight: canvasDisplayH,
         displayLocked: canvasDisplayLocked,
+        queryDisplayLocked: canvasQueryDisplayLocked,
         clientWidth: Math.round(canvas.getBoundingClientRect().width),
         clientHeight: Math.round(canvas.getBoundingClientRect().height),
+        contentWidth: contentBox ? Math.round(contentBox.width) : 0,
+        contentHeight: contentBox ? Math.round(contentBox.height) : 0,
       },
       framebuffer: framebufferProbe,
       renderer: {
@@ -1729,10 +1754,10 @@
   }
 
   function canvasGuestPoint(event) {
-    const rect = canvas.getBoundingClientRect();
-    if (!rect.width || !rect.height) return null;
-    const x = Math.max(0, Math.min(canvas.width - 1, Math.round((event.clientX - rect.left) * canvas.width / rect.width)));
-    const y = Math.max(0, Math.min(canvas.height - 1, Math.round((event.clientY - rect.top) * canvas.height / rect.height)));
+    const box = canvasContentBox();
+    if (!box) return null;
+    const x = Math.max(0, Math.min(canvas.width - 1, Math.round((event.clientX - box.left) * box.scaleX)));
+    const y = Math.max(0, Math.min(canvas.height - 1, Math.round((event.clientY - box.top) * box.scaleY)));
     return { x, y };
   }
 
@@ -2041,6 +2066,7 @@
     if (displayGeometry) {
       setCanvasDisplaySize(displayGeometry.width, displayGeometry.height, {
         lock: true,
+        queryLock: true,
         resizeBacking: true,
         reason: "query resolution",
       });

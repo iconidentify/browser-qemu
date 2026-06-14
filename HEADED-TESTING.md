@@ -11,7 +11,7 @@ Repo: `~/Documents/c89summer/browser-qemu` (branch `main`).
 
 ## June 13 status update
 
-This handoff started before the latest push. Current state:
+Current state:
 
 - TEST 1 has passed in normal headed Chrome with the growable-memory build:
   boot reaches the "Welcome to A/UX" login without the old frozen disk-stats
@@ -27,15 +27,16 @@ This handoff started before the latest push. Current state:
   reproducible build pipeline (`scripts/patch-qemu-out-js-display.mjs`).
   Verify with `#probeState.renderer.framesRendered > 0`; if it stays `0`, the
   browser is still on stock SDL blits.
-- The canvas now snaps the CSS size and parent panel to the actual framebuffer
-  backing size. It no longer scales differently before/after fullscreen.
+- The `res=` URL parameter now locks the visible native canvas size. The app no
+  longer adopts Emscripten/SDL's bordered 802x602 framebuffer reports as a new
+  guest mode; `#probeState.canvas` reports both client and content-box sizes.
 - The served `out.js` has a tunable bounded PTY wait. Defaults remain
   conservative (`ptyMin=8`, `ptyIdle=32`), while the headed interactive profile
   uses `ptyMin=2&ptyIdle=16` for lower input latency.
-- The canvas uses a host-side Classic Mac cursor and can export the guest Mac
-  `TheCrsr` bytes into CSS cursor data. QEMU source now contains the next
-  cursor/click-alignment patch, but it requires `make build-qemu-grow &&
-  make package-lazy` before the served wasm picks it up.
+- The served wasm now includes the 68k_web-style cursor/click-alignment patch:
+  QEMU exports `TheCrsr`, suppresses the Mac software cursor draw path, and
+  anchors absolute mouse input through the Classic Mac low-memory mouse globals.
+  A real headed retest still needs to judge remaining drift/click feel.
 - The browser shell now exposes queued guest text:
   `make hmp-text TEXT=root`, `make hmp-key KEY=tab`,
   `make hmp-text TEXT=31337leet`, `make hmp-key KEY=ret`.
@@ -46,8 +47,8 @@ This handoff started before the latest push. Current state:
   `scripts/auxctl-zone.mjs --zone codex-net exec 'uname -a; id'` ran in the
   guest as root.
 - Remaining high-value work: reduce headed boot/cold-disk churn, prove long
-  headed sessions with `heap=384`, finish true guest cursor suppression/export,
-  and continue CPU/perf tuning.
+  headed sessions with `heap=384`, finish headed cursor/click validation, and
+  continue CPU/perf tuning.
 
 ---
 
@@ -120,14 +121,14 @@ main-thread dependency from QEMU's critical path. Progress so far:
 | Display blit (full-screen putImageData proxied every frame) | **DECOUPLED** — SDL blit writes a shared block; page renders on its own rAF |
 | Guest disk reads (synchronous XHR on the main thread) | **MOVED OFF** — `public/disk-worker.js` services reads via a SAB worker |
 | Monitor PTY idle wait (could park the loop forever) | **FIXED + TUNABLE** — see test 1 below |
-| Cursor shape change (`toDataURL` proxied to main) | **PARTIALLY BYPASSED** — page shows an instant host CSS cursor; QEMU source has 68k_web-style suppression/export pending rebuild |
+| Cursor shape change (`toDataURL` proxied to main) | **ACTIVE** — page shows an instant host CSS cursor generated from guest `TheCrsr`; QEMU suppresses Mac software cursor drawing |
 | Fixed 1280 MB wasm heap (commits 1.28 GB/tab) | **REBUILT** — growable-memory runtime is packaged in `public/qemu-lazy/` |
 
 ---
 
-## 2. What has been changed this round (all in the working tree, uncommitted)
+## 2. What has been changed this round
 
-All verified to **boot to the A/UX login screen headless** unless noted.
+All verified with headless smoke/watch runs unless noted.
 
 1. **PTY idle-wait freeze fix (the big one this round).**
    `scripts/patch-qemu-out-js-lazyfile.mjs` + live `public/qemu-lazy/out.js`.
@@ -154,7 +155,18 @@ All verified to **boot to the A/UX login screen headless** unless noted.
    **1024x768 is NOT a hardware mode** and cannot be set without adding it to
    `hw/display/macfb.c` + a wasm rebuild. Override per-session with `&res=1152x870`.
 
-5. **Memory probe** added to the page's `#probeState` snapshot (`wasmMb`,
+5. **Query-locked canvas geometry and content-box input mapping.** With
+   `res=800x600`, the visible canvas and backing stay 800x600 even if SDL reports
+   802x602 after its border math. Mouse/click coordinates now use the canvas
+   content box in both `public/app.js` and `public/shared-input.js`, matching the
+   guest pixel plane instead of the bordered DOM rectangle.
+
+6. **Native cursor/click path packaged.** The served wasm includes the
+   `wasminput` patch that exports guest cursor bytes, suppresses Mac software
+   cursor drawing, writes absolute mouse coordinates to `MTemp`/`RawMouse`/`Mouse`,
+   and uses ADB only for button state in absolute mode.
+
+7. **Memory probe** added to the page's `#probeState` snapshot (`wasmMb`,
    `diskCacheMb`, `jsHeapMb`) for diagnostics.
 
 ---
@@ -188,10 +200,10 @@ http://127.0.0.1:8088/?ram=128&heap=384&pace=1&input=shared&cursor=host&fps=8&re
   codes in `public/shared-input.js`, written to wasm memory, and drained by a
   QEMU timer into the q800 ADB keyboard/mouse devices. `input=hmp`,
   `input=hybrid`, and `input=sdl` are diagnostic-only escape hatches.
-- `cursor=host` uses the Classic Mac CSS cursor copied from 68k_web. It is
-  instant host-side feedback. The QEMU-side cursor suppression/export and
-  absolute low-memory mouse anchor patch exists in source, but the served wasm
-  must be rebuilt before headed testing can judge cursor drift/click alignment.
+- `cursor=host` uses the Classic Mac CSS cursor path copied from 68k_web. It is
+  instant host-side feedback, and the served wasm now exports guest cursor bytes
+  while suppressing the guest software cursor. Retest headed cursor drift/click
+  alignment here; build work is no longer the blocker.
 - `fps=8` caps the page-side framebuffer loop. Use `fps=20` for smoother
   screen updates or `fps=0` only for display benchmarks; X11 can peg Chrome
   hard when uncapped.
@@ -267,28 +279,22 @@ If DevTools is open, note memory (the page `#probeState` carries `wasmMb` +
 
 ## 5. Open issues + next steps (headless side will keep working these)
 
-1. **Growable-memory long-session validation.** The runtime has been rebuilt with
-   Emscripten growable memory, so normal headed testing should use `heap=384`
-   rather than committing a fixed ~1.28 GB up front:
-   ```sh
-   make build-qemu-grow && make package-lazy     # ~20-40 min, Docker, CPU-heavy
-   ```
-   (`scripts/build-qemu-m68k-wasm.sh` honors `QEMU_WASM_GROW_MEMORY=1` ->
-   `-sALLOW_MEMORY_GROWTH` + `INITIAL_MEMORY=384MB` + `MAXIMUM_MEMORY=2048MB`.)
-   This also folds in the 15 ms net RX timer and shared ADB input. Remaining
-   work: run long headed sessions with `heap=384` and confirm there is no late
-   browser memory crash.
+1. **Growable-memory long-session validation.** The served runtime has been
+   rebuilt with Emscripten growable memory, so normal headed testing should use
+   `heap=384` rather than committing a fixed ~1.28 GB up front. Remaining work:
+   run long headed sessions with `heap=384` and confirm there is no late browser
+   memory crash.
 
 2. **CPU/sluggishness.** Suspect lever: the main-loop PTY wait min-floor. The
    default `8/32` profile is conservative; the interactive launcher now uses
    `2/16` after a smoke pass. Continue A/B-ing the floor with
    `scripts/bench-boot.mjs` (below) before changing the default.
 
-3. **True guest hardware cursor and click alignment.** The host CSS cursor layer
-   is active. Source now exports the actual Mac cursor data, reasserts
-   DrawCrsr/EraseCrsr suppression, and makes absolute mouse low memory the
-   source of truth instead of queuing large ADB deltas. Rebuild/package QEMU wasm,
-   then retest whether the rendered cursor and guest click target stay aligned.
+3. **Headed cursor and click alignment.** The host CSS cursor layer and native
+   low-memory mouse anchor are active in the served runtime. Retest in a real tab:
+   the visible cursor, low-memory mouse position, and click target should stay in
+   the same content-box coordinate plane. If drift remains, inspect whether the
+   guest is publishing a non-800x600 mode internally while the UI is locked.
 
 4. **React shell (`:8090`)** still needs input + disk-worker wiring ported; it
    shares the same runtime fixes (the PTY fix applies to it too).
@@ -398,29 +404,22 @@ out.js fixes apply to it too.
   `make package-lazy` re-bundles it. **Never** write to the `assets/` master
   directly without the promote step.
 
-## Appendix C: uncommitted changes this round (working tree, branch `main`)
+## Appendix C: current change map
 
-Modified:
-- `public/app.js` — decoupled-renderer rAF loop + `Module.c89Screen`; memory
-  fields in the probe; serial Copy button + selection-preserving render.
-- `public/qemu-lazy/out.js` — PTY idle wait capped at 32 ms (was Infinity);
-  decoupled-blit patch applied.
-- `public/qemu-lazy/module.js` — default `-g` set to `800x600x8`.
-- `scripts/patch-qemu-out-js-lazyfile.mjs` — persists the 32 ms PTY-wait cap.
-- `scripts/package-lazy-aux-assets.sh` — wires in the display patch; default 800x600.
-- `scripts/build-qemu-m68k-wasm.sh` — `QEMU_WASM_GROW_MEMORY=1` growable-memory option.
-- `Makefile` — `build-qemu-grow`, `build-ui`, `serve-ui` targets + help.
-- `public/index.html`, `public/styles.css` — serial Copy button + styles.
-- `scripts/watch-browser-boot.mjs` — records `renderer`/`memory` probe fields.
-- `scripts/smoke-click-hazard.mjs` — modified earlier in the session (test
-  harness; not part of this round's runtime fixes).
+Most of this handoff's original working-tree items have now been committed or
+packaged. The files most relevant to the current headed-quality work are:
 
-New (untracked):
-- `HEADED-TESTING.md` (this file).
-- `scripts/bench-boot.mjs` — the boot benchmark.
-- `scripts/patch-qemu-out-js-display.mjs` — the decoupled-blit patch.
-- `scripts/shot-react-core.mjs` — headless screenshot/console capture for `:8090`.
-- `web/` — the imported React front-end (its `node_modules`/`dist` are gitignored).
+- `public/app.js` — loader, decoupled renderer, query-locked canvas geometry,
+  content-box pointer fallback, PTY timing options, serial/probe state.
+- `public/shared-input.js` — 68k_web-style browser event to shared-memory ADB
+  bridge, including content-box absolute pointer mapping.
+- `scripts/patches/qemu-wasm-wasminput.c` — QEMU-side shared ADB input backend,
+  guest cursor export/suppression, and low-memory mouse anchoring.
+- `scripts/patch-qemu-out-js-lazyfile.mjs` — generated-runtime lazy-file, PTY,
+  net, input, display, and pthread glue patching.
+- `public/qemu-lazy/out.js` and `public/qemu-lazy/qemu-system-m68k.wasm` —
+  served growable-memory runtime artifacts; rebuild with
+  `make build-qemu-grow && make package-lazy` after QEMU C changes.
 
 Note: `public/disk-worker.js` is intentionally **unchanged vs HEAD** — the
 readahead experiment was added and then fully reverted, so it shows no diff.

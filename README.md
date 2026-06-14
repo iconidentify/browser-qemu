@@ -11,6 +11,10 @@ controls (`make hmp-text TEXT=root`), and a proven WebSocket Ethernet path:
 relay, `scripts/probe-guest-net.mjs` saw ARP/ICMP/TCP replies from
 `10.1.1.20`, and `scripts/auxctl-zone.mjs --zone codex-net exec 'uname -a; id'`
 ran inside A/UX as root.
+The current served wasm also includes the native cursor/click-alignment patch:
+guest `TheCrsr` is exported to the host CSS cursor, Mac software cursor drawing
+is suppressed, and absolute mouse input anchors Classic Mac low-memory
+`MTemp`/`RawMouse`/`Mouse` rather than draining stale ADB relative deltas.
 
 Reliable headed recipe: `make serve`, then run `make browser-interactive` or
 open
@@ -200,7 +204,9 @@ Local browser verification:
 - While running, the in-app QEMU renderer uses roughly one full core. Pause with `make hmp-stop` before screenshots, navigation, browser reloads, or long inspection.
 - The control worker ignores commands whose `issuedAt` timestamp predates the current VM start. This prevents stale `cont` commands in ignored `public/control.local.json` from replaying into a fresh paused launch.
 - The temporary `pthread entry ptr=...` diagnostic was removed from the generated runtime patch; if it appears again, a stale `out.js` is being served.
-- `qemu-lazy` starts the same runtime and mounts the A/UX/JAG disk images as lazy files. The latest run reaches live framebuffer output and monitor control, but not yet disk boot.
+- `qemu-lazy` starts the current growable-memory runtime and mounts the A/UX/JAG
+  disk images as lazy files. Current headed runs can reach the A/UX login; the
+  remaining work is making that path fast, smooth, and boringly repeatable.
 - The browser shell focuses the SDL canvas, captures keyboard state, supports pointer lock/fullscreen, and keeps host page events from leaking while the emulator is focused.
 - The initial browser failures are fixed: stale artifact 404s are avoided with `Cache-Control: no-store`, the missing `PTY.onSignal` shim is provided, `/tmp` and `/var/tmp` are created before QEMU startup, and pthread entry dispatch now calls the wasm table entry exactly once.
 - The old full-preload generated bundle under `public/qemu/` was removed locally to save about 2 GB of disk. `make package-local` can regenerate it, but `package-smoke` and `package-lazy` are the preferred active paths.
@@ -507,6 +513,11 @@ Current input/display status:
 
 - The SDL canvas attaches, QEMU/HMP are controllable, and the framebuffer is proven alive: paused prelaunch clears to black, then after `make hmp-cont` QEMU mode-sets the canvas back to 1152x870 and the framebuffer checksum changes.
 - The display surface was previously distorted by the host page's `max-height` rule. The canvas CSS now preserves the Quadra 1152x870 aspect ratio instead of squashing the framebuffer vertically.
+- With `res=800x600`, the visible canvas and backing stay locked to 800x600.
+  The app reports bordered DOM size separately from content size in
+  `#probeState.canvas`, and both the shared input bridge and HMP fallback map
+  mouse coordinates through the content box rather than the 802x602 bordered
+  rectangle.
 - The active browser input path is shared ADB input. Early headed verification
   shows mouse and keyboard counters moving through `sharedInput`, with `KeyX`
   reaching QEMU as ADB `0x07`; HMP/hybrid/SDL modes remain diagnostic-only.
@@ -514,15 +525,17 @@ Current input/display status:
 - `make browser-interactive` and `make browser-shared-input` add `ptyMin=2&ptyIdle=16`, lowering the generated runtime's bounded monitor wait for headed interaction. Use `ptyMin=8&ptyIdle=32` for the conservative default profile, and compare boot/input behavior before changing the checked-in launcher again.
 - The diagnostic `Input self-test` button and `?inputSelfTest=1` path exercise canvas focus, keyboard counters, mouse counters, and worker-backed HMP input without letting the paused VM run.
 - For quick manual probes, use the page's `ROM 5s probe` button or `make hmp-rom-probe DURATION=5` to collect status/register/block/disk/framebuffer evidence in one pass.
-- The remaining blocker is guest progress rather than canvas plumbing: the current full A/UX lazy run reaches live ROM framebuffer output, monitor control, and early ESP/SCSI reads, but it has not yet advanced into visible A/UX disk boot.
+- The remaining blocker is quality rather than basic guest progress: A/UX can
+  reach login in headed Chrome, networking has proven auxagent command execution,
+  and the active work is cursor/click polish, headed responsiveness, long-session
+  stability, and boot/cold-disk performance.
 - Running guest CPU can saturate the in-app renderer while the ROM sits in a tight CPU loop. Keep `Pace CPU` checked for casual manual page work, but use `?pace=0` for serious ROM/SCSI progress probes; start paused and run `make hmp-stop` before screenshots/navigation.
 - Heavy browser screenshot capture can still time out while the guest is running. Prefer `#probeState.framebuffer` while running, then pause with `make hmp-stop` before taking screenshots.
-- The host cursor is instant CSS copied from the 68k_web approach. The QEMU-side
-  source patch now exports `TheCrsr`, suppresses Mac software cursor vectors in
-  the 68k_web style, and anchors absolute mouse input through low-memory
-  `MTemp`/`RawMouse`/`Mouse` instead of stale ADB relative deltas. Rebuild and
-  package QEMU (`make build-qemu-grow && make package-lazy`) before expecting
-  those native cursor/click-alignment fixes in the served wasm.
+- The host cursor is instant CSS copied from the 68k_web approach. The served
+  wasm now exports `TheCrsr`, suppresses Mac software cursor vectors in the
+  68k_web style, and anchors absolute mouse input through low-memory
+  `MTemp`/`RawMouse`/`Mouse` instead of stale ADB relative deltas. The next work
+  is headed cursor/click validation and any remaining drift tuning.
 - The browser shell now includes a generic HMP command box plus `make hmp CMD="..."`; use those for disassembly and memory probes instead of adding temporary buttons.
 
 ## Known-Good Desktop A/UX Launch Shape
