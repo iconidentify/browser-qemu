@@ -408,6 +408,20 @@
         queueButtonMask(buttonMaskFromEvent(event));
         return point;
       },
+      testKey: function (code, down) {
+        var qcode = QK[codeToQKey[code] || ""];
+        if (!qcode) return false;
+        return queueKey(qcode, Boolean(down), adbKeyCodes[code], 0);
+      },
+      testPointer: function (x, y, buttons) {
+        var point = {
+          x: clampInt(x, 0, Math.max(0, canvas.width - 1)),
+          y: clampInt(y, 0, Math.max(0, canvas.height - 1)),
+        };
+        writePoint(point, null);
+        queueButtonMask(clampInt(buttons, 0, 7));
+        return point;
+      },
       releaseMouse: function () {
         if (!ready) return;
         clearButtonReleaseTimer();

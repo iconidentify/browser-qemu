@@ -523,6 +523,11 @@ Current input/display status:
   `#probeState.sharedInput` includes the latest absolute `absX/absY`, guest
   dimensions, frontend button mask, button-release hold time, and backend
   mouse/key/button counters.
+- `make smoke-shared-input` is the fast guardrail for this path. It launches a
+  temporary headless Chrome against paused `qemu-lazy`, runs the page's
+  structured shared-input self-test, verifies the 800x600 shared geometry,
+  confirms a center pointer press/release reaches QEMU with both button edges,
+  and checks that `KeyX` arrives as ADB `0x07`.
 - The page's `Yield 2s` button and `make hmp-yield-pulse-start INTERVAL=2` run the current interactive cadence: every two seconds the control worker queues only `stop; cont`, giving Chrome/QEMU a scheduling window with minimal HMP output. The `Pulse 30s` button and `make hmp-sample-pulse-start INTERVAL=30` keep the diagnostic stop/status/register/block/continue cadence. Do not switch to full pulse-off for normal interaction yet; pair pulse-off with `make hmp-stop` only before screenshots or page inspection.
 - `make browser-interactive` and `make browser-shared-input` add `ptyMin=2&ptyIdle=16`, lowering the generated runtime's bounded monitor wait for headed interaction. Use `ptyMin=8&ptyIdle=32` for the conservative default profile, and compare boot/input behavior before changing the checked-in launcher again.
 - The diagnostic `Input self-test` button and `?inputSelfTest=1` path exercise canvas focus, keyboard counters, mouse counters, and worker-backed HMP input without letting the paused VM run.

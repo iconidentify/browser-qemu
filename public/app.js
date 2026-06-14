@@ -162,6 +162,7 @@
   let hmpKeyboardTextTimer = 0;
   let inputSelfTestStayPaused = false;
   let runInputSelfTestAfterQemuReady = false;
+  let lastInputSelfTest = null;
   let diagnosticRunId = 0;
   let diagnosticLive = false;
   let pulseRunTimer = 0;
@@ -1009,6 +1010,10 @@
       sharedInputRetryCount = 0;
       setStatus(qemuStatus, qemuStartPaused ? "QEMU paused" : "QEMU running", "ready");
       log("input mode active: shared memory (68k_web-style)");
+      if (runInputSelfTestAfterQemuReady) {
+        runInputSelfTestAfterQemuReady = false;
+        window.setTimeout(runInputSelfTest, 0);
+      }
     } catch (error) {
       const message = formatError(error);
       sharedInputBridge = null;
@@ -1420,6 +1425,7 @@
       hmpMonitorActive,
       hmpInputMode,
       sharedInput: sharedInputBridge ? sharedInputBridge.stats() : null,
+      inputSelfTest: lastInputSelfTest,
       qemuStatus: qemuStatus.textContent,
       netStatus: netStatus.textContent,
       activeElement: document.activeElement ? document.activeElement.id || document.activeElement.tagName : "",
@@ -1820,7 +1826,7 @@
     return { ...eventCounters };
   }
 
-  function runInputSelfTest() {
+  async function runInputSelfTest() {
     const before = cloneEventCounters();
     focusCanvas();
 
@@ -1862,6 +1868,45 @@
       inputSelfTestStayPaused = previousStayPaused;
     }
 
+    let shared = null;
+    if (sharedInputBridge &&
+        sharedInputBridge.isReady() &&
+        typeof sharedInputBridge.testKey === "function" &&
+        typeof sharedInputBridge.testPointer === "function") {
+      const sharedBefore = sharedInputBridge.stats();
+      const keyDown = sharedInputBridge.testKey("KeyX", true);
+      const keyUp = sharedInputBridge.testKey("KeyX", false);
+      const pointerDown = sharedInputBridge.testPointer(400, 300, 1);
+      await delay(45);
+      const pointerUp = sharedInputBridge.testPointer(400, 300, 0);
+      await delay(Math.max(140, (sharedBefore.buttonReleaseHoldMs || 60) + 90));
+      const sharedAfter = sharedInputBridge.stats();
+      shared = {
+        before: sharedBefore,
+        after: sharedAfter,
+        keyDown,
+        keyUp,
+        pointerDown,
+        pointerUp,
+        ok: Boolean(
+          keyDown &&
+          keyUp &&
+          pointerDown &&
+          pointerUp &&
+          sharedAfter.absX === 400 &&
+          sharedAfter.absY === 300 &&
+          sharedAfter.absWidth === canvas.width &&
+          sharedAfter.absHeight === canvas.height &&
+          sharedAfter.backendMouse >= sharedBefore.backendMouse + 1 &&
+          sharedAfter.backendButtons >= sharedBefore.backendButtons + 2 &&
+          sharedAfter.backendKeys >= sharedBefore.backendKeys + 2 &&
+          sharedAfter.lastAdb === 0x07 &&
+          sharedAfter.frontendButtons === 0 &&
+          sharedAfter.lastButtons === 0
+        ),
+      };
+    }
+
     const hmpPath = qemuPty ? (qemuControlWorker ? "worker" : "pty") : "none";
     const after = cloneEventCounters();
     const result = {
@@ -1870,14 +1915,29 @@
       capture: captureMetric.textContent,
       activeElement: document.activeElement ? document.activeElement.id || document.activeElement.tagName : "",
       hmpPath,
+      shared,
       qemuStarted,
       queuedBytes: qemuPty ? qemuPty.queuedBytes() : 0,
     };
 
+    lastInputSelfTest = result;
     window.AuxQemuInputSelfTest = result;
     log(`input self-test: key ${before.keydown + before.keyup} -> ${after.keydown + after.keyup}, mouse ${before.mousemove + before.mousedown + before.mouseup + before.wheel} -> ${after.mousemove + after.mousedown + after.mouseup + after.wheel}, hmp ${hmpPath}`);
+    log(`input self-test result: ${JSON.stringify({
+      ok: Boolean(shared && shared.ok),
+      absX: shared && shared.after ? shared.after.absX : null,
+      absY: shared && shared.after ? shared.after.absY : null,
+      absWidth: shared && shared.after ? shared.after.absWidth : null,
+      absHeight: shared && shared.after ? shared.after.absHeight : null,
+      backendKeys: shared && shared.after ? shared.after.backendKeys : null,
+      backendMouse: shared && shared.after ? shared.after.backendMouse : null,
+      backendButtons: shared && shared.after ? shared.after.backendButtons : null,
+      lastAdb: shared && shared.after ? shared.after.lastAdb : null,
+      frontendButtons: shared && shared.after ? shared.after.frontendButtons : null,
+      lastButtons: shared && shared.after ? shared.after.lastButtons : null,
+    })}`);
     renderProbeLog("input self-test");
-    updateProbeState();
+    updateProbeStateNow();
     return result;
   }
 
@@ -2393,10 +2453,6 @@
         focusCanvas();
         log(qemuStartPaused ? "qemu runtime initialized with guest CPU paused" : "qemu runtime initialized");
         startSharedInputBridge();
-        if (runInputSelfTestAfterQemuReady) {
-          runInputSelfTestAfterQemuReady = false;
-          runInputSelfTest();
-        }
         if (qemuAutoPulseMs) {
           window.setTimeout(() => startPulseRun(qemuAutoPulseMs, qemuAutoPulseMode), 250);
         }
