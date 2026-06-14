@@ -22,7 +22,7 @@ BUILD="${BUILD:-local-$$}"
 DEBUG_PORT="${DEBUG_PORT:-9444}"
 INPUT="${INPUT:-shared}" # shared = 68k_web-style browser buffer into QEMU ADB.
 FPS="${FPS:-20}"       # Page-side framebuffer cap; FPS=0 disables the cap.
-RES="${RES:-}"          # e.g. RES=800x600 to shrink the framebuffer
+RES="${RES:-640x480}"  # e.g. RES=800x600 to override the compact dev viewport
 NET="${NET:-}"          # NET=1 to enable the wasmbridge NIC + relay bridge
 PTY_MIN="${PTY_MIN:-}"  # Optional QEMU PTY bounded-wait floor in ms.
 PTY_IDLE="${PTY_IDLE:-}" # Optional QEMU PTY idle bounded-wait cap in ms.

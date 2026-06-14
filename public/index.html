@@ -3,15 +3,19 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>C89 A/UX Browser QEMU</title>
+    <title>SiliconForested A/UX Browser QEMU</title>
     <link rel="icon" href="data:,">
     <link rel="stylesheet" href="./styles.css">
   </head>
   <body>
     <header class="topbar">
-      <div>
-        <h1>C89 A/UX Browser QEMU</h1>
-        <p>Quadra 800 WebAssembly prototype</p>
+      <div class="brand-lockup">
+        <img class="brand-sticker" src="./ui-assets/siliconforested.png" alt="SiliconForested">
+        <div>
+          <p class="eyebrow">SiliconForested / Summer of C89 / auxagent</p>
+          <h1>A/UX Command Deck</h1>
+          <p>Quadra 800 WebAssembly A/UX lab with Dialtone relay control</p>
+        </div>
       </div>
       <div class="status-row" aria-label="Runtime status">
         <span id="isolationStatus" class="status">Isolation unknown</span>
@@ -21,74 +25,185 @@
     </header>
 
     <main class="workspace">
-      <section id="displayPanel" class="display-panel" aria-label="Framebuffer">
-        <canvas id="canvas" width="1152" height="870" tabindex="0"></canvas>
-        <div class="display-toolbar">
-          <button id="captureKeys" type="button">Capture keyboard</button>
-          <button id="capturePointer" type="button">Pointer lock</button>
-          <button id="fullscreenDisplay" type="button">Fullscreen</button>
-          <button id="clearSerial" type="button">Clear serial</button>
+      <aside class="telemetry-panel" aria-label="Live telemetry">
+        <article class="telemetry-card telemetry-card-wide">
+        <div>
+          <span class="telemetry-label">CPU vector</span>
+          <strong id="cpuHeroMetric">PC/SR pending</strong>
         </div>
+        <span class="telemetry-chip">m68k-softmmu</span>
+      </article>
+      <article class="telemetry-card">
+        <span class="telemetry-label">UI lag</span>
+        <strong id="telemetryLagValue">0 ms</strong>
+        <canvas id="lagChart" width="220" height="54" aria-hidden="true"></canvas>
+      </article>
+      <article class="telemetry-card">
+        <span class="telemetry-label">Framebuffer</span>
+        <strong id="telemetryFrameValue">waiting</strong>
+        <canvas id="frameChart" width="220" height="54" aria-hidden="true"></canvas>
+      </article>
+      <article class="telemetry-card">
+        <span class="telemetry-label">Disk ranges</span>
+        <strong id="telemetryDiskValue">0</strong>
+        <canvas id="diskChart" width="220" height="54" aria-hidden="true"></canvas>
+      </article>
+      <article class="telemetry-card">
+        <span class="telemetry-label">Memory</span>
+        <strong id="telemetryMemoryValue">0 MB</strong>
+        <canvas id="memoryChart" width="220" height="54" aria-hidden="true"></canvas>
+      </article>
+      <article class="telemetry-card">
+        <span class="telemetry-label">Input</span>
+        <strong id="telemetryInputValue">0</strong>
+        <canvas id="inputChart" width="220" height="54" aria-hidden="true"></canvas>
+      </article>
+      <article class="telemetry-card">
+        <span class="telemetry-label">Ethernet</span>
+        <strong id="telemetryNetValue">offline</strong>
+        <canvas id="netChart" width="220" height="54" aria-hidden="true"></canvas>
+      </article>
+      </aside>
+
+      <section class="stage-column">
+        <section id="displayPanel" class="display-panel module module-display" aria-label="Framebuffer">
+          <div class="module-head display-head">
+            <div>
+              <span class="module-kicker">MACFB 640x480 surface</span>
+              <h2>A/UX Viewport</h2>
+            </div>
+            <div class="display-badges" aria-label="Display modes">
+              <span>Q800</span>
+              <span>640x480</span>
+              <span>ADB</span>
+              <span>WASM/TCG</span>
+              <span>A/UX 3.1.1</span>
+            </div>
+          </div>
+          <div class="canvas-shell">
+            <canvas id="canvas" width="640" height="480" tabindex="0"></canvas>
+          </div>
+          <div class="display-instruments" aria-label="Runtime instruments">
+            <div class="instrument-head">
+              <div>
+                <span class="module-kicker">live input / runtime buses</span>
+                <h2>Signal Matrix</h2>
+              </div>
+              <div class="button-row service-actions display-service-actions">
+                <button id="inputSelfTest" type="button">SELF</button>
+                <button id="runRomProbe" type="button">ROM</button>
+                <button id="probeSnapshot" type="button">SNAP</button>
+              </div>
+            </div>
+            <dl class="metrics led-matrix display-led-matrix">
+              <div class="led-tile" data-led="idle">
+                <dt>KEY</dt>
+                <dd id="lastKey">none</dd>
+              </div>
+              <div class="led-tile" data-led="idle">
+                <dt>ADB XY</dt>
+                <dd id="mouseMetric">0, 0</dd>
+              </div>
+              <div class="led-tile" data-led="idle">
+                <dt>CAP</dt>
+                <dd id="captureMetric">OFF</dd>
+              </div>
+              <div class="led-tile" data-led="ok">
+                <dt>BEAT</dt>
+                <dd id="heartbeatMetric">0</dd>
+              </div>
+              <div class="led-tile" data-led="ok">
+                <dt>LAG</dt>
+                <dd id="uiLagMetric">L0/M0/S0</dd>
+              </div>
+              <div class="led-tile" data-led="idle">
+                <dt>EVT</dt>
+                <dd id="eventMetric">0K/0M</dd>
+              </div>
+              <div class="led-tile" data-led="idle">
+                <dt>DISK</dt>
+                <dd id="diskMetric">PACK</dd>
+              </div>
+              <div class="led-tile" data-led="idle">
+                <dt>RANGE</dt>
+                <dd id="diskIoMetric">0R</dd>
+              </div>
+              <div class="led-tile" data-led="ok">
+                <dt>FB</dt>
+                <dd id="frameMetric">IDLE</dd>
+              </div>
+              <div class="led-tile" data-led="idle">
+                <dt>CPU</dt>
+                <dd id="cpuMetric">WAIT</dd>
+              </div>
+            </dl>
+            <div class="disk-io-scope">
+              <div class="disk-io-readout">
+                <span class="telemetry-label">Disk I/O</span>
+                <strong id="diskIoRateValue">0.0 r/s</strong>
+                <span id="diskIoByteRateValue">0.00 MB/s wire</span>
+              </div>
+              <canvas id="diskIoScope" width="620" height="58" aria-hidden="true"></canvas>
+            </div>
+          </div>
+          <div class="display-toolbar">
+            <button id="captureKeys" type="button">Capture keyboard</button>
+            <button id="capturePointer" type="button">Pointer lock</button>
+            <button id="fullscreenDisplay" type="button">Fullscreen</button>
+            <button id="clearSerial" type="button">Clear serial</button>
+          </div>
+        </section>
+
       </section>
 
       <aside class="control-panel">
-        <section>
-          <h2>Boot</h2>
-          <label>
-            ROM
-            <input id="romFile" type="file" accept=".rom,.bin,application/octet-stream">
-          </label>
-          <label>
-            A/UX disk
-            <input id="diskFile" type="file" accept=".img,.raw,.dsk,.qcow2,application/octet-stream">
-          </label>
-          <label>
-            HFS disk
-            <input id="disk2File" type="file" accept=".img,.raw,.dsk,.qcow2,application/octet-stream">
-          </label>
-          <label>
-            PRAM
-            <input id="pramFile" type="file" accept=".img,.raw,.bin,application/octet-stream">
-          </label>
-          <label class="inline-check boot-option">
-            <input id="paceCpu" type="checkbox" checked>
-            Pace CPU
-          </label>
-          <label>
-            RAM
-            <select id="ramSize">
-              <option value="16" selected>16 MB</option>
-              <option value="32">32 MB</option>
-              <option value="64">64 MB</option>
-              <option value="128">128 MB</option>
-            </select>
-          </label>
-          <div class="button-row">
-            <button id="planBoot" type="button">Plan boot</button>
-            <button id="loadRuntime" type="button">Check bundle</button>
-            <button id="startSmoke" type="button" disabled>Start smoke</button>
+        <section class="serial-panel module" aria-label="Serial console">
+          <div class="serial-head module-head">
+            <div>
+              <span class="module-kicker">stdio / monitor / runtime</span>
+              <h2>Serial Console</h2>
+            </div>
+            <button id="copySerial" type="button">Copy log</button>
+          </div>
+          <pre id="serialLog"></pre>
+        </section>
+
+        <section class="module">
+          <div class="module-head">
+            <div>
+              <span class="module-kicker">runtime launch</span>
+              <h2>Boot Sequencer</h2>
+            </div>
+          </div>
+          <div class="boot-strip">
+            <label>
+              RAM
+              <select id="ramSize">
+                <option value="16" selected>16 MB</option>
+                <option value="32">32 MB</option>
+                <option value="64">64 MB</option>
+                <option value="128">128 MB</option>
+              </select>
+            </label>
+            <label class="inline-check boot-option">
+              <input id="paceCpu" type="checkbox" checked>
+              Pace CPU
+            </label>
+          </div>
+          <div class="button-row boot-actions">
             <button id="startLazy" type="button" disabled>Start lazy pulse</button>
             <button id="startLazyPaused" type="button" disabled>Start lazy paused</button>
-            <button id="startQemu" type="button" disabled>Start</button>
             <button id="resetQemu" type="button" disabled>Reset</button>
           </div>
         </section>
 
-        <section>
-          <h2>Network</h2>
-          <label>
-            WebSocket
-            <input id="wsUrl" type="url" value="ws://127.0.0.1:8080/ethernet" spellcheck="false">
-          </label>
-          <div class="button-row">
-            <button id="connectNet" type="button">Connect</button>
-            <button id="disconnectNet" type="button" disabled>Disconnect</button>
+        <section class="module module-agent">
+          <div class="module-head">
+            <div>
+              <span class="module-kicker">guest command channel</span>
+              <h2>A/UX Agent <span id="agentStatus" class="status">idle</span></h2>
+            </div>
           </div>
-        </section>
-
-        <section>
-          <h2>A/UX Agent <span id="agentStatus" class="status">idle</span></h2>
-          <p class="hint">Runs commands inside A/UX via auxagent over the network bridge (needs <code>?net=1</code> and Connect).</p>
           <div class="button-row">
             <input id="agentCmd" type="text" placeholder="shell command, e.g. uname -a" spellcheck="false" autocomplete="off">
             <button id="agentRun" type="button">Run</button>
@@ -101,110 +216,60 @@
           <pre id="agentOut" class="agent-out" aria-live="polite"></pre>
         </section>
 
-        <section>
-          <h2>Input</h2>
-          <dl class="metrics">
+        <section class="module">
+          <div class="module-head">
             <div>
-              <dt>Last key</dt>
-              <dd id="lastKey">none</dd>
+              <span class="module-kicker">probe snapshot</span>
+              <h2>Diagnostics</h2>
             </div>
-            <div>
-              <dt>Mouse</dt>
-              <dd id="mouseMetric">0, 0</dd>
-            </div>
-            <div>
-              <dt>Capture</dt>
-              <dd id="captureMetric">off</dd>
-            </div>
-            <div>
-              <dt>UI heartbeat</dt>
-              <dd id="heartbeatMetric">0</dd>
-            </div>
-            <div>
-              <dt>UI lag</dt>
-              <dd id="uiLagMetric">0 ms</dd>
-            </div>
-            <div>
-              <dt>Events</dt>
-              <dd id="eventMetric">0 key / 0 mouse</dd>
-            </div>
-            <div>
-              <dt>Disks</dt>
-              <dd id="diskMetric">none</dd>
-            </div>
-            <div>
-              <dt>Disk I/O</dt>
-              <dd id="diskIoMetric">none</dd>
-            </div>
-            <div>
-              <dt>Framebuffer</dt>
-              <dd id="frameMetric">not sampled</dd>
-            </div>
-            <div>
-              <dt>CPU</dt>
-              <dd id="cpuMetric">no registers</dd>
-            </div>
-          </dl>
-          <div class="button-row input-actions">
-            <button id="sendHmpA" type="button" disabled>HMP A</button>
-            <button id="sendHmpReturn" type="button" disabled>HMP Return</button>
-            <button id="sendHmpHelp" type="button" disabled>HMP Help</button>
-            <button id="sendHmpStatus" type="button" disabled>HMP Status</button>
-            <button id="sendHmpCont" type="button" disabled>HMP Cont</button>
-            <button id="sendHmpStop" type="button" disabled>HMP Stop</button>
-            <button id="runFor1s" type="button" disabled>Run 1s</button>
-            <button id="runFor2s" type="button" disabled>Run 2s</button>
-            <button id="runFor5s" type="button" disabled>Run 5s</button>
-            <button id="runFor10s" type="button" disabled>Run 10s</button>
-            <button id="runFor30s" type="button" disabled>Run 30s</button>
-            <button id="runFor60s" type="button" disabled>Run 60s</button>
-            <button id="pulseYield2s" type="button" disabled>Yield 2s</button>
-            <button id="pulseRun30s" type="button" disabled>Pulse 30s</button>
-            <button id="pulseRunOff" type="button" disabled>Pulse off</button>
-            <button id="inputSelfTest" type="button">Input self-test</button>
-            <button id="runRomProbe" type="button">ROM 5s probe</button>
-            <button id="probeSnapshot" type="button">Probe snapshot</button>
           </div>
-          <form id="guestTextForm" class="hmp-form">
-            <label>
-              Guest text
-              <input id="guestText" type="text" value="" spellcheck="false" autocomplete="off">
-            </label>
-            <div class="button-row">
-              <button id="sendGuestText" type="submit" disabled>Send text</button>
-              <button id="sendGuestTab" type="button" disabled>Tab</button>
-              <button id="sendGuestReturn" type="button" disabled>Return</button>
-            </div>
-          </form>
-          <form id="hmpForm" class="hmp-form">
-            <label>
-              HMP command
-              <input id="hmpCommand" type="text" value="info registers" spellcheck="false" autocomplete="off">
-            </label>
-            <div class="button-row">
-              <button id="sendHmpCommand" type="submit" disabled>Send HMP</button>
-              <label class="inline-check">
-                <input id="hmpReturnToGuest" type="checkbox">
-                return to guest
-              </label>
-            </div>
-          </form>
-        </section>
-
-        <section>
-          <h2>Diagnostics</h2>
           <pre id="probeLog" class="probe-log"></pre>
         </section>
+
+        <div class="dev-hidden-wiring" aria-hidden="true">
+          <input id="romFile" type="file" accept=".rom,.bin,application/octet-stream" tabindex="-1">
+          <input id="diskFile" type="file" accept=".img,.raw,.dsk,.qcow2,application/octet-stream" tabindex="-1">
+          <input id="disk2File" type="file" accept=".img,.raw,.dsk,.qcow2,application/octet-stream" tabindex="-1">
+          <input id="pramFile" type="file" accept=".img,.raw,.bin,application/octet-stream" tabindex="-1">
+          <input id="wsUrl" type="url" value="ws://127.0.0.1:8080/ethernet" spellcheck="false" tabindex="-1">
+          <button id="planBoot" type="button" tabindex="-1">Plan boot</button>
+          <button id="loadRuntime" type="button" tabindex="-1">Check bundle</button>
+          <button id="startSmoke" type="button" disabled tabindex="-1">Start smoke</button>
+          <button id="startQemu" type="button" disabled tabindex="-1">Start</button>
+          <button id="connectNet" type="button" tabindex="-1">Connect</button>
+          <button id="disconnectNet" type="button" disabled tabindex="-1">Disconnect</button>
+          <button id="sendHmpA" type="button" disabled tabindex="-1">HMP A</button>
+          <button id="sendHmpReturn" type="button" disabled tabindex="-1">HMP Return</button>
+          <button id="sendHmpHelp" type="button" disabled tabindex="-1">HMP Help</button>
+          <button id="sendHmpStatus" type="button" disabled tabindex="-1">HMP Status</button>
+          <button id="sendHmpCont" type="button" disabled tabindex="-1">HMP Cont</button>
+          <button id="sendHmpStop" type="button" disabled tabindex="-1">HMP Stop</button>
+          <button id="runFor1s" type="button" disabled tabindex="-1">Run 1s</button>
+          <button id="runFor2s" type="button" disabled tabindex="-1">Run 2s</button>
+          <button id="runFor5s" type="button" disabled tabindex="-1">Run 5s</button>
+          <button id="runFor10s" type="button" disabled tabindex="-1">Run 10s</button>
+          <button id="runFor30s" type="button" disabled tabindex="-1">Run 30s</button>
+          <button id="runFor60s" type="button" disabled tabindex="-1">Run 60s</button>
+          <button id="pulseYield2s" type="button" disabled tabindex="-1">Yield 2s</button>
+          <button id="pulseRun30s" type="button" disabled tabindex="-1">Pulse 30s</button>
+          <button id="pulseRunOff" type="button" disabled tabindex="-1">Pulse off</button>
+          <form id="guestTextForm">
+            <input id="guestText" type="text" value="" spellcheck="false" autocomplete="off" tabindex="-1">
+            <button id="sendGuestText" type="submit" disabled tabindex="-1">Send text</button>
+            <button id="sendGuestTab" type="button" disabled tabindex="-1">Tab</button>
+            <button id="sendGuestReturn" type="button" disabled tabindex="-1">Return</button>
+          </form>
+          <form id="hmpForm">
+            <input id="hmpCommand" type="text" value="info registers" spellcheck="false" autocomplete="off" tabindex="-1">
+            <button id="sendHmpCommand" type="submit" disabled tabindex="-1">Send HMP</button>
+            <label>
+              <input id="hmpReturnToGuest" type="checkbox" tabindex="-1">
+              return to guest
+            </label>
+          </form>
+        </div>
       </aside>
     </main>
-
-    <section class="serial-panel" aria-label="Serial console">
-      <div class="serial-head">
-        <h2>Serial</h2>
-        <button id="copySerial" type="button">Copy log</button>
-      </div>
-      <pre id="serialLog"></pre>
-    </section>
 
     <script src="./net-bridge.js"></script>
     <script src="./shared-input.js"></script>

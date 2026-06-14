@@ -19,6 +19,16 @@
   const diskIoMetric = document.getElementById("diskIoMetric");
   const frameMetric = document.getElementById("frameMetric");
   const cpuMetric = document.getElementById("cpuMetric");
+  const cpuHeroMetric = document.getElementById("cpuHeroMetric");
+  const telemetryLagValue = document.getElementById("telemetryLagValue");
+  const telemetryFrameValue = document.getElementById("telemetryFrameValue");
+  const telemetryDiskValue = document.getElementById("telemetryDiskValue");
+  const telemetryMemoryValue = document.getElementById("telemetryMemoryValue");
+  const telemetryInputValue = document.getElementById("telemetryInputValue");
+  const telemetryNetValue = document.getElementById("telemetryNetValue");
+  const diskIoRateValue = document.getElementById("diskIoRateValue");
+  const diskIoByteRateValue = document.getElementById("diskIoByteRateValue");
+  const diskIoScopeCanvas = document.getElementById("diskIoScope");
   const wsUrl = document.getElementById("wsUrl");
   const paceCpuCheckbox = document.getElementById("paceCpu");
   const ramSizeSelect = document.getElementById("ramSize");
@@ -87,6 +97,10 @@
     disk2: null,
     pram: null,
   };
+  const DEFAULT_DISPLAY_WIDTH = 640;
+  const DEFAULT_DISPLAY_HEIGHT = 480;
+  const DEFAULT_DISPLAY_DEPTH = 8;
+  const DEFAULT_DISPLAY_GEOMETRY = `${DEFAULT_DISPLAY_WIDTH}x${DEFAULT_DISPLAY_HEIGHT}`;
 
   let keyCapture = false;
   let mouseX = 0;
@@ -232,11 +246,30 @@
     entries: [],
     error: "",
   };
+  let diskWorkerStats = null;
+  let lastDiskIoCounters = null;
   let lastCpuRegister = {
     pc: "",
     sr: "",
     at: 0,
   };
+  const telemetryCharts = {
+    lag: { canvas: document.getElementById("lagChart"), color: "#66f5da", values: [] },
+    frame: { canvas: document.getElementById("frameChart"), color: "#ff5cc8", values: [] },
+    disk: { canvas: document.getElementById("diskChart"), color: "#ffd166", values: [] },
+    memory: { canvas: document.getElementById("memoryChart"), color: "#72f28f", values: [] },
+    input: { canvas: document.getElementById("inputChart"), color: "#ff9866", values: [] },
+    net: { canvas: document.getElementById("netChart"), color: "#66f5da", values: [] },
+  };
+  const telemetryMaxSamples = 64;
+  const diskIoScope = {
+    canvas: diskIoScopeCanvas,
+    calls: [],
+    wireMb: [],
+  };
+  let telemetryLastDiskRanges = 0;
+  let telemetryLastInputTotal = 0;
+  let telemetryLastNetFrames = 0;
 
   function startButtons() {
     return ["startSmoke", "startLazy", "startLazyPaused", "startQemu"].map((id) => document.getElementById(id));
@@ -393,6 +426,312 @@
       unit += 1;
     }
     return `${value.toFixed(value >= 10 || unit === 0 ? 0 : 1)} ${units[unit]}`;
+  }
+
+  function formatCount(value) {
+    const n = Number(value) || 0;
+    if (Math.abs(n) >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
+    if (Math.abs(n) >= 1000) return `${(n / 1000).toFixed(1)}K`;
+    return String(Math.round(n));
+  }
+
+  function setSignalText(node, text, title = text) {
+    if (!node) return;
+    node.textContent = text;
+    node.title = title;
+  }
+
+  function shortKeyCode(code) {
+    return String(code || "")
+      .replace(/^Key/, "")
+      .replace(/^Digit/, "")
+      .replace(/^Arrow/, "")
+      .replace(/^Numpad/, "NP")
+      .toUpperCase() || "NONE";
+  }
+
+  function setTelemetryText(node, text) {
+    if (node) node.textContent = text;
+  }
+
+  function drawTelemetryChart(chart) {
+    if (!chart || !chart.canvas) return;
+    const canvasRect = chart.canvas.getBoundingClientRect();
+    const cssWidth = Math.max(80, Math.round(canvasRect.width || chart.canvas.clientWidth || 220));
+    const cssHeight = Math.max(36, Math.round(canvasRect.height || chart.canvas.clientHeight || 54));
+    const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+    const targetWidth = Math.round(cssWidth * dpr);
+    const targetHeight = Math.round(cssHeight * dpr);
+    if (chart.canvas.width !== targetWidth || chart.canvas.height !== targetHeight) {
+      chart.canvas.width = targetWidth;
+      chart.canvas.height = targetHeight;
+    }
+
+    const chartCtx = chart.canvas.getContext("2d");
+    const w = chart.canvas.width;
+    const h = chart.canvas.height;
+    chartCtx.clearRect(0, 0, w, h);
+    chartCtx.fillStyle = "rgba(5, 7, 11, 0.34)";
+    chartCtx.fillRect(0, 0, w, h);
+    chartCtx.strokeStyle = "rgba(154, 174, 202, 0.16)";
+    chartCtx.lineWidth = Math.max(1, dpr);
+    for (let x = 0; x <= w; x += Math.max(1, Math.round(44 * dpr))) {
+      chartCtx.beginPath();
+      chartCtx.moveTo(x, 0);
+      chartCtx.lineTo(x, h);
+      chartCtx.stroke();
+    }
+    for (let y = Math.round(h / 2); y <= h; y += Math.round(h / 2)) {
+      chartCtx.beginPath();
+      chartCtx.moveTo(0, y);
+      chartCtx.lineTo(w, y);
+      chartCtx.stroke();
+    }
+
+    const values = chart.values;
+    if (!values.length) return;
+    const max = Math.max(1, ...values.map((value) => Math.abs(value)));
+    const step = values.length > 1 ? w / (values.length - 1) : w;
+    chartCtx.beginPath();
+    values.forEach((value, index) => {
+      const x = index * step;
+      const y = h - (Math.max(0, value) / max) * (h - 5 * dpr) - 2 * dpr;
+      if (index === 0) chartCtx.moveTo(x, y);
+      else chartCtx.lineTo(x, y);
+    });
+    chartCtx.strokeStyle = chart.color;
+    chartCtx.lineWidth = 2 * dpr;
+    chartCtx.stroke();
+
+    chartCtx.lineTo(w, h);
+    chartCtx.lineTo(0, h);
+    chartCtx.closePath();
+    const fill = chartCtx.createLinearGradient(0, 0, 0, h);
+    fill.addColorStop(0, `${chart.color}55`);
+    fill.addColorStop(1, `${chart.color}00`);
+    chartCtx.fillStyle = fill;
+    chartCtx.fill();
+  }
+
+  function pushTelemetryValue(chart, value) {
+    if (!chart) return;
+    const n = Number.isFinite(value) ? value : 0;
+    chart.values.push(n);
+    if (chart.values.length > telemetryMaxSamples) {
+      chart.values.splice(0, chart.values.length - telemetryMaxSamples);
+    }
+    drawTelemetryChart(chart);
+  }
+
+  function sumObjectNumbers(object, keys) {
+    if (!object) return 0;
+    return keys.reduce((total, key) => total + (Number(object[key]) || 0), 0);
+  }
+
+  function totalDiskRanges(stats) {
+    if (!stats || !Array.isArray(stats.entries)) return 0;
+    return stats.entries.reduce((total, entry) => total + (Number(entry.rangeGet) || 0), 0);
+  }
+
+  function totalDiskRangeBytes(stats) {
+    if (!stats || !Array.isArray(stats.entries)) return 0;
+    return stats.entries.reduce((total, entry) => total + (Number(entry.rangeBytes) || 0), 0);
+  }
+
+  function totalInputEvents(events) {
+    return sumObjectNumbers(events, ["keydown", "keyup", "mousedown", "mouseup", "mousemove", "wheel"]);
+  }
+
+  function totalNetFrames(stats) {
+    return sumObjectNumbers(stats, ["tx", "rx"]);
+  }
+
+  function updateTelemetry() {
+    const snapshot = readProbeSnapshot();
+    const cpuText = snapshot.cpu && snapshot.cpu.pc
+      ? `${snapshot.cpu.pc} / ${snapshot.cpu.sr || "0x----"}`
+      : "PC/SR pending";
+    setTelemetryText(cpuHeroMetric, cpuText);
+
+    const lag = snapshot.responsiveness || {};
+    setTelemetryText(telemetryLagValue, `${lag.lastLagMs || 0} ms / ${lag.maxLagMs || 0} max`);
+    pushTelemetryValue(telemetryCharts.lag, Number(lag.lastLagMs) || 0);
+
+    const fb = snapshot.framebuffer || {};
+    const lit = Number(fb.nonBlack) || 0;
+    const samples = Math.max(1, Number(fb.samples) || 1);
+    const litPct = lit * 100 / samples;
+    setTelemetryText(telemetryFrameValue, `${formatCount(lit)} lit / ${fb.changes || 0} chg`);
+    pushTelemetryValue(telemetryCharts.frame, litPct);
+
+    const ranges = totalDiskRanges(snapshot.diskIo);
+    const rangeDelta = Math.max(0, ranges - telemetryLastDiskRanges);
+    telemetryLastDiskRanges = ranges;
+    setTelemetryText(telemetryDiskValue, `${formatCount(ranges)} total / ${formatCount(rangeDelta)}s`);
+    pushTelemetryValue(telemetryCharts.disk, rangeDelta);
+
+    const memory = snapshot.memory || {};
+    const memoryParts = [memory.wasmMb, memory.diskCacheMb, memory.jsHeapMb]
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value) && value > 0);
+    const memoryTotal = memoryParts.reduce((total, value) => total + value, 0);
+    const memoryText = memoryTotal > 0 ? `${formatCount(memoryTotal)} MB` : "0 MB";
+    setTelemetryText(telemetryMemoryValue, memoryText);
+    pushTelemetryValue(telemetryCharts.memory, memoryTotal);
+
+    const inputTotal = totalInputEvents(snapshot.events);
+    const inputDelta = Math.max(0, inputTotal - telemetryLastInputTotal);
+    telemetryLastInputTotal = inputTotal;
+    const shared = snapshot.sharedInput || {};
+    const adbMouse = Number(shared.backendMouse) || 0;
+    setTelemetryText(telemetryInputValue, `${formatCount(inputTotal)} ev / ${formatCount(adbMouse)} adb`);
+    pushTelemetryValue(telemetryCharts.input, inputDelta);
+
+    const netStats = snapshot.net && snapshot.net.bridgeStats ? snapshot.net.bridgeStats : null;
+    const netFrames = totalNetFrames(netStats);
+    const netDelta = Math.max(0, netFrames - telemetryLastNetFrames);
+    telemetryLastNetFrames = netFrames;
+    const netText = snapshot.net && snapshot.net.bridgeRunning
+      ? `${formatCount(netStats.tx)} tx / ${formatCount(netStats.rx)} rx`
+      : "offline";
+    setTelemetryText(telemetryNetValue, netText);
+    pushTelemetryValue(telemetryCharts.net, netDelta);
+  }
+
+  function currentDiskIoCounters() {
+    const worker = diskWorkerStats || window.AuxDiskStats || {};
+    const rangeCalls = totalDiskRanges(diskIoStats);
+    const rangeBytes = totalDiskRangeBytes(diskIoStats);
+    const workerFetches = Number(worker.fetches) || 0;
+    const workerFetchedBytes = Number(worker.fetchedBytes) || 0;
+    return {
+      atMs: Date.now(),
+      guestCalls: Number(worker.requests) || 0,
+      guestBytes: Number(worker.servedBytes) || 0,
+      cacheHits: Number(worker.cacheHitRequests) || 0,
+      writes: Number(worker.writes) || 0,
+      writtenBytes: Number(worker.writtenBytes) || 0,
+      errors: Number(worker.errors) || 0,
+      rangeCalls,
+      rangeBytes,
+      wireCalls: workerFetches || rangeCalls,
+      wireBytes: workerFetchedBytes || rangeBytes,
+    };
+  }
+
+  function pushDiskIoScopeValue(series, value) {
+    series.push(Number.isFinite(value) ? value : 0);
+    if (series.length > telemetryMaxSamples) {
+      series.splice(0, series.length - telemetryMaxSamples);
+    }
+  }
+
+  function drawDiskIoScope() {
+    const canvasNode = diskIoScope.canvas;
+    if (!canvasNode) return;
+    const rect = canvasNode.getBoundingClientRect();
+    const cssWidth = Math.max(160, Math.round(rect.width || canvasNode.clientWidth || 620));
+    const cssHeight = Math.max(44, Math.round(rect.height || canvasNode.clientHeight || 58));
+    const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+    const targetWidth = Math.round(cssWidth * dpr);
+    const targetHeight = Math.round(cssHeight * dpr);
+    if (canvasNode.width !== targetWidth || canvasNode.height !== targetHeight) {
+      canvasNode.width = targetWidth;
+      canvasNode.height = targetHeight;
+    }
+
+    const chartCtx = canvasNode.getContext("2d");
+    const w = canvasNode.width;
+    const h = canvasNode.height;
+    chartCtx.clearRect(0, 0, w, h);
+    chartCtx.fillStyle = "rgba(2, 3, 6, 0.86)";
+    chartCtx.fillRect(0, 0, w, h);
+
+    chartCtx.strokeStyle = "rgba(154, 174, 202, 0.14)";
+    chartCtx.lineWidth = Math.max(1, dpr);
+    for (let x = 0; x <= w; x += Math.max(1, Math.round(48 * dpr))) {
+      chartCtx.beginPath();
+      chartCtx.moveTo(x, 0);
+      chartCtx.lineTo(x, h);
+      chartCtx.stroke();
+    }
+    for (let y = Math.round(h / 4); y < h; y += Math.round(h / 4)) {
+      chartCtx.beginPath();
+      chartCtx.moveTo(0, y);
+      chartCtx.lineTo(w, y);
+      chartCtx.stroke();
+    }
+
+    const drawSeries = (values, color, maxValue, bottomBias = 0) => {
+      if (!values.length) return;
+      const max = Math.max(0.001, maxValue);
+      const step = values.length > 1 ? w / (values.length - 1) : w;
+      chartCtx.beginPath();
+      values.forEach((value, index) => {
+        const x = index * step;
+        const normalized = Math.min(1, Math.max(0, value / max));
+        const y = h - (normalized * (h - 8 * dpr)) - 4 * dpr - bottomBias;
+        if (index === 0) chartCtx.moveTo(x, y);
+        else chartCtx.lineTo(x, y);
+      });
+      chartCtx.strokeStyle = color;
+      chartCtx.lineWidth = 2 * dpr;
+      chartCtx.stroke();
+    };
+
+    const maxCalls = Math.max(1, ...diskIoScope.calls);
+    const maxWire = Math.max(0.1, ...diskIoScope.wireMb);
+    drawSeries(diskIoScope.wireMb, "#66f5da", maxWire, 0);
+    drawSeries(diskIoScope.calls, "#ffd166", maxCalls, 1 * dpr);
+
+    chartCtx.fillStyle = "rgba(255, 209, 102, 0.86)";
+    chartCtx.fillRect(8 * dpr, 8 * dpr, 16 * dpr, 2 * dpr);
+    chartCtx.fillStyle = "rgba(102, 245, 218, 0.86)";
+    chartCtx.fillRect(8 * dpr, 15 * dpr, 16 * dpr, 2 * dpr);
+  }
+
+  function formatRate(value, digits = 1) {
+    const n = Number(value) || 0;
+    if (n >= 100) return n.toFixed(0);
+    if (n >= 10) return n.toFixed(1);
+    return n.toFixed(digits);
+  }
+
+  function updateDiskIoScope() {
+    const counters = currentDiskIoCounters();
+    let callsPerSec = 0;
+    let rangeCallsPerSec = 0;
+    let wireMbPerSec = 0;
+    let guestMbPerSec = 0;
+
+    if (lastDiskIoCounters) {
+      const elapsed = Math.max(0.25, (counters.atMs - lastDiskIoCounters.atMs) / 1000);
+      const guestCallDelta = Math.max(0, counters.guestCalls - lastDiskIoCounters.guestCalls);
+      const rangeCallDelta = Math.max(0, counters.rangeCalls - lastDiskIoCounters.rangeCalls);
+      const wireByteDelta = Math.max(0, counters.wireBytes - lastDiskIoCounters.wireBytes);
+      const guestByteDelta = Math.max(0, counters.guestBytes - lastDiskIoCounters.guestBytes);
+      callsPerSec = guestCallDelta > 0 ? guestCallDelta / elapsed : rangeCallDelta / elapsed;
+      rangeCallsPerSec = rangeCallDelta / elapsed;
+      wireMbPerSec = wireByteDelta / 1048576 / elapsed;
+      guestMbPerSec = guestByteDelta / 1048576 / elapsed;
+    }
+
+    pushDiskIoScopeValue(diskIoScope.calls, callsPerSec);
+    pushDiskIoScopeValue(diskIoScope.wireMb, wireMbPerSec);
+    drawDiskIoScope();
+
+    const title = [
+      `${formatRate(callsPerSec)} guest reads/s`,
+      `${formatRate(rangeCallsPerSec)} HTTP ranges/s`,
+      `${wireMbPerSec.toFixed(2)} MB/s wire`,
+      `${guestMbPerSec.toFixed(2)} MB/s guest`,
+      `${formatCount(counters.cacheHits)} cache hits`,
+      `${formatCount(counters.writes)} writes`,
+      `${formatCount(counters.errors)} errors`,
+    ].join(" | ");
+    setSignalText(diskIoRateValue, `${formatRate(callsPerSec)} r/s`, title);
+    setSignalText(diskIoByteRateValue, `${wireMbPerSec.toFixed(2)} MB/s wire`, title);
+    lastDiskIoCounters = counters;
   }
 
   function delay(ms) {
@@ -634,7 +973,7 @@
     ctx.font = "15px Menlo, Consolas, monospace";
     ctx.fillStyle = "#aeb7c2";
     ctx.fillText("SDL canvas display/input bridge ready", 54, 110);
-    ctx.fillText("Canvas: 1152 x 870 x 8", 54, 134);
+    ctx.fillText(`Canvas: ${w} x ${h} x 8`, 54, 134);
   }
 
   // Allocate the shared screen control block. Requires cross-origin isolation
@@ -779,7 +1118,12 @@
     const selected = [];
     if (files.disk) selected.push(`${files.disk.name} (${humanSize(files.disk.size)})`);
     if (files.disk2) selected.push(`${files.disk2.name} (${humanSize(files.disk2.size)})`);
-    diskMetric.textContent = selected.length ? selected.join(" + ") : "none";
+    if (selected.length) {
+      setSignalText(diskMetric, `LOCAL ${selected.length}`, selected.join(" + "));
+    } else {
+      setSignalText(diskMetric, "PACK", "bundled A/UX disk and ROM assets");
+    }
+    setLedState(diskMetric, "ok");
   }
 
   function onFile(kind, event) {
@@ -946,6 +1290,7 @@
         log(`disk worker write mode unavailable: ${message.reason}`);
       } else if (message.type === "stats" && message.stats) {
         window.AuxDiskStats = message.stats;
+        diskWorkerStats = message.stats;
         const s = message.stats;
         log(`disk worker stats: ${s.requests} reqs ${(s.servedBytes / 1048576).toFixed(1)}MB served, ` +
           `${s.fetches} fetches ${(s.fetchedBytes / 1048576).toFixed(1)}MB wire, ` +
@@ -1234,6 +1579,16 @@
     updateCaptureState();
   }
 
+  function setLedState(node, state) {
+    const tile = node && typeof node.closest === "function" ? node.closest(".led-tile") : null;
+    if (tile) tile.dataset.led = state;
+  }
+
+  function setLastKeyMetric(value) {
+    setSignalText(lastKey, value ? shortKeyCode(value) : "NONE", value || "none");
+    setLedState(lastKey, value ? "hot" : "idle");
+  }
+
   function updateCaptureState() {
     const pointerLocked = document.pointerLockElement === canvas;
     const fullscreen = document.fullscreenElement === displayPanel;
@@ -1247,7 +1602,19 @@
     if (pointerLocked) pieces.push("pointer");
     if (fullscreen) pieces.push("fullscreen");
 
-    captureMetric.textContent = pieces.length ? pieces.join(" + ") : "off";
+    const labels = {
+      focus: "FOC",
+      keys: "KEY",
+      hmp: "HMP",
+      hybrid: "HYB",
+      shared: "SHR",
+      "shared?": "SH?",
+      pointer: "PTR",
+      fullscreen: "FUL",
+    };
+    const compact = pieces.map((piece) => labels[piece] || piece.toUpperCase()).join("+");
+    setSignalText(captureMetric, compact || "OFF", pieces.length ? pieces.join(" + ") : "off");
+    setLedState(captureMetric, pieces.length ? "ok" : "idle");
     captureKeysButton.classList.toggle("active", keyCapture);
     capturePointerButton.classList.toggle("active", pointerLocked);
     fullscreenButton.classList.toggle("active", fullscreen);
@@ -1258,12 +1625,20 @@
   }
 
   function updateEventMetric() {
-    eventMetric.textContent = `${eventCounters.keydown + eventCounters.keyup} key / ${eventCounters.mousemove + eventCounters.mousedown + eventCounters.mouseup + eventCounters.wheel} mouse`;
+    const keyEvents = eventCounters.keydown + eventCounters.keyup;
+    const mouseEvents = eventCounters.mousemove + eventCounters.mousedown + eventCounters.mouseup + eventCounters.wheel;
+    setSignalText(eventMetric, `${formatCount(keyEvents)}K/${formatCount(mouseEvents)}M`, `${keyEvents} key / ${mouseEvents} mouse`);
+    setLedState(eventMetric, keyEvents || mouseEvents ? "hot" : "idle");
   }
 
   function updateResponsivenessMetric() {
     if (!uiLagMetric) return;
-    uiLagMetric.textContent = `${responsivenessLastLagMs} ms last / ${responsivenessMaxLagMs} ms max / ${responsivenessLongTasks} stalls`;
+    setSignalText(
+      uiLagMetric,
+      `L${formatCount(responsivenessLastLagMs)}/M${formatCount(responsivenessMaxLagMs)}/S${formatCount(responsivenessLongTasks)}`,
+      `${responsivenessLastLagMs} ms last / ${responsivenessMaxLagMs} ms max / ${responsivenessLongTasks} stalls`,
+    );
+    setLedState(uiLagMetric, responsivenessLongTasks ? "warn" : responsivenessLastLagMs >= responsivenessLongTaskMs ? "error" : responsivenessLastLagMs > 80 ? "warn" : "ok");
   }
 
   function sampleResponsiveness() {
@@ -1300,20 +1675,24 @@
     mouseMetricTimer = window.setTimeout(() => {
       mouseMetricTimer = 0;
       if (pendingMouseMetric !== null) {
-        mouseMetric.textContent = pendingMouseMetric;
+        setSignalText(mouseMetric, pendingMouseMetric);
+        setLedState(mouseMetric, "hot");
         pendingMouseMetric = null;
       }
     }, uiMetricMinMs);
   }
 
   function summarizeDiskIo(stats) {
-    if (stats.error) return `stats error: ${stats.error}`;
-    if (!stats.entries.length) return "no lazy reads";
+    if (stats.error) return { text: "ERR", title: `stats error: ${stats.error}` };
+    if (!stats.entries.length) return { text: "0R", title: "no lazy reads" };
 
-    return stats.entries.map((entry) => {
+    const ranges = totalDiskRanges(stats);
+    const activeDisks = stats.entries.filter((entry) => Number(entry.rangeGet) > 0).length;
+    const title = stats.entries.map((entry) => {
       const name = entry.path.split("/").pop();
       return `${name}: ${entry.rangeGet} ranges`;
     }).join(" / ");
+    return { text: `${formatCount(ranges)}R/${formatCount(activeDisks)}D`, title };
   }
 
   async function pollDiskIoStats() {
@@ -1332,7 +1711,10 @@
         error: error && error.message ? error.message : String(error),
       };
     }
-    diskIoMetric.textContent = summarizeDiskIo(diskIoStats);
+    const diskIoSummary = summarizeDiskIo(diskIoStats);
+    setSignalText(diskIoMetric, diskIoSummary.text, diskIoSummary.title);
+    setLedState(diskIoMetric, diskIoStats.error ? "error" : diskIoStats.entries.length ? "ok" : "idle");
+    updateDiskIoScope();
     updateProbeState();
   }
 
@@ -1391,7 +1773,13 @@
         sr: `0x${pcMatch[2].toLowerCase()}`,
         at: Date.now(),
       };
-      cpuMetric.textContent = `${lastCpuRegister.pc} / ${lastCpuRegister.sr}`;
+      setSignalText(
+        cpuMetric,
+        `${lastCpuRegister.pc.slice(-4).toUpperCase()}/${lastCpuRegister.sr.slice(-4).toUpperCase()}`,
+        `${lastCpuRegister.pc} / ${lastCpuRegister.sr}`,
+      );
+      setLedState(cpuMetric, "ok");
+      setTelemetryText(cpuHeroMetric, `${lastCpuRegister.pc} / ${lastCpuRegister.sr}`);
       updateProbeState();
       return;
     }
@@ -1454,14 +1842,17 @@
         changes: framebufferChanges,
         error: "",
       };
-      frameMetric.textContent = `${nonBlack}/${samples} lit, ${framebufferChanges} changes`;
+      const litPct = Math.round(nonBlack * 100 / Math.max(1, samples));
+      setSignalText(frameMetric, `${litPct}%/+${formatCount(framebufferChanges)}`, `${nonBlack}/${samples} lit, ${framebufferChanges} changes`);
+      setLedState(frameMetric, nonBlack ? "ok" : "idle");
     } catch (error) {
       framebufferProbe = {
         ...framebufferProbe,
         sampledAt: Date.now(),
         error: error && error.message ? error.message : String(error),
       };
-      frameMetric.textContent = `probe error: ${framebufferProbe.error}`;
+      setSignalText(frameMetric, "ERR", `probe error: ${framebufferProbe.error}`);
+      setLedState(frameMetric, "error");
     }
   }
 
@@ -1553,6 +1944,7 @@
       },
       cpu: lastCpuRegister,
       diskIo: diskIoStats,
+      diskWorker: diskWorkerStats,
       serialTail: serialLines.slice(-80).join("\n").slice(-4000),
     };
   }
@@ -1652,7 +2044,7 @@
   function handleSharedKeyboardCapture(event, down) {
     if (!shouldUseSharedKeyboardCapture(event)) return false;
     recordEvent(down ? "keydown" : "keyup");
-    lastKey.textContent = event.code || "";
+    setLastKeyMetric(event.code || "");
     event.preventDefault();
     if (useSharedInputBridge()) {
       sharedInputBridge.keyEvent(event, down);
@@ -2182,16 +2574,15 @@
     return next;
   }
 
-  // ?res=800x600 (or 800x600x8) rewrites the framebuffer geometry (-g WxHxD).
+  // ?res=640x480 (or 640x480x8) rewrites the framebuffer geometry (-g WxHxD).
   // Smaller framebuffers also mean less per-frame main-thread blit/composite,
   // which helps headed stability. Depth defaults to 8.
   function applyResolution(args) {
     const params = new URLSearchParams(window.location.search);
-    const res = (params.get("res") || params.get("g") || "").toLowerCase().trim();
-    if (!res) return args;
+    const res = (params.get("res") || params.get("g") || DEFAULT_DISPLAY_GEOMETRY).toLowerCase().trim();
     const geometry = parseDisplayGeometry(res);
     if (!geometry) {
-      log(`ignoring invalid ?res=${res} (use WxH, e.g. 800x600)`);
+      log(`ignoring invalid ?res=${res} (use WxH, e.g. 640x480)`);
       return args;
     }
     const geom = `${geometry.width}x${geometry.height}x${geometry.depth}`;
@@ -2237,16 +2628,20 @@
     if (ramSizeSelect && params.has("ram")) {
       ramSizeSelect.value = String(normalizeRamMb(params.get("ram")));
     }
-    const displayGeometry = parseDisplayGeometry(params.get("res") || params.get("g") || "");
+    const displayGeometry = parseDisplayGeometry(params.get("res") || params.get("g") || DEFAULT_DISPLAY_GEOMETRY);
     if (displayGeometry) {
       setCanvasDisplaySize(displayGeometry.width, displayGeometry.height, {
         lock: true,
-        queryLock: true,
+        queryLock: params.has("res") || params.has("g"),
         resizeBacking: true,
-        reason: "query resolution",
+        reason: params.has("res") || params.has("g") ? "query resolution" : "default resolution",
       });
     } else {
-      setCanvasDisplaySize(canvas.width, canvas.height);
+      setCanvasDisplaySize(DEFAULT_DISPLAY_WIDTH, DEFAULT_DISPLAY_HEIGHT, {
+        lock: true,
+        resizeBacking: true,
+        reason: "default resolution",
+      });
     }
     hmpInputMode = normalizeInputMode(params.get("input") || params.get("inputMode") || "shared");
     hostCursorMode = normalizeCursorMode(params.get("cursor") || params.get("cursorMode") || "host");
@@ -2317,7 +2712,7 @@
       "-L", "/pack/",
       "-bios", `/pack/${rom}`,
       "-display", "sdl,gl=off,show-cursor=off",
-      "-g", "1152x870x8",
+      "-g", `${DEFAULT_DISPLAY_WIDTH}x${DEFAULT_DISPLAY_HEIGHT}x${DEFAULT_DISPLAY_DEPTH}`,
       "-audio", "none",
       "-drive", `file=/pack/${pram},format=raw,if=mtd,file.locking=off`,
       "-drive", `file=/pack/${disk},media=disk,format=raw,if=none,id=hd2,file.locking=off`,
@@ -3316,7 +3711,7 @@
 
   canvas.addEventListener("keydown", (event) => {
     recordEvent("keydown");
-    lastKey.textContent = event.code;
+    setLastKeyMetric(event.code);
     if (shouldCaptureEvent(event)) {
       event.preventDefault();
     }
@@ -3334,7 +3729,7 @@
 
   canvas.addEventListener("keyup", (event) => {
     recordEvent("keyup");
-    lastKey.textContent = event.code;
+    setLastKeyMetric(event.code);
     if (shouldCaptureEvent(event)) {
       event.preventDefault();
     }
@@ -3351,7 +3746,7 @@
     if (handleSharedKeyboardCapture(event, true)) return;
     if (event.target === canvas || isEditableTarget(event.target) || !keyCapture) return;
     recordEvent("keydown");
-    lastKey.textContent = event.code;
+    setLastKeyMetric(event.code);
     event.preventDefault();
     if (hmpInputMode === "shared") {
       if (useSharedInputBridge()) {
@@ -3369,7 +3764,7 @@
     if (handleSharedKeyboardCapture(event, false)) return;
     if (event.target === canvas || isEditableTarget(event.target) || !keyCapture) return;
     recordEvent("keyup");
-    lastKey.textContent = event.code;
+    setLastKeyMetric(event.code);
     event.preventDefault();
     if (hmpInputMode === "shared") {
       if (useSharedInputBridge()) {
@@ -3498,6 +3893,7 @@
   updateResponsivenessMetric();
   setHmpButtonsDisabled(true);
   pollDiskIoStats();
+  updateTelemetry();
   renderProbeLog("initial");
   updateProbeState();
   window.setTimeout(sampleResponsiveness, responsivenessIntervalMs);
@@ -3509,7 +3905,9 @@
     pollSharedCursor();
     applyHostCursorMode();
     if (heartbeat % 2 === 0) sampleFramebuffer();
-    if (heartbeat % 3 === 0) pollDiskIoStats();
+    if (qemuDiskWorker) qemuDiskWorker.postMessage({ type: "stats" });
+    pollDiskIoStats();
+    updateTelemetry();
     updateProbeState();
   }, 1000);
   window.setInterval(pollControlFile, 750);
