@@ -1,6 +1,8 @@
 SHELL := /bin/bash
 DURATION ?= 5
 LOGIN_DURATION ?= 360
+READY_TIMEOUT ?= 420
+SNAPSHOT_INTERVAL ?= 30
 INTERVAL ?= 5
 RAM ?= 16
 NATIVE_ARGS ?=
@@ -392,7 +394,7 @@ watch-browser-boot:
 	@node ./scripts/watch-browser-boot.mjs --duration "$(DURATION)" --interval "$(INTERVAL)" --url "http://127.0.0.1:8088/?build=aux-login-watch&ram=128&heap=384&pace=1&input=shared&cursor=host&fps=8&res=640x480&autostart=lazy-pulse&pulseMode=yield&pulseMs=2000&ptyMin=2&ptyIdle=16"
 
 watch-login-session:
-	@node ./scripts/watch-login-session.mjs --watch-secs "$(LOGIN_DURATION)"
+	@node ./scripts/watch-login-session.mjs --ready-timeout "$(READY_TIMEOUT)" --watch-secs "$(LOGIN_DURATION)" --snapshot-interval "$(SNAPSHOT_INTERVAL)"
 
 smoke-headless-lazy-pulse:
 	@node ./scripts/smoke-headless-browser.mjs --url "http://127.0.0.1:8088/?build=headless-lazy-pulse&ram=16&heap=1280&pace=0&autostart=lazy-pulse&pulseMs=$(PULSE_MS)" --probe-duration "$(DURATION)" --probe-interval "$(INTERVAL)"

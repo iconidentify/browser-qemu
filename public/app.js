@@ -110,6 +110,20 @@
     return Math.max(min, Math.min(max, value));
   }
 
+  function queryFlagParam(name, fallback = true) {
+    const params = new URLSearchParams(window.location.search);
+    const raw = params.get(name);
+    if (raw === null) return fallback;
+    return !/^(0|false|off|no)$/i.test(raw);
+  }
+
+  function createSessionId() {
+    if (window.crypto && typeof window.crypto.randomUUID === "function") {
+      return window.crypto.randomUUID();
+    }
+    return `c89-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+
   let keyCapture = false;
   let mouseX = 0;
   let mouseY = 0;
@@ -123,6 +137,7 @@
   let qemuPtyIdleWaitMs = 32;
   let qemuAutoPulseMs = 0;
   let qemuAutoPulseMode = "sample";
+  let qemuSessionStartedAtMs = 0;
   let qemuControlWorker = null;
   let qemuSharedInput = null;
   let sharedInputBridge = null;
@@ -230,8 +245,18 @@
   const pressureReliefEnabled = !/^(0|false|off)$/i.test(new URLSearchParams(window.location.search).get("pressureRelief") || "");
   const healthWorkerIntervalMs = queryIntParam("healthMs", 5000, 1000, 30000);
   const healthWorkerLagMs = queryIntParam("healthLagMs", 2500, 1000, 60000);
+  const sessionId = createSessionId();
+  const sessionGuardEnabled = queryFlagParam("sessionGuard", true);
+  const sessionAutoPauseEnabled = queryFlagParam("sessionAutoPause", true);
+  const sessionHeartbeatMs = queryIntParam("sessionMs", 3000, 1000, 30000);
   let probeStateTimer = 0;
   let probeStateDirty = false;
+  let sessionPostInFlight = false;
+  let sessionLastPostAt = 0;
+  let sessionLastLeaderId = "";
+  let sessionLastRunningCount = 0;
+  let sessionLastErrorAt = 0;
+  let sessionPausedByGuard = false;
   let lastRuntimeInstrumentAt = 0;
   let lastCursorProbeAt = 0;
   let lastFramebufferProbeAt = 0;
@@ -490,6 +515,82 @@
       log(`health worker armed: interval=${healthWorkerIntervalMs}ms lag=${healthWorkerLagMs}ms`);
     } catch (error) {
       log(`health worker disabled: ${formatError(error)}`);
+    }
+  }
+
+  function runtimeSessionBody(state = "active") {
+    return {
+      id: sessionId,
+      href: window.location.href,
+      title: document.title || "browser-qemu",
+      state,
+      qemuStarted,
+      visible: document.visibilityState !== "hidden",
+      pulseRunActive,
+      pausedByGuard: sessionPausedByGuard,
+      heartbeat,
+      framesRendered,
+      startedAtMs: qemuSessionStartedAtMs,
+      userAgent: navigator.userAgent || "",
+    };
+  }
+
+  function handleSessionPayload(payload) {
+    if (!payload || !sessionGuardEnabled) return;
+    sessionLastLeaderId = payload.leaderId || "";
+    sessionLastRunningCount = Number(payload.runningCount) || 0;
+
+    if (!qemuStarted || !sessionAutoPauseEnabled) return;
+    if (!sessionLastLeaderId || sessionLastLeaderId === sessionId || sessionLastRunningCount <= 1) {
+      return;
+    }
+    if (sessionPausedByGuard) return;
+
+    sessionPausedByGuard = true;
+    log(
+      `session guard: another browser-QEMU session is active ` +
+      `(${sessionLastRunningCount} live); pausing this VM to protect headed Chrome`
+    );
+    stopPulseRun();
+    sendHmp("stop", false);
+    setStatus(qemuStatus, "VM paused by session guard", "warn");
+    updateProbeState();
+  }
+
+  async function postSessionState(options = {}) {
+    if (!sessionGuardEnabled) return;
+    const now = Date.now();
+    if (!options.force && now - sessionLastPostAt < sessionHeartbeatMs) return;
+    if (sessionPostInFlight) return;
+    sessionLastPostAt = now;
+    sessionPostInFlight = true;
+    try {
+      const response = await fetch("./__session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        keepalive: true,
+        body: JSON.stringify(runtimeSessionBody(options.state || "active")),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      handleSessionPayload(await response.json());
+    } catch (error) {
+      if (Date.now() - sessionLastErrorAt > 30000) {
+        sessionLastErrorAt = Date.now();
+        log(`session guard unavailable: ${formatError(error)}`);
+      }
+    } finally {
+      sessionPostInFlight = false;
+    }
+  }
+
+  function beaconSessionState(state = "closed") {
+    if (!sessionGuardEnabled || !navigator.sendBeacon) return;
+    try {
+      const body = JSON.stringify(runtimeSessionBody(state));
+      navigator.sendBeacon("./__session", new Blob([body], { type: "application/json" }));
+    } catch {
+      // Best-effort shutdown telemetry only.
     }
   }
 
@@ -2136,6 +2237,15 @@
         active: pulseRunActive,
         mode: pulseRunMode,
       },
+      session: {
+        id: sessionId,
+        guard: sessionGuardEnabled,
+        autoPause: sessionAutoPauseEnabled,
+        leaderId: sessionLastLeaderId,
+        runningCount: sessionLastRunningCount,
+        pausedByGuard: sessionPausedByGuard,
+        startedAtMs: qemuSessionStartedAtMs,
+      },
       instrumentation: {
         probeMs: probeStateMinMs,
         instrumentMs: runtimeInstrumentIntervalMs,
@@ -2277,6 +2387,15 @@
         bridgeRunning: Boolean(netBridge && netBridge.isRunning()),
         bridgeStats,
       },
+      session: {
+        id: sessionId,
+        guard: sessionGuardEnabled,
+        autoPause: sessionAutoPauseEnabled,
+        leaderId: sessionLastLeaderId,
+        runningCount: sessionLastRunningCount,
+        pausedByGuard: sessionPausedByGuard,
+        startedAtMs: qemuSessionStartedAtMs,
+      },
       diskIo: diskIoStats,
       diskWorker: diskWorkerStats ? {
         requests: diskWorkerStats.requests,
@@ -2325,6 +2444,7 @@
       framebuffer: snapshot.framebuffer,
       renderer: snapshot.renderer,
       memory: snapshot.memory,
+      session: snapshot.session,
       instrumentation: snapshot.instrumentation,
       cpu: snapshot.cpu,
       sharedInput: shared ? {
@@ -3359,6 +3479,9 @@
     }
 
     qemuStarted = true;
+    qemuSessionStartedAtMs = Date.now();
+    sessionPausedByGuard = false;
+    postSessionState({ force: true, state: "starting" });
     updateHealthHeartbeat();
     const resetButton = document.getElementById("resetQemu");
     qemuRuntimeDir = runtimeDir;
@@ -3435,6 +3558,9 @@
       },
       onAbort(reason) {
         qemuStarted = false;
+        qemuSessionStartedAtMs = 0;
+        sessionPausedByGuard = false;
+        postSessionState({ force: true, state: "aborted" });
         updateHealthHeartbeat();
         qemuInstance = null;
         qemuRuntimeDir = null;
@@ -3512,6 +3638,7 @@
       ready.then((instance) => {
         qemuInstance = instance;
         window.AuxQemu = instance;
+        postSessionState({ force: true, state: "running" });
         startScreenRenderer();
         setStatus(qemuStatus, qemuStartPaused ? "QEMU paused" : "QEMU running", "ready");
         displayPanel.classList.add("runtime-active");
@@ -3528,6 +3655,9 @@
         }
       }).catch((error) => {
         qemuStarted = false;
+        qemuSessionStartedAtMs = 0;
+        sessionPausedByGuard = false;
+        postSessionState({ force: true, state: "failed" });
         updateHealthHeartbeat();
         qemuInstance = null;
         qemuRuntimeDir = null;
@@ -3550,6 +3680,9 @@
       });
     } catch (error) {
       qemuStarted = false;
+      qemuSessionStartedAtMs = 0;
+      sessionPausedByGuard = false;
+      postSessionState({ force: true, state: "failed" });
       updateHealthHeartbeat();
       qemuInstance = null;
       qemuRuntimeDir = null;
@@ -3798,6 +3931,10 @@
     if (!trimmed) return;
 
     const appendCont = hmpShouldAppendCont(trimmed, returnToGuest);
+    if (/^cont$/i.test(trimmed) || appendCont) {
+      sessionPausedByGuard = false;
+      postSessionState({ force: true, state: "running" });
+    }
     if (qemuControlWorker) {
       qemuControlWorker.postMessage({
         type: "queue-hmp",
@@ -3936,6 +4073,8 @@
       return;
     }
 
+    sessionPausedByGuard = false;
+    postSessionState({ force: true, state: "running" });
     clearPulseRunTimer();
 
     if (qemuControlWorker) {
@@ -4525,17 +4664,22 @@
       lastBreadcrumbAt = now;
       logRuntimeBreadcrumb();
     }
+    postSessionState();
     updateProbeState();
   }, 1000);
   window.addEventListener("visibilitychange", () => {
     updateHealthHeartbeat();
     if (document.visibilityState === "hidden") {
       logRuntimeBreadcrumb("visibility-hidden");
+      postSessionState({ force: true, state: "hidden" });
+    } else {
+      postSessionState({ force: true, state: "visible" });
     }
   });
   window.addEventListener("pagehide", () => {
     updateHealthHeartbeat();
     logRuntimeBreadcrumb("pagehide");
+    beaconSessionState("closed");
     flushBrowserLogMirror();
   });
   window.setInterval(pollControlFile, 1000);

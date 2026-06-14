@@ -20,6 +20,89 @@ BROWSER_LOG_LINES = []
 MAX_BROWSER_LOG_LINES = 4000
 MAX_BROWSER_LOG_CHARS = 600000
 MAX_BROWSER_LOG_POST_BYTES = 1024 * 1024
+SESSION_LOCK = threading.Lock()
+SESSIONS = {}
+SESSION_TTL_SEC = 20
+
+
+def boolish(value):
+    return bool(value)
+
+
+def bounded_text(value, max_len=240):
+    return str(value or "").replace("\x00", "")[:max_len]
+
+
+def prune_sessions(now=None):
+    now = now or time.time()
+    expired = [
+        session_id
+        for session_id, session in SESSIONS.items()
+        if now - session.get("lastSeen", 0) > SESSION_TTL_SEC
+    ]
+    for session_id in expired:
+        del SESSIONS[session_id]
+
+
+def session_payload(update=None, reset=False):
+    now = time.time()
+    with SESSION_LOCK:
+        if reset:
+            SESSIONS.clear()
+
+        if isinstance(update, dict):
+            session_id = bounded_text(update.get("id"), 80)
+            if session_id:
+                previous = SESSIONS.get(session_id, {})
+                qemu_started = boolish(update.get("qemuStarted"))
+                started_at_ms = update.get("startedAtMs")
+                try:
+                    started_at_ms = int(started_at_ms or previous.get("startedAtMs") or 0)
+                except (TypeError, ValueError):
+                    started_at_ms = int(previous.get("startedAtMs") or 0)
+
+                SESSIONS[session_id] = {
+                    **previous,
+                    "id": session_id,
+                    "href": bounded_text(update.get("href"), 500),
+                    "title": bounded_text(update.get("title"), 120),
+                    "state": bounded_text(update.get("state"), 40),
+                    "qemuStarted": qemu_started,
+                    "visible": boolish(update.get("visible")),
+                    "pulseRunActive": boolish(update.get("pulseRunActive")),
+                    "pausedByGuard": boolish(update.get("pausedByGuard")),
+                    "heartbeat": int(update.get("heartbeat") or 0),
+                    "framesRendered": int(update.get("framesRendered") or 0),
+                    "startedAtMs": started_at_ms if qemu_started else 0,
+                    "lastSeen": now,
+                    "lastSeenMs": int(now * 1000),
+                    "userAgent": bounded_text(update.get("userAgent"), 240),
+                }
+
+        prune_sessions(now)
+        sessions = list(SESSIONS.values())
+
+    sessions.sort(key=lambda item: (item.get("startedAtMs") or 0, item.get("lastSeenMs") or 0))
+    running = [
+        item for item in sessions
+        if item.get("qemuStarted") and item.get("state") not in ("closed", "idle")
+    ]
+    leader = None
+    if running:
+        visible = [item for item in running if item.get("visible")]
+        candidates = visible or running
+        leader = max(candidates, key=lambda item: (
+            item.get("startedAtMs") or 0,
+            item.get("lastSeenMs") or 0,
+        ))
+
+    return {
+        "generatedAtMs": int(now * 1000),
+        "ttlSec": SESSION_TTL_SEC,
+        "leaderId": leader.get("id") if leader else "",
+        "runningCount": len(running),
+        "sessions": sessions,
+    }
 
 
 def is_tracked_path(url_path):
@@ -119,6 +202,28 @@ def browser_log_payload(reset=False):
     }
 
 
+def read_json_body(handler):
+    try:
+        length = int(handler.headers.get("Content-Length", "0"))
+    except ValueError:
+        handler.send_error(http.HTTPStatus.BAD_REQUEST, "Invalid Content-Length")
+        return None
+
+    if length > MAX_BROWSER_LOG_POST_BYTES:
+        handler.send_error(http.HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "Payload too large")
+        return None
+
+    body = handler.rfile.read(length)
+    if not body:
+        return {}
+
+    try:
+        return json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        handler.send_error(http.HTTPStatus.BAD_REQUEST, "Invalid JSON")
+        return None
+
+
 class IsolationHandler(http.server.SimpleHTTPRequestHandler):
     range = None
 
@@ -131,6 +236,10 @@ class IsolationHandler(http.server.SimpleHTTPRequestHandler):
         if parsed.path == "/__browser-log.json":
             reset = parse_qs(parsed.query).get("reset") == ["1"]
             self.send_json(browser_log_payload(reset=reset))
+            return
+        if parsed.path == "/__session.json":
+            reset = parse_qs(parsed.query).get("reset") == ["1"]
+            self.send_json(session_payload(reset=reset))
             return
         if parsed.path == "/__exists.json":
             self.send_json(self.exists_payload(parsed))
@@ -145,6 +254,9 @@ class IsolationHandler(http.server.SimpleHTTPRequestHandler):
         if parsed.path == "/__browser-log.json":
             self.send_json(browser_log_payload(), include_body=False)
             return
+        if parsed.path == "/__session.json":
+            self.send_json(session_payload(), include_body=False)
+            return
         if parsed.path == "/__exists.json":
             self.send_json(self.exists_payload(parsed), include_body=False)
             return
@@ -152,6 +264,13 @@ class IsolationHandler(http.server.SimpleHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
+        if parsed.path == "/__session":
+            payload = read_json_body(self)
+            if payload is None:
+                return
+            self.send_json(session_payload(update=payload))
+            return
+
         if parsed.path != "/__browser-log":
             self.send_error(http.HTTPStatus.NOT_FOUND, "File not found")
             return

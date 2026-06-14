@@ -188,6 +188,131 @@ async function clientPointForGuest(cdp, guestX, guestY) {
   return result.value;
 }
 
+async function sampleLoginRadioState(cdp) {
+  const result = await evalQuick(cdp, `(() => {
+    const canvas = document.getElementById("canvas");
+    if (!canvas) return null;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return null;
+    const centers = {
+      guest: { x: 243, y: 201 },
+      registered: { x: 243, y: 220 },
+    };
+    function score(center) {
+      const radius = 3;
+      const image = ctx.getImageData(center.x - radius, center.y - radius, radius * 2 + 1, radius * 2 + 1);
+      let dark = 0;
+      let ink = 0;
+      for (let i = 0; i < image.data.length; i += 4) {
+        const r = image.data[i + 0];
+        const g = image.data[i + 1];
+        const b = image.data[i + 2];
+        const a = image.data[i + 3];
+        if (a > 128 && r < 110 && g < 110 && b < 110) dark += 1;
+        if (a > 128 && r < 180 && g < 180 && b < 180) ink += 1;
+      }
+      return { center, dark, ink, pixels: image.data.length / 4 };
+    }
+    return {
+      guest: score(centers.guest),
+      registered: score(centers.registered),
+    };
+  })()`);
+  if (!result.value) throw new Error("login radio state unavailable");
+  return result.value;
+}
+
+async function sampleLoginDialogState(cdp) {
+  const result = await evalQuick(cdp, `(() => {
+    const canvas = document.getElementById("canvas");
+    if (!canvas) return null;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return null;
+    const w = canvas.width;
+    const h = canvas.height;
+    if (w < 320 || h < 240) return null;
+    const image = ctx.getImageData(0, 0, w, h);
+    const data = image.data;
+    function whiteAt(x, y) {
+      const i = (y * w + x) * 4;
+      return data[i + 3] > 128 && data[i] > 238 && data[i + 1] > 238 && data[i + 2] > 238;
+    }
+
+    const rows = [];
+    for (let y = 55; y < h - 24; y += 1) {
+      let bestStart = 0;
+      let bestEnd = -1;
+      let runStart = -1;
+      for (let x = 0; x < w; x += 1) {
+        if (whiteAt(x, y)) {
+          if (runStart < 0) runStart = x;
+        } else if (runStart >= 0) {
+          if (x - runStart > bestEnd - bestStart + 1) {
+            bestStart = runStart;
+            bestEnd = x - 1;
+          }
+          runStart = -1;
+        }
+      }
+      if (runStart >= 0 && w - runStart > bestEnd - bestStart + 1) {
+        bestStart = runStart;
+        bestEnd = w - 1;
+      }
+      const bestLen = bestEnd >= bestStart ? bestEnd - bestStart + 1 : 0;
+      if (bestLen >= 240) rows.push({ y, x0: bestStart, x1: bestEnd, len: bestLen });
+    }
+
+    const groups = [];
+    for (const row of rows) {
+      const last = groups[groups.length - 1];
+      if (!last || row.y - last.y1 > 14) {
+        groups.push({
+          y0: row.y,
+          y1: row.y,
+          x0: row.x0,
+          x1: row.x1,
+          rows: 1,
+          totalLen: row.len,
+        });
+      } else {
+        last.y1 = row.y;
+        last.x0 = Math.min(last.x0, row.x0);
+        last.x1 = Math.max(last.x1, row.x1);
+        last.rows += 1;
+        last.totalLen += row.len;
+      }
+    }
+
+    const candidates = groups
+      .map((group) => ({
+        ...group,
+        width: group.x1 - group.x0 + 1,
+        height: group.y1 - group.y0 + 1,
+        averageRun: group.rows ? group.totalLen / group.rows : 0,
+      }))
+      .filter((group) => (
+        group.height >= 90 &&
+        group.rows >= 45 &&
+        group.averageRun >= 220 &&
+        group.width >= 280 &&
+        group.width <= 520 &&
+        group.x0 >= 40 &&
+        group.x1 <= w - 40
+      ))
+      .sort((a, b) => (b.height * b.averageRun) - (a.height * a.averageRun));
+
+    const dialog = candidates[0] || null;
+    return {
+      present: Boolean(dialog),
+      dialog,
+      rows: rows.length,
+      candidates: candidates.slice(0, 3),
+    };
+  })()`);
+  if (!result.value) throw new Error("login dialog state unavailable");
+  return result.value;
+}
+
 async function waitForSettledLogin(cdp) {
   const started = Date.now();
   const deadline = Date.now() + opts.readyTimeoutSec * 1000;
@@ -198,6 +323,10 @@ async function waitForSettledLogin(cdp) {
 
   while (Date.now() < deadline) {
     const probe = await readProbe(cdp);
+    const dialog = await sampleLoginDialogState(cdp).catch((error) => ({
+      present: false,
+      error: String(error && error.message ? error.message : error),
+    }));
     const framebuffer = probe && probe.framebuffer ? probe.framebuffer : null;
     if (framebuffer && framebuffer.nonBlack > 1000) {
       const now = Date.now();
@@ -225,11 +354,15 @@ async function waitForSettledLogin(cdp) {
         repeatedSamples,
         checksum: framebuffer.checksum,
         nonBlack: framebuffer.nonBlack,
+        loginDialog: dialog.present ? `${dialog.dialog.x0},${dialog.dialog.y0} ${dialog.dialog.width}x${dialog.dialog.height}` : "not-present",
         heartbeat: probe.heartbeat,
         renderer: probe.renderer ? `${probe.renderer.width}x${probe.renderer.height}` : null,
         canvas: probe.canvas ? `${probe.canvas.width}x${probe.canvas.height}` : null,
       });
-      if ((stableSamples >= 4 || repeatedSamples >= 4) && now - started >= opts.minLoginSec * 1000) {
+      if (dialog.present &&
+          (stableSamples >= 4 || repeatedSamples >= 4) &&
+          now - started >= opts.minLoginSec * 1000) {
+        probe.loginDialog = dialog;
         return probe;
       }
     }
@@ -357,10 +490,11 @@ async function dispatchClickProbe(cdp, point) {
 }
 
 const probePoints = [
-  { name: "registered-radio", x: 286, y: 244 },
-  { name: "name-field-left", x: 344, y: 252 },
-  { name: "name-field-mid", x: 430, y: 252 },
-  { name: "password-field", x: 420, y: 280 },
+  { name: "guest-radio-center", x: 243, y: 201 },
+  { name: "registered-radio-center", x: 243, y: 220 },
+  { name: "name-field-left", x: 319, y: 249 },
+  { name: "name-field-mid", x: 408, y: 249 },
+  { name: "password-field", x: 408, y: 274 },
   { name: "dialog-icon", x: 228, y: 164 },
   { name: "desktop-center", x: 320, y: 240 },
 ];
@@ -417,9 +551,20 @@ try {
 
   const loginProbe = await waitForSettledLogin(cdp);
   await screenshot(cdp, "login-before-probes.png");
-  stamp({ event: "login-settled", framebuffer: loginProbe.framebuffer, canvas: loginProbe.canvas, renderer: loginProbe.renderer });
+  stamp({
+    event: "login-settled",
+    framebuffer: loginProbe.framebuffer,
+    canvas: loginProbe.canvas,
+    renderer: loginProbe.renderer,
+    dialog: loginProbe.loginDialog,
+  });
+
+  const radioBefore = await sampleLoginRadioState(cdp);
+  stamp({ event: "radio-state", phase: "before", state: radioBefore });
 
   const results = [];
+  let radioAfterGuest = null;
+  let radioAfterRegistered = null;
   for (const point of probePoints) {
     const result = await dispatchClickProbe(cdp, point);
     results.push(result);
@@ -432,6 +577,14 @@ try {
       buttons: result.afterUp.buttons,
       cursor: result.afterUp.cursor,
     });
+
+    if (point.name === "guest-radio-center") {
+      radioAfterGuest = await sampleLoginRadioState(cdp);
+      stamp({ event: "radio-state", phase: "after-guest", state: radioAfterGuest });
+    } else if (point.name === "registered-radio-center") {
+      radioAfterRegistered = await sampleLoginRadioState(cdp);
+      stamp({ event: "radio-state", phase: "after-registered", state: radioAfterRegistered });
+    }
   }
   await screenshot(cdp, "login-after-probes.png");
 
@@ -444,6 +597,15 @@ try {
     if (result.afterDown.buttons.frontend !== 1 || result.afterUp.buttons.frontend !== 0) issues.push("button");
     return issues.length ? [{ name: result.name, issues, deltas: up }] : [];
   });
+  if (radioBefore.registered.dark <= radioBefore.guest.dark + 8) {
+    failures.push({ name: "radio-before", issues: ["registered-not-selected"], state: radioBefore });
+  }
+  if (!radioAfterGuest || radioAfterGuest.guest.dark <= radioAfterGuest.registered.dark + 8) {
+    failures.push({ name: "radio-after-guest", issues: ["guest-not-selected"], state: radioAfterGuest });
+  }
+  if (!radioAfterRegistered || radioAfterRegistered.registered.dark <= radioAfterRegistered.guest.dark + 8) {
+    failures.push({ name: "radio-after-registered", issues: ["registered-not-restored"], state: radioAfterRegistered });
+  }
 
   report = {
     ok: failures.length === 0,
@@ -455,8 +617,14 @@ try {
       renderer: loginProbe.renderer,
       memory: loginProbe.memory,
       responsiveness: loginProbe.responsiveness,
+      dialog: loginProbe.loginDialog || null,
     },
     results,
+    radio: {
+      before: radioBefore,
+      afterGuest: radioAfterGuest,
+      afterRegistered: radioAfterRegistered,
+    },
     failures,
     chromeStderrTail: chromeErrors.slice(-20),
   };
@@ -466,11 +634,17 @@ try {
   stamp({ event: "report", ok: report.ok, path: reportPath, failures });
   if (!report.ok) process.exitCode = 1;
 } catch (error) {
+  let finalProbe = null;
+  if (cdp) {
+    await screenshot(cdp, "fatal.png");
+    finalProbe = await readProbe(cdp).catch(() => null);
+  }
   report = {
     ok: false,
     error: error && error.stack ? String(error.stack) : String(error),
     url: opts.url,
     stock: opts.stock,
+    finalProbe,
     chromeStderrTail: chromeErrors.slice(-40),
   };
   fs.writeFileSync(path.join(opts.outDir, "click-alignment-report.json"), JSON.stringify(report, null, 2));

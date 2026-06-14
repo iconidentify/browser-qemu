@@ -65,6 +65,7 @@ function classify(proc) {
   if (args.includes("Google Chrome") && args.includes("c89-login-chrome")) return "login-watch-chrome";
   if (args.includes("Google Chrome") && args.includes("c89-aux-chrome")) return "browser-qemu-chrome";
   if (args.includes("Google Chrome") && args.includes("remote-debugging-port")) return "debug-chrome";
+  if (args.includes("Google Chrome") && proc.pcpu >= 10) return "chrome";
   if (args.includes("Codex (Renderer)")) return "codex-renderer";
   if (args.includes("WindowServer")) return "window-server";
   return "";
@@ -86,6 +87,14 @@ function printTable(title, rows) {
 
 async function readBrowserLog() {
   const path = `/__browser-log.json?tail=${encodeURIComponent(opts.tail)}&ts=${Date.now()}`;
+  return readJsonEndpoint(path);
+}
+
+async function readSessionInfo() {
+  return readJsonEndpoint(`/__session.json?ts=${Date.now()}`);
+}
+
+async function readJsonEndpoint(path) {
   return new Promise((resolve) => {
     const req = http.get({ hostname: "127.0.0.1", port: opts.port, path, timeout: 2000 }, (res) => {
       let body = "";
@@ -153,6 +162,7 @@ const watched = processes.filter((proc) => classify(proc));
 const high = processes.filter((proc) => proc.pcpu >= 75).slice(0, 12);
 const diskUsage = await readDiskUsage();
 const browserLog = await readBrowserLog();
+const sessionInfo = await readSessionInfo();
 const health = latestHealthLine(browserLog.lines || []);
 
 console.log("browser-qemu doctor");
@@ -177,6 +187,23 @@ if (!health) {
   console.log(`  mainAge=${health.mainAgeMs}ms beat=${health.beat} flags=${health.flags}`);
 }
 
+console.log("\nsession guard");
+if (sessionInfo.error) {
+  console.log(`  unavailable: ${sessionInfo.error}`);
+} else {
+  console.log(`  running=${sessionInfo.runningCount || 0} leader=${sessionInfo.leaderId || "none"}`);
+  for (const session of (sessionInfo.sessions || [])) {
+    const leader = session.id === sessionInfo.leaderId ? " leader" : "";
+    const paused = session.pausedByGuard ? " paused-by-guard" : "";
+    const visible = session.visible ? " visible" : " hidden";
+    console.log(
+      `  ${String(session.id).slice(0, 8)}${leader}${visible}${paused} ` +
+      `qemu=${session.qemuStarted ? "on" : "off"} pulse=${session.pulseRunActive ? "on" : "off"} ` +
+      `hb=${session.heartbeat || 0} frames=${session.framesRendered || 0}`
+    );
+  }
+}
+
 const nativeQemuHot = watched.some((proc) => classify(proc) === "native-qemu" && proc.pcpu >= 75);
 const rendererHot = watched.filter((proc) => /chrome|renderer/.test(classify(proc)) && proc.pcpu >= 75);
 if (nativeQemuHot) {
@@ -190,6 +217,9 @@ if (!diskUsage.error && (diskUsage.availableKb < 20 * 1048576 || /^(9[5-9]|100)%
 }
 if (health && health.mainAgeMs >= 2500) {
   console.log("NOTE: the browser-qemu UI main thread was stalled in the last health sample.");
+}
+if (!sessionInfo.error && (sessionInfo.runningCount || 0) > 1) {
+  console.log("NOTE: more than one browser-QEMU session is live; the session guard should pause non-leaders.");
 }
 if (!high.length) {
   console.log("\nNOTE: no process is currently above 75% CPU.");

@@ -98,6 +98,39 @@ Current state:
   legacy `mouse*` compatibility events are swallowed and no longer write to the
   guest. A real headed retest is still required for feel, but coordinate math is
   no longer the leading suspect.
+- Later June 14 meltdown check: the visible Chrome report was **not** the old
+  hard browser freeze. `make browser-doctor` showed page-main health samples
+  around 15-25 ms while the guest was alive; the machine was also under heavy
+  external pressure from native desktop `qemu-system-m68k`, a hot Codex renderer,
+  WindowServer, and low disk headroom. A short `make watch-login-session
+  LOGIN_DURATION=30` run reached the actual A/UX login dialog, typed
+  `root`/`31337leet`, and then landed in the Classic Mac transition with a wait
+  cursor and a purple/top-left region while the page remained responsive
+  (`maxEvalMs=1`, `maxLagMs=69`, no stalls). Treat that as a guest transition /
+  pacing problem first, not a browser UI-copy-log failure.
+- The dev server and page now have a cross-browser session guard:
+  `/__session.json` reports live browser-QEMU sessions, `#probeState.session`
+  mirrors the page's view, and non-leader pages auto-issue `stop` so a Codex tab
+  and a Chrome tab do not silently run two full A/UX VMs at once. `make
+  browser-doctor` prints the session leader and running count.
+- `make probe-click-alignment` and `make watch-login-session` now require a real
+  pixel-detected A/UX login dialog before claiming "login settled". The previous
+  stable-frame detector could falsely settle on the gray patterned Mac surface.
+  A stricter click probe run exposed that false-positive path and now saves
+  `build/click-alignment/fatal.png` plus a final probe snapshot on timeout.
+- Follow-up on the same run: the first stricter detector was too strict in the
+  other direction. It missed the real A/UX login because labels, fields, and the
+  Login button split the white dialog interior. The detector now allows interior
+  gaps while retaining the width/margin guards. A headed diagnostic then reached
+  the real login at about 137 s, typed the credentials, reached the classic Mac
+  environment with the `bgroot: ok` console, and stayed page-responsive for a
+  90 s post-login watch (`maxEvalMs=1`, `maxLagMs=44`, no long-task stalls,
+  `maxWasmMb=881`, `maxDiskCacheMb=128`).
+- `scripts/watch-login-session.mjs` now writes `build/login-watch/report.json`
+  and periodic `login-wait-*` / `post-login-*` screenshots, and it cleans up the
+  temporary stock Chrome profile's helper processes on normal exit, SIGINT, and
+  SIGTERM. This matters because an orphaned watcher Chrome can silently keep a
+  full browser-QEMU VM running and make a later manual tab feel like it melted.
 
 ---
 
