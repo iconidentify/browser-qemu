@@ -228,6 +228,7 @@
     var lastButtonMask = 0;
     var buttonReleaseTimer = 0;
     var keyReleaseTimers = new Map();
+    var lastPointerDiag = null;
     var capsLockState = false;
     var pressedCodes = new Set();
     var ready = false;
@@ -439,6 +440,24 @@
       },
       mouseEvent: function (event) {
         var point = pointForEvent(canvas, event, lastPoint);
+        var scale = canvasScale(canvas);
+        if (point && scale) {
+          lastPointerDiag = {
+            clientX: Math.round(event.clientX || 0),
+            clientY: Math.round(event.clientY || 0),
+            guestX: point.x,
+            guestY: point.y,
+            contentLeft: Math.round(scale.rect.left),
+            contentTop: Math.round(scale.rect.top),
+            contentWidth: Math.round(scale.rect.width),
+            contentHeight: Math.round(scale.rect.height),
+            scaleX: Number(scale.x.toFixed(4)),
+            scaleY: Number(scale.y.toFixed(4)),
+            canvasWidth: canvas.width,
+            canvasHeight: canvas.height,
+            pointerLocked: Boolean(root.document && root.document.pointerLockElement === canvas),
+          };
+        }
         writePoint(point, event);
         queueButtonMask(buttonMaskFromEvent(event));
         return point;
@@ -502,6 +521,7 @@
           autoKeyReleases: stats.autoKeyReleases,
           keyAutoReleaseMs: KEY_AUTO_RELEASE_MS,
           pressedKeys: pressedCodes.size,
+          pointer: lastPointerDiag,
           mouseMoves: stats.mouseMoves,
           buttons: stats.buttons,
           backendKeys: ready ? Atomics.load(ctrl, ctrlBase + C_KEY_EVENTS) : 0,

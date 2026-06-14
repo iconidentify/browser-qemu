@@ -522,7 +522,9 @@ Current input/display status:
   reaching QEMU as ADB `0x07`; HMP/hybrid/SDL modes remain diagnostic-only.
   `#probeState.sharedInput` includes the latest absolute `absX/absY`, guest
   dimensions, frontend button mask, button-release hold time, and backend
-  mouse/key/button counters.
+  mouse/key/button counters. Its nested `pointer` object captures the latest
+  browser client coordinate, content box, scale, and guest coordinate for
+  cursor/click drift reports.
 - `make smoke-shared-input` is the fast guardrail for this path. It launches a
   temporary headless Chrome against paused `qemu-lazy`, runs the page's
   structured shared-input self-test, verifies the 800x600 shared geometry,

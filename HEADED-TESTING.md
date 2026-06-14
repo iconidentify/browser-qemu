@@ -205,7 +205,9 @@ http://127.0.0.1:8088/?ram=128&heap=384&pace=1&input=shared&cursor=host&fps=8&re
   frontend button mask, button-release hold time, and backend key/mouse/button
   counters for drift reports. `autoKeyReleases` increments when the bridge had
   to release a non-modifier key because the browser did not deliver keyup in
-  time; watch that for `roooooot`-style headed typing stalls.
+  time; watch that for `roooooot`-style headed typing stalls. The nested
+  `pointer` object records the last browser client coordinate, content-box
+  rectangle, scale, and resulting guest coordinate for cursor/click drift.
 - `make smoke-shared-input` is the quick regression check before headed work:
   it starts paused `qemu-lazy` in a temp headless Chrome, runs the page's
   structured shared-input self-test, asserts exact 800x600 shared geometry,
